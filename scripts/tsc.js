@@ -103,10 +103,6 @@ var writeFile = function(path, data, writeBom) {
   if (!skip) {
     if (doesMinifyLocalFiles && isJS) {
       data = await getTerser()(data, null, path);
-      if (path.indexOf("extend_click.") >= 0) {
-        var patched = lib.patchExtendClick(data, true);
-        data = typeof patched === "string" ? patched : patched[0] + patched[1] + patched[2];
-      }
     }
     data = data.replace(/\bimport\b[^'"}]+\}?\s?\bfrom\b\s?['"][.\/\w]+['"]/g, s => {
       return s.includes(".js") ? s : s.slice(0, -1) + ".js" + s.slice(-1)
@@ -114,9 +110,8 @@ var writeFile = function(path, data, writeBom) {
     data = lib.addMetaData(path, data)
     same = same && lib.readFile(path, {}) === data;
   }
-  var prefix = logPrefix && "[" + logPrefix + "]";
-  prefix += logPrefix && " ".repeat(12 - prefix.length)
-  prefix += logPrefix && " "
+  var prefix = logPrefix && "[" + logPrefix + "]", space = " "
+  prefix += logPrefix && space.repeat && space.repeat(13 - prefix.length)
   console.log("%s%s: %s", prefix, skip ? " SKIP" : same ? "TOUCH" : "WRITE", path.replace(root, ""));
   if (same) {
     lib.touchFileIfNeeded(path, srcPath);
@@ -281,7 +276,7 @@ function main(args) {
         // @ts-ignore
         stdio: ["ignore", process.stdout, process.stderr]
       });
-      child.on("close", function (code) { resolve(code); });
+      child.on("close", function (code) { resolve(code || 0); });
     }));
   }
   // @ts-ignore
@@ -298,9 +293,7 @@ function main(args) {
         // @ts-ignore
         stdio: ["ignore", process.stdout, process.stderr]
       });
-      child.on("close", function (code) {
-        resolve(code);
-      });
+      child.on("close", function (code) { resolve(code || 0); });
     }));
   }
   var watchedDest = destDirs[0];

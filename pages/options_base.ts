@@ -1,6 +1,6 @@
 import {
-  CurCVer_, OnChrome, $, $$, nextTick_, pageLangs_, TransTy, pageTrans_, post_, enableNextTick_, kReadyInfo, onDicts_,
-  curPagePath_
+  CurCVer_, OnChrome, $, $$, nextTick_, pageLangs_, type TransTy, pageTrans_, post_, enableNextTick_, kReadyInfo,
+  onDicts_, curPagePath_, setupPageOs_
 } from "./async_bg"
 import { kPgReq } from "../background/page_messages"
 import type * as i18n_options from "../i18n/zh/options.json"
@@ -36,7 +36,7 @@ export interface KnownOptionsDataset extends KnownDataset {
   autoResize: keyof AllowedOptions // enum of option names
   delay: "" | "continue" | "event" // work type when delaying click events
   permission: "webNavigation" | "C76" | string // required permissions
-  href: `vimium://${string}`
+  vimUrl: `vimium://${string}`
 }
 export declare const enum kExclusionChange { NONE = 0, pattern = 1, passKeys = 2, mismatches = 4, deleted = 8 }
 
@@ -44,7 +44,7 @@ const _globalDelegates: {
   [type: string]: { selector_: string | Node, handler_ (ev: Event): void, capture_: boolean | "on" }[] | null
 } = {}
 
-export const showI18n = (): void => {
+export const showI18n_ = (): void => {
     if (pageLangs_ === "en") { return }
     const lang1 = pageLangs_.split(",")[0]
     const langInput = navigator.language as string || lang1
@@ -60,7 +60,7 @@ export const showI18n = (): void => {
       t = pageTrans_(isTitle ? i.slice(0, -2) : i)
       t != null && (isTitle ? el.title = t : el.textContent = t)
     }
-    (document.documentElement as HTMLHtmlElement).lang = lang1 === "zh" ? "zh-CN" as "" : lang1 as ""
+    (document.documentElement as HTMLHtmlElement).lang = lang1 === "zh" ? "zh-CN" as "" : lang1.replace("_", "-") as ""
 }
 
 (window as unknown as any).__extends = function<Child, Super, Base> (
@@ -80,7 +80,7 @@ export const showI18n = (): void => {
   child.prototype = new __();
 }
 
-export const debounce_ = function<T> (func: (this: T) => void
+export const debounce_ = function<T> (func: (this: T) => unknown
     , wait: number, bound_context: T, also_immediate: number
     ): (this: void) => void {
   let timeout = 0, timestamp: number;
@@ -92,22 +92,27 @@ export const debounce_ = function<T> (func: (this: T) => void
     }
     timeout = 0;
     if (timestamp !== also_immediate) {
-      return func.call(bound_context);
+      func.call(bound_context)
     }
   };
   also_immediate = also_immediate ? 1 : 0;
-  return function () {
+  return function (): void {
     timestamp = Date.now(); // safe for time changes
-    if (timeout) { return; }
+    if (timeout) {
+      if (also_immediate) {
+        also_immediate = timestamp - 1
+      }
+      return
+    }
     timeout = setTimeout(later, wait);
     if (also_immediate) {
       also_immediate = timestamp;
-      return func.call(bound_context);
+      func.call(bound_context)
     }
   };
 } as <T> (func: (this: T) => void, wait: number, bound_context: T, also_immediate: BOOL) => (this: void) => void
 
-export const didBindEvent = (ev: Event | string): void => {
+export const didBindEvent_ = (ev: Event | string): void => {
   const type = typeof ev !== "string" ? ev.type : ev
   for (const delegate of _globalDelegates[type] || []) {
     for (const el of typeof delegate.selector_ === "string" ? $$(delegate.selector_) : [delegate.selector_]) {
@@ -119,13 +124,13 @@ export const didBindEvent = (ev: Event | string): void => {
     }
   }
   _globalDelegates[type] = null
-  removeEventListener(type, didBindEvent, true)
+  removeEventListener(type, didBindEvent_, true)
 }
-export const delayBinding = (selector_: string | HTMLElement | Document
+export const delayBinding_ = (selector_: string | HTMLElement | Document
     , type: string, handler_: (ev: EventToPrevent) => void, capture_?: boolean | "on") => {
   let handlers = _globalDelegates[type]
   if (!handlers) {
-    addEventListener(type, didBindEvent, true)
+    addEventListener(type, didBindEvent_, true)
     handlers = _globalDelegates[type] = []
   }
   handlers.push({ selector_, handler_, capture_: capture_ || false })
@@ -146,14 +151,13 @@ export const getSettingsCache_ = () => settingsCache_ as Partial<SettingsNS.Pers
 
 export const bgSettings_ = {
   platform_: "" as "win" | "linux" | "mac" | "unknown",
-  os_: Build.OS & (Build.OS - 1) ? kOS.UNKNOWN : (Build.OS < 8 ? (Build.OS / 2) | 0 : Math.log2(Build.OS)) as kOS,
   defaults_: null as never as SettingsWithDefaults,
   resetCache_ (): void { settingsCache_ = null },
   preloadCache_ (this: void): Promise<void> {
     if (settingsCache_) { return settingsCache_ instanceof Promise ? settingsCache_ : Promise.resolve()  }
     bgSettings_.defaults_ || post_(kPgReq.settingsDefaults).then((res): void => {
       bgSettings_.defaults_ = res[0]
-      Build.OS & (Build.OS - 1) && (bgSettings_.os_ = res[1])
+      Build.OS & (Build.OS - 1) && (setupPageOs_(res[1]))
       bgSettings_.platform_ = res[2] as typeof bgSettings_.platform_
       enableNextTick_(kReadyInfo.options)
     })
@@ -201,19 +205,20 @@ export const bgSettings_ = {
   },
   valuesToLoad_: {
     __proto__: null as never,
-    filterLinkHints: "f", keyLayout: "l", mouseReachable: "e",
+    filterLinkHints: "f", hideHud: "h", ignoreReadonly: "y", keyLayout: "l", mouseReachable: "e",
     keyboard: "k", keyupTime: "u", linkHintCharacters: "c", linkHintNumbers: "n", passEsc: "p",
     regexFindMode: "r", smoothScroll: "s", scrollStepSize: "t", waitForEnter: "w"
   } satisfies SettingsNS.AutoSyncedNameMap & SafeObject as SettingsNS.AutoSyncedNameMap,
   complexValuesToLoad_: {
-    __proto__: null as never, c: 1, n: 1, l: 1, d: 1
+    __proto__: null as never, c: 1, n: 1, l: 1, d: 1, p: 1, y: 1
   } satisfies TypedSafeEnum<SettingsNS.FrontendComplexSyncingItems>
 }
 
 bgSettings_.preloadCache_()
 
-; !!Build.NDEBUG && (!(Build.BTypes & BrowserType.Chrome) || Build.MinCVer >= BrowserVer.MinEnsuredES$TopLevelAwait)
-    && !(Build.BTypes & BrowserType.Edge) && !(Build.BTypes & BrowserType.Firefox) &&
+; !!Build.NDEBUG && !(Build.BTypes & BrowserType.Edge)
+    && !(Build.BTypes & BrowserType.Firefox && Build.MinFFVer < FirefoxBrowserVer.MinEnsuredES$TopLevelAwait)
+    && !(Build.BTypes & BrowserType.Chrome && Build.MinCVer < BrowserVer.MinEnsuredES$TopLevelAwait) &&
 onDicts_( // eslint-disable-next-line spaced-comment
   /*! @OUTPUT {await } */ // @ts-ignore
   Promise.all(
@@ -229,22 +234,23 @@ export abstract class Option_<T extends keyof AllowedOptions> {
   readonly field_: T;
   previous_: AllowedOptions[T];
   saved_: boolean;
-  locked_?: boolean;
+  locked_: boolean
   readonly onUpdated_: (this: void) => void;
   onSave_ (): void | Promise<void> { /* empty */ }
   checker_?: Checker<T>;
 
-  static all_: { [N in keyof AllowedOptions]: OptionType<N> } & SafeObject
-  static syncToFrontend_: Array<keyof SettingsNS.AutoSyncedNameMap>;
+  static all_ = {} as { [N in keyof AllowedOptions]: OptionType<N> }
+  static syncToFrontend_: Array<keyof SettingsNS.AutoSyncedNameMap> = null as never
   static onFgCacheUpdated_: (() => void) | null = null
   static suppressPopulate_ = false
 
-  constructor (element: HTMLElement, onUpdated: () => void) {
+  constructor (element: HTMLElement, onUpdated: () => unknown) {
     const field = element.id as T;
     this.field_ = field
     this.element_ = element;
     this.previous_ = this.onUpdated_ = null as never;
     this.saved_ = false;
+    this.locked_ = false
     if (field in bgSettings_.valuesToLoad_) {
       onUpdated = this._onCacheUpdated.bind(this, onUpdated);
     } else if (field === "autoDarkMode" || field === "autoReduceMotion") {
@@ -289,10 +295,10 @@ export abstract class Option_<T extends keyof AllowedOptions> {
     }
     return this.onSave_()
   }
-  _isDirty (): boolean {
+  isDirty_ (): boolean {
     const latest = this.innerFetch_() as AllowedOptions[T]
     const diff = !this.areEqual_(this.previous_, latest)
-    if (diff && this.areEqual_(this.readValueFromElement_(), latest)) {
+    if (diff && this.areEqual_(latest, this.readValueFromElement_())) {
       this.previous_ = latest
       this.saved_ = true
       return false
@@ -310,14 +316,11 @@ export abstract class Option_<T extends keyof AllowedOptions> {
   abstract readValueFromElement_ (): AllowedOptions[T];
   abstract populateElement_ (value: AllowedOptions[T], enableUndo?: boolean): void;
   doesPopulateOnSave_ (_val: AllowedOptions[T]): boolean { return false }
-  _onCacheUpdated: (this: Option_<T>, onUpdated: (this: Option_<T>) => void) => void;
-  _manuallySyncCache: (this: Option_<T>, onUpdated: (this: Option_<T>) => void) => void;
-  areEqual_: (this: Option_<T>, a: AllowedOptions[T], b: AllowedOptions[T]) => boolean;
+  areEqual_ (this: Option_<T>, old: AllowedOptions[T], newVal: AllowedOptions[T]): boolean { return old === newVal }
+  _onCacheUpdated: (this: Option_<T>, onUpdated: (this: Option_<T>) => unknown) => void;
+  _manuallySyncCache: (this: Option_<T>, onUpdated: (this: Option_<T>) => unknown) => void;
   atomicUpdate_: (this: Option_<T> & {element_: TextElement}, value: string, undo: boolean, locked: boolean) => void;
 
-  static areJSONEqual_ (this: void, a: object, b: object): boolean {
-    return JSON.stringify(a, Object.keys(a).sort()) === JSON.stringify(b, Object.keys(b).sort())
-  }
   static saveOptions_: (this: void) => Promise<boolean>
   static needSaveOptions_: (this: void) => boolean;
   i18nName_: () => string
@@ -357,11 +360,11 @@ export class ExclusionRulesOption_ extends Option_<"exclusionRules"> {
         ).content.querySelector(".exclusionRule") as HTMLTableRowElement;
     this.$list_ = element.querySelector("tbody") as HTMLTableSectionElement;
     this.list_ = [];
-    delayBinding(this.$list_, "input", ExclusionRulesOption_.MarkChanged_)
-    delayBinding(this.$list_, "input", this.onUpdated_)
-    delayBinding(this.$list_, "click", e => this.onRemoveRow_(e))
+    delayBinding_(this.$list_, "input", ExclusionRulesOption_.MarkChanged_)
+    delayBinding_(this.$list_, "input", this.onUpdated_)
+    delayBinding_(this.$list_, "click", e => { this.onRemoveRow_(e) })
     this._rendered = false
-    delayBinding("#exclusionAddButton", "click", () => this.addRule_(""), "on")
+    delayBinding_("#exclusionAddButton", "click", () => this.addRule_(""), "on")
   }
 onRowChange_ (_isInc: number): void { /* empty */ }
 static MarkChanged_ (this: void, event: Event): void {
@@ -387,7 +390,6 @@ addRule_ (pattern: string, autoFocus?: false | undefined): void {
 override populateElement_ (rules: ExclusionsNS.StoredRule[]): void {
   if (!this._rendered) {
     this._rendered = true
-    if (Option_.syncToFrontend_) { this.template_.draggable = true }
     for (const el of pageLangs_ !== "en" ? $$("[title]", this.template_) : []) {
       const t = pageTrans_(el.title)
       t && (el.title = t)
@@ -447,7 +449,7 @@ static OnNewKeys_ (vnode: ExclusionVisibleVirtualNode): void {
     vnode.$keys_.placeholder = "";
   }
 }
-onRemoveRow_ (event: Event): void {
+onRemoveRow_ (event: EventToPrevent): void {
   let element = event.target as EnsuredMountedElement
   element.localName === "path" && (element = element.parentElement)
   element.localName === "svg" && (element = element.parentElement)
@@ -456,6 +458,7 @@ onRemoveRow_ (event: Event): void {
   if (element.classList.contains("exclusionRule")) {
     const vnode = (element.querySelector(".pattern") as ExclusionRealNode).vnode;
     element.remove();
+    event.preventDefault()
     if (vnode.changed_ & kExclusionChange.mismatches && vnode.savedRule_.pattern) {
       Object.assign<ExclusionBaseVirtualNode, Partial<ExclusionBaseVirtualNode>>(vnode, {
           rule_: { passKeys: "", pattern: ""}, matcher_: false,
@@ -572,8 +575,7 @@ override onSave_ (): void {
     }
   }
 }
-
-override readonly areEqual_ = Option_.areJSONEqual_;
+override areEqual_ (this: void, a: object, b: object): boolean { return JSON.stringify(a) === JSON.stringify(b) }
 sortRules_: (el?: HTMLElement) => void;
 timer_?: number;
 }

@@ -118,7 +118,7 @@ function _makeJSONReader() {
   /** @type { {[path: string]: string} } */
   var cached = {};
   /** @param {string} str */
-  function spaceN(str) {
+  function spaceN(str) { // @ts-ignore
     return ' '.repeat(str.length);
   }
   /** @param {string} str */
@@ -277,6 +277,7 @@ exports.extendIf = (b, a) => {
  */
 exports.getGitCommit = (maxLen) => {
   try {
+    if (fs.statSync(".git").isDirectory()) {
     var branch = exports.readFile(".git/HEAD");
     branch = branch && branch.trim();
     /** @type {string | undefined} */
@@ -285,6 +286,9 @@ exports.getGitCommit = (maxLen) => {
       commit = branch;
     } else if (branch.startsWith("ref:") && branch.length > 4) {
       commit = exports.readFile(".git/" + branch.slice(4).trim());
+    }
+    } else {
+      commit = require('child_process').execSync("git rev-parse HEAD").toString("utf8")
     }
     maxLen = maxLen || 0
     return commit ? commit.trim().slice(0, maxLen > 0 ? maxLen : maxLen < 0 ? commit.length : 7) : null;
@@ -581,11 +585,11 @@ exports.fill_global_defs = (global_defs, btypes) => {
 exports.replace_global_defs = (global_defs, code) => {
   const keys = Object.keys(global_defs).join("|")
   if (!keys) { return code }
-  const arr = new RegExp(keys, "g")
+  const keyRe = new RegExp(`\\b(?:${keys})\\b`, "g")
   /** @type {[start: number, end: number, value: any][]} */
   const to_replace = []
   let match
-  while (match = arr.exec(code)) {
+  while (match = keyRe.exec(code)) {
     const pos = match.index, key = match[0]
     if (code[pos - 1] === "." && code.substr(pos + key.length, 12).trimLeft()[0] !== "=") {
       const arr = [...code.slice(Math.max(0, pos - 32), pos - 1)].reverse().join("")
@@ -627,14 +631,14 @@ exports.skip_declaring_known_globals = (btypes, minCVer, get_code) =>{
   if (!(btypes & BrowserType.Chrome) || minCVer >= /* MinEnsured$InputDeviceCapabilities */ 47) {
     toRemovedGlobal += "InputDeviceCapabilities|";
   }
-  if ((!(btypes & BrowserType.Chrome) || minCVer >= /* MinEnsured$requestIdleCallback */ 47)
-      && !(btypes & BrowserType.Edge)) {
-    toRemovedGlobal += "requestIdleCallback|";
-  }
-  if (!(btypes & ~BrowserType.Chrome) && minCVer >= /* MinEnsured$visualViewport$ */ 61) {
+  if (!(btypes & BrowserType.Chrome && minCVer < /* MinEnsured$visualViewport$ */ 61
+        || btypes & BrowserType.Edge)) {
     toRemovedGlobal += "visualViewport|";
   }
-  if (!(btypes & BrowserType.Chrome && minCVer < /* BrowserVer.MinEnsured$WeakRef */ 82
+  if (!(btypes & BrowserType.Chrome && minCVer < /* Min$queueMicrotask */ 71 || btypes & BrowserType.Edge)) {
+    toRemovedGlobal += "queueMicrotask|";
+  }
+  if (!(btypes & BrowserType.Chrome && minCVer < /* BrowserVer.MinEnsured$WeakRef */ 92
         || btypes & BrowserType.Firefox)) {
     toRemovedGlobal += "WeakRef|";
   }
@@ -643,7 +647,7 @@ exports.skip_declaring_known_globals = (btypes, minCVer, get_code) =>{
     const re = new RegExp(`(const|let|var|,)\\s?(${toRemovedGlobal})[,;]\n?\n?`, "g")
     let n = 0, remove = str => str[0] === "," ? str.slice(-1) : str.slice(-1) === "," ? str.split(/\s/)[0] + " " : "";
     const contents = get_code()
-    let s1 = contents.slice(0, 1000);
+    let s1 = contents.slice(0, 2000)
     for (; ; n++) {
       let s2 = s1.replace(re, remove);
       if (s2.length === s1.length) {
@@ -652,7 +656,7 @@ exports.skip_declaring_known_globals = (btypes, minCVer, get_code) =>{
       s1 = s2;
     }
     if (n > 0) {
-      return s1 + contents.slice(1000)
+      return s1 + contents.slice(2000)
     }
   }
   return null

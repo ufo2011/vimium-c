@@ -1,6 +1,7 @@
 import {
-  blank_, set_sync_, sync_, set_restoreSettings_, OnChrome, OnEdge, updateHooks_, storageCache_,
-  hasEmptyLocalStorage_, set_updateToLocal_, updateToLocal_, settingsCache_, installation_, set_installation_
+  blank_, set_sync_, sync_, set_restoreSettings_, OnChrome, OnEdge, updateHooks_, storageCache_, CurCVer_, CurFFVer_,
+  hasEmptyLocalStorage_, set_updateToLocal_, updateToLocal_, settingsCache_, installation_, set_installation_, OnSafari,
+  OnFirefox
 } from "./store"
 import * as BgUtils_ from "./utils"
 import { browser_, runtimeError_ } from "./browser"
@@ -16,7 +17,8 @@ type MultiLineSerialized = Dict<SerializationMetaData | string> & {
     [key in keyof SettingsToUpdate]: SerializationMetaData }
 type StorageChange = chrome.storage.StorageChange
 
-const doNotSync: PartialTypedSafeEnum<SettingsToSync> = BgUtils_.safer_({
+const doNotSync: PartialTypedSafeEnum<SettingsToSync> & { readonly [key in SettingsNS.LocalSettingNames]?: 1 } =
+    BgUtils_.safer_({
   // Note(gdh1995): need to keep synced with pages/options_ext.ts#_importSettings
   findModeRawQueryList: 1, innerCSS: 1, keyboard: 1, newTabUrl_f: 1
   , vomnibarPage_f: 1
@@ -41,7 +43,8 @@ const HandleSyncAreaUpdate = (changes: EnsuredDict<StorageChange>): void => {
 }
 
 const HandleStorageUpdate = (changes: EnsuredDict<StorageChange>, area: string | FakeArg): void => {
-  if (area !== "sync") { return }
+  if (!(OnChrome && Build.MinCVer >= BrowserVer.Min$StorageArea$$onChanged
+        || OnFirefox && Build.MinFFVer >= FirefoxBrowserVer.Min$StorageArea$$onChanged) && area !== "sync") { return }
   const waitAndUpdate = (items: Dict<any>): void => {
     if (changes_to_merge) {
       BgUtils_.safer_(items)
@@ -85,12 +88,13 @@ const log: (... _: any[]) => void = console.log.bind(console, "[%s]", { toString
 const storeAndPropagate = (key: string, value: any, map?: Dict<any>): void | 8 => {
   const serialized = value && typeof value === "object"
       && (value as Partial<SerializationMetaData | SingleSerialized>).$_serialize || ""
+  let tmpStr: string | undefined
   if (!(key in settings_.defaults_) || !shouldSyncKey(key)) {
     const toUpgrade = serialized || !settings_.needToUpgradeSettings_ ? -1
         : (settings_.kSettingsToUpgrade_ as string[]).indexOf(key)
-    if (toUpgrade >= 0 && storageCache_.get(key as (typeof settings_.kSettingsToUpgrade_)[0])
-          !== (value !== null ? value + "" : void 0)) {
-      settings_.setInLocal_(key as (typeof settings_.kSettingsToUpgrade_)[0], value !== void 0 ? value + "" : null)
+    if (toUpgrade >= 0 && (tmpStr = storageCache_.get(key as (typeof settings_.kSettingsToUpgrade_)[0])
+          , tmpStr != null ? tmpStr + "" : null) !== (value != null ? value + "" : null)) {
+      settings_.setInLocal_(key as (typeof settings_.kSettingsToUpgrade_)[0], value != null ? value : null)
       settings_.reloadFromLegacy_(toUpgrade)
     }
     return
@@ -132,6 +136,9 @@ const storeAndPropagate = (key: string, value: any, map?: Dict<any>): void | 8 =
 
 const setAndPost = (key: keyof SettingsToSync, value: any): void => {
   keyInDownloading = key
+  if (key === "keyLayout") {
+    value = (value & ~kKeyLayout.inPrivResistFp_ff) | (settingsCache_[key] & kKeyLayout.inPrivResistFp_ff)
+  }
   settings_.set_(key, value) // eslint-disable-line @typescript-eslint/no-unsafe-argument
   keyInDownloading = ""
   if (key in settings_.valuesToLoad_) {
@@ -150,6 +157,9 @@ const TrySet = <K extends SettingsNS.LocalSettingNames | keyof SettingsToSync> (
     to_update = BgUtils_.safeObj_() as SettingsToUpdate
   }
   if (type === 1) {
+    if (key === "keyLayout") {
+      (value as SettingsToSync["keyLayout"]) = (value as SettingsToSync["keyLayout"]) & ~kKeyLayout.inPrivResistFp_ff
+    }
     (to_update as Generalized<SettingsToUpdate>)[key as keyof SettingsToSync] = value
   } else {
     (toCleanDuringUpgrade || (toCleanDuringUpgrade = [])).push(key as SettingsNS.LocalSettingNames)
@@ -263,7 +273,7 @@ const serialize = (key: keyof SettingsToUpdate, value: boolean | string | number
     delta = 0
     if (hasEncoder) {
       // find a boundary of char points
-      for (; pos < end && ((encoded as Uint8Array)[pos] & 0xc0) === 0x80; pos--) { /* empty */ }
+      for (; pos < end && ((encoded as Uint8Array)[pos] & 0xc0) === 0x80; pos++) { /* empty */ }
       part = textDecoder!.decode((encoded as Uint8Array).subarray(start, pos))
     } else {
       part = (encoded as string).slice(start, pos)
@@ -432,11 +442,17 @@ const beginToRestore = (items: LocalSettings, resolve: () => void): void => {
 
 updateHooks_.vimSync = (value): void => {
   if (!storage()) { return }
-  const areaOnChanged_cr = OnChrome && Build.MinCVer >= BrowserVer.Min$StorageArea$$onChanged
+  const areaOnChanged = (OnChrome
+      ? Build.MinCVer >= BrowserVer.Min$StorageArea$$onChanged || CurCVer_ > BrowserVer.Min$StorageArea$$onChanged - 1
+      : OnFirefox ? (Build.MinFFVer >= FirefoxBrowserVer.Min$StorageArea$$onChanged
+          || CurFFVer_ > FirefoxBrowserVer.Min$StorageArea$$onChanged - 1)
+      : OnSafari && storage().onChanged)
       ? storage().onChanged! : OnChrome ? storage().onChanged : null
-  const event = OnChrome && Build.MinCVer >= BrowserVer.Min$StorageArea$$onChanged
-      ? areaOnChanged_cr! : OnChrome && areaOnChanged_cr || browserStorage_.onChanged
-  const listener = OnChrome && (Build.MinCVer >= BrowserVer.Min$StorageArea$$onChanged || areaOnChanged_cr)
+  const event = (OnChrome && Build.MinCVer >= BrowserVer.Min$StorageArea$$onChanged
+      || OnFirefox && Build.MinFFVer >= FirefoxBrowserVer.Min$StorageArea$$onChanged)
+      ? areaOnChanged! : areaOnChanged || browserStorage_.onChanged
+  const listener = !(OnChrome && Build.MinCVer >= BrowserVer.Min$StorageArea$$onChanged
+      || OnFirefox && Build.MinFFVer >= FirefoxBrowserVer.Min$StorageArea$$onChanged) && areaOnChanged
       ? HandleSyncAreaUpdate : HandleStorageUpdate
   if (!value) {
     event.removeListener(listener)
@@ -460,10 +476,12 @@ void settings_.ready_.then((): void => {
       set_updateToLocal_(doUpdate ? null : updateLegacyToLocal!)
       doUpdate && updateLegacyToLocal!(6000)
     }
-    set_installation_(null)
+    Build.MV3 || "showActionIcon" in updateHooks_ ? set_installation_(null)
+        : setTimeout((): void => { set_installation_(null) }, 1000)
   } else if (installation_) { // on startup
     innerRestoreSettings = installation_.then((reason): boolean => {
-      set_installation_(null)
+      Build.MV3 || "showActionIcon" in updateHooks_ ? set_installation_(null)
+          : setTimeout((): void => { set_installation_(null) }, 1000)
       return !!reason && reason.reason === "install"
     }).then((installed): Promise<void> => new Promise((r): void => {
       storage() ? storage().get((items): void => {

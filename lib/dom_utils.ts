@@ -1,10 +1,11 @@
 import {
   chromeVer_, doc, createRegExp, isTY, Lower, OBJECT_TYPES, OnFirefox, OnChrome, OnEdge, evenHidden_, safeCall, deref_,
-  loc_, VTr, tryCreateRegExp
+  loc_, VTr, tryCreateRegExp, isTop, queueTask_, set_findOptByHost, splitEntries_, kNextTarget
 } from "./utils"
-import { dimSize_, selRange_ } from "./rect"
+import { dimSize_, Point2D, selRange_ } from "./rect"
 
 export declare const enum kMediaTag { img = 0, otherMedias = 1, a = 2, others = 3, MIN_NOT_MEDIA_EL = 2, LAST = 3 }
+export declare const enum kDispatch { event = 0, clickFn = 1, focusFn = 2, _mask = "" }
 interface kNodeToType {
   [kNode.TEXT_NODE]: Text
   [kNode.ELEMENT_NODE]: Element
@@ -13,21 +14,22 @@ interface kNodeToType {
 }
 
 export const DAC = "DOMActivate", MDW = "mousedown", CLK = "click", HDN = "hidden", NONE = "none"
-export const INP = "input", BU = "blur", ALA = "aria-label", UNL = "unload"
+export const INP = "input", BU = "blur", ALA = "aria-label", PGH = "pagehide"
 export const kDir = ["backward", "forward"] as const, kGCh = "character"
-export const AriaArray = ["aria-hidden", "aria-disabled", "aria-haspopup"] as const
+export const AriaArray = ["aria-hidden", "aria-disabled", "aria-haspopup", "aria-readonly"] as const
 
 //#region data and DOM-shortcut section
 
-let unsafeFramesetTag_old_cr_: "frameset" | "" | null =
-    OnChrome && Build.MinCVer < BrowserVer.MinFramesetHasNoNamedGetter ? "" : 0 as never as null
+let unsafeFramesetTag_old_cr_: "frameset" | 0 = 0
 let docSelectable_ = true
+let _cssChecker: HTMLParagraphElement | undefined
 
 export { unsafeFramesetTag_old_cr_, docSelectable_ }
 export function markFramesetTagUnsafe_old_cr (): "frameset" { return unsafeFramesetTag_old_cr_ = "frameset" }
 export function set_docSelectable_ (_newDocSelectable: boolean): void { docSelectable_ = _newDocSelectable }
 
 export const ElementProto_not_ff = !OnFirefox ? Element.prototype as SafeElement : 0 as never as null
+export const HTMLElementProto = OnEdge ? null : HTMLElement.prototype as SafeHTMLElement
 
 export const getComputedStyle_: (element: Element) => CSSStyleDeclaration =
     Build.Inline ? getComputedStyle : el => getComputedStyle(el)
@@ -57,18 +59,21 @@ export const querySelectorAll_unsafe_ = ((selector: string, scope?: Element | Sh
   (selector: string, scope?: Element | ShadowRoot | null, isScopeAnElementOrNull?: 0): NodeListOf<Element> | void
 }
 
-export const testMatch = (selector: string, hint: Hint0): boolean => {
+export const testMatch = (selector: string, element: SafeElement): boolean => {
   return OnChrome && Build.MinCVer < BrowserVer.Min$Element$$matches && chromeVer_ < BrowserVer.Min$Element$$matches
-      ? hint[0].webkitMatchesSelector(selector) : hint[0].matches!(selector)
+      ? element.webkitMatchesSelector(selector) : element.matches!(selector)
 }
 
-export const isIFrameElement = (el: Element): el is KnownIFrameElement => {
+export const isIFrameElement = <T extends BOOL = 0>(el: Element, alsoFenced?: T
+    ): el is (T extends 1 ? KnownIFrameElement : AccessableIFrameElement) => {
   const tag = el.localName
-  return (tag === "iframe" || tag === "frame") && hasTag_(tag, el)
+  return (tag === "iframe" || tag === "frame" || tag === "fencedframe" && alsoFenced === 1) && hasTag_(tag, el)
 }
 
 export const isNode_ = <T extends keyof kNodeToType> (node: Node, typeId: T): node is kNodeToType[T] => {
-  return node.nodeType === typeId
+  const type = node.nodeType
+  return Build.BTypes === BrowserType.Firefox as number ? type === typeId
+      : type === typeId || typeId === kNode.ELEMENT_NODE && isTY(type, kTY.obj)
 }
 
 export const rangeCount_ = (sel: Selection): number => sel.rangeCount
@@ -78,7 +83,7 @@ export const contains_s = (par: SafeElement, child: Node): boolean =>
 
 export const attr_s = (el: SafeElement, attr: string): string | null => el.getAttribute(attr)
 
-export const selOffset_ = (sel: Selection, focus?: 1): number => focus ? sel.focusOffset : sel.anchorOffset
+export const selOffset_ = (sel: Selection, focus?: BOOL): number => focus ? sel.focusOffset : sel.anchorOffset
 
 export const textOffset_ = (el: TextElement, dir?: VisualModeNS.ForwardDir | boolean): number | null =>
     dir ? el.selectionEnd! : el.selectionStart!
@@ -88,7 +93,8 @@ export const doesSupportDialog = (): boolean => typeof HTMLDialogElement == OBJE
 export const parentNode_unsafe_s = (el: SafeElement | Text
     ): Element | Document | DocumentFragment | null => el.parentNode as any
 
-export const docHasFocus_ = (): boolean => doc.hasFocus()
+export const docHasFocus_ = (): boolean => OnChrome && Build.MinCVer < BrowserVer.MinDocument$hasFocus
+    && !doc.hasFocus ? true : doc.hasFocus()
 
 //#endregion
 
@@ -116,7 +122,7 @@ export const hasTag_ = <Tag extends keyof HTMLElementTagNameMap> (htmlTag: Tag
     , el: Element | HTMLElement): el is HTMLElementTagNameMap[Tag] => el.localName === htmlTag && "lang" in el
 
 export const supportInert_ = !OnChrome || Build.MinCVer < BrowserVer.MinEnsured$HTMLElement$$inert ? (): boolean => {
-  return OnEdge ? false : isHTML_() && "inert" in HTMLElement.prototype
+  return OnEdge ? false : isHTML_() && "inert" in HTMLElementProto!
 } : 0 as never as null
 
 export const isInTouchMode_cr_ = OnChrome ? (): boolean => {
@@ -136,17 +142,17 @@ const _getter_unsafeOnly_not_ff_ = !OnFirefox ? function <Ty extends Node, Key e
     return desc && desc.get ? desc.get.call(instance) : null;
 } : 0 as never as null
 
-export const notSafe_not_ff_ = !OnFirefox ? (el: Element): el is HTMLFormElement => {
+export const isSafeEl_ = !OnFirefox ? (el: Element): el is SafeElement => {
   let s: Element["localName"]
-  return typeof (s = el.localName) !== "string" ||
+  return typeof (s = el.localName) === "string" &&
       (!OnChrome || Build.MinCVer >= BrowserVer.MinFramesetHasNoNamedGetter
-        ? s === "form" : s === "form" || s === unsafeFramesetTag_old_cr_)
-} : 0 as never as null
+        ? s !== "form" : s !== "form" && s !== unsafeFramesetTag_old_cr_)
+} : (() => true) as never
 
   /** @safe_even_if_any_overridden_property */
 export const SafeEl_not_ff_ = !OnFirefox ? function (
       el: Element | undefined | null, type?: PNType.DirectElement | undefined): Node | undefined | null {
-  return el && notSafe_not_ff_!(el)
+  return el && !isSafeEl_(el)
     ? SafeEl_not_ff_!(GetParent_unsafe_(el, type || PNType.RevealSlotAndGotoParent), type) : el
 } as {
   (el: SafeElement | null, type?: any): unknown
@@ -154,53 +160,67 @@ export const SafeEl_not_ff_ = !OnFirefox ? function (
   (el: Element | null | void, type?: PNType.DirectElement): SafeElement | null | undefined
 } : 0 as never as null
 
-export const GetShadowRoot_ = (el: Element, noClosed_cr?: 1): ShadowRoot | null => {
+export const TryGetShadowRoot_ = (el: Element, noClosed_cr?: BOOL): ShadowRoot | null =>
+    htmlTag_<1>(el) ? Build.BTypes & BrowserType.Chrome ? GetShadowRoot_(el, noClosed_cr) : GetShadowRoot_(el) : null
+
+export const GetShadowRoot_ = ((el: HTMLElement, noClosed_cr?: BOOL
+      ): ShadowRoot | Element | RadioNodeList | Window | null => {
+    let sr: Element["shadowRoot"] | Element["webkitShadowRoot"]
     if (OnFirefox) {
       return Build.MinFFVer >= FirefoxBrowserVer.MinEnsuredShadowDOMV1
           ? (el as any).openOrClosedShadowRoot : (el as any).openOrClosedShadowRoot || null
     }
-    if (OnChrome && !noClosed_cr) {
-      if ((Build.MinCVer >= BrowserVer.Min$dom$$openOrClosedShadowRoot
+    if (OnChrome && noClosed_cr !== 1 && (Build.MinCVer >= BrowserVer.Min$dom$$openOrClosedShadowRoot
           || chromeVer_ > BrowserVer.Min$dom$$openOrClosedShadowRoot - 1)) {
-        return (chrome as any).dom.openOrClosedShadowRoot(el)
-      }
+      return chrome.dom.openOrClosedShadowRoot!(el)
     }
     // Note: .webkitShadowRoot and .shadowRoot share a same object
-    const sr = OnChrome && Build.MinCVer < BrowserVer.MinEnsuredUnprefixedShadowDOMV0
+    sr = OnChrome && Build.MinCVer < BrowserVer.MinEnsuredUnprefixedShadowDOMV0
         && chromeVer_ < BrowserVer.MinEnsuredUnprefixedShadowDOMV0 ? el.webkitShadowRoot : el.shadowRoot;
     // according to https://developer.mozilla.org/en-US/docs/Web/API/Element/attachShadow,
     // <form> and <frameset> can not have shadowRoot
-    return OnChrome && Build.MinCVer >= BrowserVer.MinShadowDOMV0
-      ? sr && notSafe_not_ff_!(el) ? null : sr as Exclude<typeof sr, undefined | Element | RadioNodeList | Window>
-      : sr && !notSafe_not_ff_!(el) && <Exclude<typeof sr, Element | RadioNodeList | Window>> sr || null;
+  return !(Build.BTypes & BrowserType.Edge)
+      && (!(Build.BTypes & BrowserType.Chrome) || Build.MinCVer >= BrowserVer.MinEnsuredUnprefixedShadowDOMV0)
+      && (!(Build.BTypes & BrowserType.Firefox) || Build.MinFFVer >= FirefoxBrowserVer.MinEnsuredShadowDOMV1)
+      ? sr as Exclude<typeof sr, undefined> : sr !== undefined ? sr : null
+}) as {
+  (el: SafeHTMLElement, noClosed_cr?: BOOL): ShadowRoot | null
+  (el: HTMLElement, noClosed_cr?: BOOL): ShadowRoot | Element | RadioNodeList | Window | null
 }
 
-export const GetChildNodes_not_ff = !OnFirefox ? (el: Element): NodeList => {
-  if (!OnChrome || Build.MinCVer >= BrowserVer.MinParentNodeGetterInNodePrototype) {
-    return notSafe_not_ff_!(el) ? _getter_unsafeOnly_not_ff_!(Node, el, "childNodes")! : el.childNodes as NodeList
-  } else {
-    let cn = el.childNodes
-    return !notSafe_not_ff_!(el) || cn instanceof NodeList && !("value" in cn) ? cn as NodeList
-        : _getter_unsafeOnly_not_ff_!(Node, el, "childNodes") || <NodeList> <{[index: number]: Node}> []
+// offset: 0: anchor, 1: focus; >= 2: directly use (offset - 2)
+export const getNodeChild_ = (node: Node, sel: Selection, offset?: number): Node | void => {
+  const type = node.nodeType
+  let childNodes: NodeList
+  if (type === kNode.ELEMENT_NODE || type === kNode.DOCUMENT_FRAGMENT_NODE || !OnFirefox && isTY(type, kTY.obj)) {
+    if (!(Build.BTypes & BrowserType.Chrome) || Build.MinCVer >= BrowserVer.MinParentNodeGetterInNodePrototype) {
+      childNodes = type === kNode.DOCUMENT_FRAGMENT_NODE || isSafeEl_(node as Element)
+          ? node.childNodes as NodeList : _getter_unsafeOnly_not_ff_!(Node, node, "childNodes")!
+    } else {
+      childNodes = node.childNodes as unknown as NodeList
+      childNodes = type === kNode.DOCUMENT_FRAGMENT_NODE || isSafeEl_(node as Element)
+          || childNodes instanceof NodeList && !("value" in childNodes) ? childNodes
+          : _getter_unsafeOnly_not_ff_!(Node, node, "childNodes") || <NodeList> <{[index: number]: Node}> []
+    }
+    return childNodes[offset! > 1 ? offset! - 2 : selOffset_(sel, offset as 1 | 0 | undefined)]
   }
-} : 0 as never as null
+}
 
 /** Try its best to find a real parent */
 export const GetParent_unsafe_ = function (el: Node | Element
     , type: PNType.DirectNode | PNType.DirectElement | PNType.RevealSlot | PNType.RevealSlotAndGotoParent
     ): Node | null {
   /** Chrome: a selection / range can only know nodes and text in a same tree scope */
-  if (!OnEdge && type >= PNType.RevealSlot) {
+  if (!OnEdge && type > PNType.RevealSlot - 1) {
       if (OnChrome && Build.MinCVer < BrowserVer.MinNoShadowDOMv0 && chromeVer_ < BrowserVer.MinNoShadowDOMv0) {
         const func = ElementProto_not_ff!.getDestinationInsertionPoints,
         arr = func ? func.call(el) : [], len = arr.length;
         len > 0 && (el = arr[len - 1]);
       }
       let slot = (el as Element).assignedSlot;
-      !OnFirefox && slot && notSafe_not_ff_!(el as Element) &&
-      (slot = _getter_unsafeOnly_not_ff_!(Element, el as Element, "assignedSlot"));
+      slot && !isSafeEl_(el as Element) && (slot = _getter_unsafeOnly_not_ff_!(Element, el as Element, "assignedSlot"))
       if (slot) {
-        if (type === PNType.RevealSlot) { return slot; }
+        if (type < PNType.RevealSlot + 1) { return slot; }
         while (slot = slot.assignedSlot) { el = slot; }
       }
   }
@@ -211,14 +231,14 @@ export const GetParent_unsafe_ = function (el: Node | Element
   // may be `frameset,form` with pn or pe overridden; <frameset>.parentNode may be a connected shadowRoot
   if (!OnFirefox) {
     pn = (!OnChrome || Build.MinCVer >= BrowserVer.MinFramesetHasNoNamedGetter
-          || !unsafeFramesetTag_old_cr_ || (pn as ParentNodeProp as WindowWithTop).top !== top)
+          || unsafeFramesetTag_old_cr_ === 0 || (pn as ParentNodeProp as WindowWithTop).top !== top)
         && (nodeTy = pn.nodeType) && (nodeTy === kNode.DOCUMENT_FRAGMENT_NODE || nodeTy === kNode.DOCUMENT_NODE
             || nodeTy && doc.contains.call(pn, el)) ? pn
         : !OnChrome || Build.MinCVer >= BrowserVer.MinParentNodeGetterInNodePrototype
           || chromeVer_ > BrowserVer.MinParentNodeGetterInNodePrototype - 1
         ? _getter_unsafeOnly_not_ff_!(Node, el, "parentNode")
         : (Build.MinCVer < BrowserVer.MinFramesetHasNoNamedGetter
-          ? pe && (!unsafeFramesetTag_old_cr_ || (pe as ParentNodeProp as WindowWithTop).top !== top) : pe)
+          ? pe && (unsafeFramesetTag_old_cr_ === 0 || (pe as ParentNodeProp as WindowWithTop).top !== top) : pe)
         && pe!.nodeType && doc.contains.call(pe as Element, el) ? (type = PNType.DirectNode, pe)
         : el === doc.body ? docEl_unsafe_() : null
   }
@@ -253,10 +273,12 @@ export const getRootNode_mounted = ((el: Node): Node => {
 
 export const scrollingEl_ = (fallback?: 1): SafeElement | null => {
     // Both C73 and FF66 still supports the Quirk mode (entered by `doc.open()`)
-    let el = doc.scrollingElement, docEl = docEl_unsafe_();
     if (OnFirefox) {
-      return el || !fallback ? el as SafeElement | null : docEl as SafeElement | null;
+      return doc.scrollingElement as SafeElement | null
+          || (fallback && !doc.body ? docEl_unsafe_() as SafeElement | null : null)
     }
+    const docEl = docEl_unsafe_(), body = doc.body
+    let el = doc.scrollingElement
     if (OnChrome && Build.MinCVer < BrowserVer.Min$Document$$ScrollingElement
         && el === void 0) {
       /**
@@ -265,8 +287,8 @@ export const scrollingEl_ = (fallback?: 1): SafeElement | null => {
        * while the flag is hidden on Chrome 34~43 (32-bits) for Windows (34.0.1751.0 is on 2014-04-07).
        * But the flag is under the control of #enable-experimental-web-platform-features
        */
-      let body = doc.body;
-      el = doc.compatMode === "BackCompat" || body && (scrollY ? dimSize_(body as SafeElement, kDim.positionY)
+      el = doc.compatMode === "BackCompat" || body && isSafeEl_(body)
+        && (scrollY ? dimSize_(body as SafeElement, kDim.positionY)
             : dimSize_(docEl as SafeElement, kDim.scrollW) <= dimSize_(body as SafeElement, kDim.scrollH))
         ? body : body ? docEl : null;
       // If not fallback, then the task is to get an exact one in order to use `scEl.scrollHeight`,
@@ -274,8 +296,8 @@ export const scrollingEl_ = (fallback?: 1): SafeElement | null => {
       //   when it's real scroll height is not larger than innerHeight
     }
     // here `el` may be `:root, :root > body, :root > frameset` or `null`
-    return el && !notSafe_not_ff_!(el) ? el as SafeElement
-        : fallback && docEl && !notSafe_not_ff_!(docEl) ? docEl as SafeElement
+    return el && isSafeEl_(el) ? el as SafeElement
+        : fallback && docEl && (el || !body) && isSafeEl_(docEl) ? docEl as SafeElement
         : null
 }
 
@@ -305,7 +327,7 @@ export const compareDocumentPosition = (anchorNode: Node, focusNode: Node): kNod
     !OnFirefox ? Node.prototype.compareDocumentPosition.call(anchorNode, focusNode)
     : anchorNode.compareDocumentPosition(focusNode)
 
-export const getAccessibleSelectedNode = (sel: Selection, focused?: 1): Node | null => {
+export const getAccessibleSelectedNode = (sel: Selection, focused?: BOOL): Node | null => {
   let node = focused ? sel.focusNode : sel.anchorNode
   if (OnFirefox) {
     try {
@@ -315,7 +337,7 @@ export const getAccessibleSelectedNode = (sel: Selection, focused?: 1): Node | n
   return node
 }
 
-export const getEventPath = (event: Event) => {
+export const getEventPath = (event: Event): EventPath | undefined => {
   return !OnEdge && (!OnChrome
         || Build.MinCVer >= BrowserVer.Min$Event$$composedPath$ExistAndIncludeWindowAndElementsIfListenedOnWindow
         || chromeVer_ > BrowserVer.Min$Event$$composedPath$ExistAndIncludeWindowAndElementsIfListenedOnWindow - 1
@@ -326,13 +348,13 @@ export const getEventPath = (event: Event) => {
 
 //#region computation section
 
-export const derefInDoc_ = ((val: WeakRef<SafeElement> | SafeElement | null | undefined
-    ): SafeElement | null | undefined => {
+export const derefInDoc_ = ((val: WeakRef<SafeElement> | SafeElement | null | undefined): SafeElement | null => {
   val = deref_(val as WeakRef<SafeElement> | null | undefined)
-  return val && IsInDOM_(val, doc) ? val : null
-}) as <T extends SafeElement> (val: WeakRef<T> | T | null | undefined) => T | null | undefined
+  return val && IsAInB_(val, doc) ? val : null
+}) as <T extends SafeElement> (val: WeakRef<T> | T | null | undefined) => T | null
 
-export const queryChildByTag_ = (parent: SafeElement, childTag: "summary" | "div" | "ul"): SafeHTMLElement | null => {
+export const queryHTMLChild_ = (
+      parent: SafeElement, childTag: "summary" | "div" | "ul" | "input"): SafeHTMLElement | null => {
     // not query `:scope>summary` for more consistent performance
     // Specification: https://html.spec.whatwg.org/multipage/interactive-elements.html#the-summary-element
     // `HTMLDetailsElement::FindMainSummary()` in
@@ -360,7 +382,7 @@ export const findAnchor_ = ((element: Element | null): SafeHTMLElement | null =>
   return element as SafeHTMLElement
 }) as (element: SafeElement) => SafeHTMLElement & HTMLAnchorElement | null
 
-export const IsInDOM_ = function (element: Element, root?: Element | Document | null
+export const IsAInB_ = function (element: Element, root?: Element | Document | null
       , checkMouseEnter?: 1): boolean {
     if (!root || isNode_(root as Element | Document, kNode.DOCUMENT_NODE)) {
       const isConnected = element.isConnected; /** {@link #BrowserVer.Min$Node$$isConnected} */
@@ -389,6 +411,7 @@ export const IsInDOM_ = function (element: Element, root?: Element | Document | 
     return (pe || GetParent_unsafe_(element, PNType.DirectNode)) === root;
 } as {
   (element: SafeElement, maybeRoot: Element, checkMouseEnter: 1): boolean
+  (element: SafeElement): element is SafeElement & EnsuredMountedElement
   (element: SafeElement, maybeRoot?: Element | Document): boolean
 }
 
@@ -400,9 +423,10 @@ export const isStyleVisible_ = (element: Element): boolean => isRawStyleVisible(
 export const isRawStyleVisible = (style: CSSStyleDeclaration): boolean => style.visibility === "visible"
 
 export const isAriaFalse_ = (element: SafeElement, ariaType: kAria): boolean => {
-    let s = !(Build.BTypes & ~BrowserType.Safari) || !(Build.BTypes & ~(BrowserType.Chrome | BrowserType.Safari))
-        && Build.MinCVer >= BrowserVer.MinCorrectAriaSelected ? ariaType > kAria.disabled ? element.ariaHasPopup
-        : ariaType < kAria.disabled ? element.ariaHidden : element.ariaDisabled as string | null
+    let s = Build.BTypes === BrowserType.Safari as number|| !(Build.BTypes & ~(BrowserType.Chrome | BrowserType.Safari))
+        && Build.MinCVer >= BrowserVer.MinCorrectAriaSelected
+        ? ariaType > kAria.disabled ? ariaType > kAria.hasPopup ? element.ariaReadOnly : element.ariaHasPopup
+          : ariaType < kAria.disabled ? element.ariaHidden : element.ariaDisabled as string | null
         : element.getAttribute(AriaArray[ariaType])
     return s === null || (!!s && Lower(s) === "false") || !!(evenHidden_ & (kHidden.BASE_ARIA << ariaType))
 }
@@ -433,16 +457,16 @@ export const deepActiveEl_unsafe_ = (alsoBody?: 1): Element | null => {
   let el: Element | null | undefined = activeEl_unsafe_()
   let active: Element | null | undefined = alsoBody && (el || docEl_unsafe_()), shadowRoot: ShadowRoot | null
   if (el !== doc.body && el !== docEl_unsafe_()) {
-    while (el && (shadowRoot = GetShadowRoot_(active = el))) {
+    while (el && (shadowRoot = TryGetShadowRoot_(active = el))) {
       el = shadowRoot.activeElement
     }
   }
   return active || null
 }
 
-export const uneditableInputs_: ReadonlySafeDict<1 | 2> = { __proto__: null as never,
-    button: 2, checkbox: 1, color: 1, file: 1, hidden: 1, //
-    image: 2, radio: 1, range: 1, reset: 1, submit: 1
+export const uneditableInputs_: ReadonlySafeDict<1 | 2 | 3 | 4> = { __proto__: null as never,
+    button: 2, checkbox: 3, color: 4, file: 1, hidden: 1, //
+    image: 2, radio: 3, range: 1, reset: 1, submit: 1
 }
 
 export const editableTypes_: SafeObject & { readonly [localName in ""]?: undefined } & {
@@ -450,7 +474,7 @@ export const editableTypes_: SafeObject & { readonly [localName in ""]?: undefin
 } & {
   readonly [localName in keyof HTMLElementTagNameMap]?: EditableType | undefined
 } = { __proto__: null as never,
-    input: EditableType.input_, textarea: EditableType.TextBox,
+    input: EditableType.Input, textarea: EditableType.TextArea,
     select: EditableType.Select,
     embed: EditableType.Embed, object: EditableType.Embed
 }
@@ -461,11 +485,10 @@ export const editableTypes_: SafeObject & { readonly [localName in ""]?: undefin
    */
 export const getEditableType_ = function (element: Element): EditableType {
     const tag = htmlTag_(element), ty = editableTypes_[tag];
-    return !tag ? EditableType.NotEditable : ty !== EditableType.input_ ? (ty ||
+    return !tag ? EditableType.NotEditable : ty !== EditableType.Input ? (ty ||
         ((element as HTMLElement).isContentEditable !== true
-        ? EditableType.NotEditable : EditableType.TextBox)
-      )
-      : uneditableInputs_[(element as HTMLInputElement).type] ? EditableType.NotEditable : EditableType.TextBox
+          ? EditableType.NotEditable : EditableType.ContentEditable))
+      : uneditableInputs_[(element as HTMLInputElement).type] ? EditableType.NotEditable : EditableType.Input
 } as {
     (element: Element): element is LockableElement;
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -480,9 +503,7 @@ export const isSelected_ = (): boolean => {
     return !node || !element ? false
       : (element as TypeToAssert<Element, HTMLElement, "isContentEditable">).isContentEditable === true
       ? OnFirefox ? contains_s(element as SafeElement, node) : doc.contains.call(element, node)
-      : element === node || !!(node as NodeToElement).tagName
-        && element === (!OnFirefox ? GetChildNodes_not_ff!(node as Element)
-            : node.childNodes as NodeList)[selOffset_(sel)]
+      : element === node || element === getNodeChild_(node, sel)
 }
 
 /** return `right` in case of unknown cases */
@@ -498,19 +519,16 @@ export const getDirectionOfNormalSelection = (sel: Selection, anc: Node | null, 
 
 export const getSelectionFocusEdge_ = (sel: Selection
       , knownDi?: VisualModeNS.ForwardDir | VisualModeNS.kDir.unknown): SafeElement | null => {
-    let el = rangeCount_(sel) && getAccessibleSelectedNode(sel, 1), nt: Node["nodeType"], o: Node | null | 0 = el
+    let el = rangeCount_(sel) && getAccessibleSelectedNode(sel, 1), o: Node | 0 | null | void
     if (!el) { return null; }
     const anc = getAccessibleSelectedNode(sel)
     knownDi = knownDi != null ? knownDi : getDirectionOfNormalSelection(sel, anc, el)
-    if ((el as NodeToElement).tagName) {
-      o = (OnFirefox ? el.childNodes as NodeList : GetChildNodes_not_ff!(el as Element))[selOffset_(sel, 1)]
-    } else {
+    o = getNodeChild_(el, sel, 1)
+    if (!o) {
+      o = el
       el = GetParent_unsafe_(el as Element | Text, PNType.ResolveShadowHost)
     }
-    for (; o && (!OnChrome || Build.MinCVer >= BrowserVer.MinFramesetHasNoNamedGetter
-          ? <number> <Element | RadioNodeList | kNode> o.nodeType - kNode.ELEMENT_NODE
-          : isTY(nt = o.nodeType, kTY.num) && nt - kNode.ELEMENT_NODE)
-        ; o = knownDi ? o.previousSibling : o.nextSibling) { /* empty */ }
+    for (; o && !isNode_(o, kNode.ELEMENT_NODE); o = knownDi ? o.previousSibling : o.nextSibling) { /* empty */ }
     if (o && anc) {
       const num = compareDocumentPosition(anc, o)
       if (!(num & (kNode.DOCUMENT_POSITION_CONTAINS | kNode.DOCUMENT_POSITION_CONTAINED_BY))
@@ -526,17 +544,15 @@ export const getSelectionFocusEdge_ = (sel: Selection
 
 /** may skip a `<form> having <input name="nodeType">` */
 export const singleSelectionElement_unsafe = (sel: Selection): Element | null => {
-  let el: Node | null | false | "" | undefined = getAccessibleSelectedNode(sel), offset: number
-  el = el && (el as NodeToElement).tagName && el === getAccessibleSelectedNode(sel, 1)
-      && (offset = selOffset_(sel)) === selOffset_(sel, 1)
-      && (OnFirefox ? el.childNodes as NodeList : GetChildNodes_not_ff!(el as Element))[offset]
-  return el && isNode_(el, kNode.ELEMENT_NODE) ? el : null
+  const anchor: Node | null | false | "" | undefined = getAccessibleSelectedNode(sel)
+  const child = anchor && getNodeChild_(anchor, sel)
+  return child && anchor === getAccessibleSelectedNode(sel, 1)
+      && selOffset_(sel) === selOffset_(sel, 1) && isNode_(child, kNode.ELEMENT_NODE) ? child : null
 }
 
 export const getElDesc_ = (el: Element | null): FgReq[kFgReq.respondForRunKey]["e"] =>
     // if el is SVGElement, then el.className is SVGAnimatedString
-    el && (OnFirefox || !notSafe_not_ff_!(el)) && [(el as SafeElement).localName, el.id
-        , attr_s(el as SafeElement, "class")] || null
+    el && isSafeEl_(el) && [(el as SafeElement).localName, el.id, attr_s(el as SafeElement, "class")] || null
 
 export const extractField = (el: SafeElement, props: string): string => {
   type primitiveObject = boolean | number | string | { arguments?: undefined } & Dict<any>
@@ -554,21 +570,71 @@ export const extractField = (el: SafeElement, props: string): string => {
   return isTY(json) || isTY(json, kTY.num) ? json + "" : ""
 }
 
-export const wrapEventInit_ = <T extends EventInit> (event: T
-    , notCancelable?: boolean | BOOL, notBubbles?: boolean | BOOL, notComposed?: 1): T => {
-  event.bubbles = !notBubbles, event.cancelable = !notCancelable, OnEdge || (event.composed = !notComposed)
-  return event
+export const newEvent_ = <T extends new (type: any, init: EventInit) => Event>(
+    type: T extends new (type: infer Type, init: any) => Event ? Type : never
+    , notCancelable?: boolean | BOOL, notComposed?: BOOL | boolean, notBubbles?: boolean | BOOL
+    , init?: T extends new (type: any, init: infer Init) => Event ? Init : never
+    , cls?: T): InstanceType<T> => {
+  init = init || {} as NonNullable<typeof init>
+  init.bubbles = !notBubbles, init.cancelable = !notCancelable, OnEdge || (init.composed = !notComposed)
+  return new (cls || Event)(type, init) as InstanceType<T>
 }
 
-export const findSelectorByHost = (rules: string | kTip | null | undefined
-    ): "css-selector" | "" | null | void => {
-  const host = loc_.host, isKTip = isTY(rules, kTY.num)
-  for (const arr of (isKTip ? VTr(rules) : rules ? rules + "" : "").split(";")) {
-    const items = arr.split("##"), re = items[0] && tryCreateRegExp(items[0])
-    if (re && re.test(host) && (isKTip || safeCall(querySelector_unsafe_, items[1]!) !== void 0)) {
-      return items[1]! as "css-selector" | undefined
+type MayBeSelector = "" | false | null | void | undefined
+export const joinValidSelectors = (selector: string | false | void
+      , validAnother: "css-selector" | false | void): "css-selector" | null => // this should be O(1)
+    // here can not use `docEl.matches`, because of `:has(...)`
+    selector ? (validAnother ? selector + "," + validAnother : selector) as "css-selector" : validAnother || null
+
+// { "host-cond": boolean | "query//value, q2//v2" | ("q//v" | boolean | ["q", "v"])[]  }
+// { "host-cond##q": boolean | "v" }
+set_findOptByHost((rules: string | object | kTip | true | MayBeSelector
+    , cssCheckEl?: SafeElement | 0, mapMode?: kNextTarget.child | kNextTarget.realClick | kNextTarget.nonCss
+    ): "css-selector" | void => {
+  type Val = string | boolean
+  const isKTip = isTY(rules, kTY.num)
+  let host: string | undefined, path: string | undefined
+  for (const hostLine of rules == null ? []
+        : splitEntries_<[string, Val | (Val | [string, Val])[]], true>(isKTip ? VTr(rules) : rules as any, ";")) {
+    const items = splitEntries_(hostLine, "##")
+    let isOnHost = items.length > 1, sel = items[+isOnHost as BOOL], cond = isOnHost ? items[0] : ""
+    let _j = cond.split("##"); _j.length > 1 && (cond = _j[0], sel = [[ _j[1], sel as Val ]])
+    let matchPath = cond.includes("/")
+    const re = cond && (<RegExpOne> /[*+?^$\\(]/).test(cond) && tryCreateRegExp(cond)
+    path || cond && (host = Lower(loc_.host), path = host + "/" + Lower(loc_.pathname))
+    if (re ? re.test(matchPath ? path! : host!) : matchPath ? path!.startsWith(cond)
+            : cond ? host === cond || host!.endsWith("." + cond) : sel) {
+      if (!mapMode) {
+        return isKTip || cssCheckEl === 0 || sel && safeCall(testMatch, sel as string, _cssChecker || cssCheckEl
+            || (_cssChecker = createElement_("p"))) != null ? sel as "css-selector" : void 0
+      }
+      for (const rawEntry of splitEntries_<Val | [string, Val], true>(sel, ",")) {
+        let ret: string | boolean | 0 = 0
+        if (!rawEntry || rawEntry === "true" || rawEntry === "false") { ret = rawEntry || 0 }
+        else {
+          const entry = splitEntries_(rawEntry, "//"), len = entry.length, val = len < 2 || entry[1]
+          const matched = len < 2 && mapMode > kNextTarget.nonCss - 1
+              || safeCall(testMatch, entry[0] || "*", cssCheckEl as SafeElement)
+          ret = len < 2 ? matched != null ? mapMode < kNextTarget.realClick || matched || 0 : 0
+              : !matched ? 0 : !isTY(val) ? !!(val satisfies boolean) : !val ? mapMode > kNextTarget.realClick - 1
+              : (mapMode > kNextTarget.nonCss - 1 || safeCall(testMatch, val, cssCheckEl as SafeElement) != null)
+                && val + (len > 2 ? ",true" : "")
+        }
+        if (ret !== 0) {
+          ret += ""
+          return (ret === "true" || ret !== "false" && (ret + "").trim()) as string as "css-selector"
+        }
+      }
     }
   }
+})
+export { findOptByHost as findSelectorByHost } from "./utils"
+
+export const elFromPoint_ = (center?: Point2D | null, baseEl?: SafeElement | ShadowRoot | null): Element | null => {
+  const root = center && (baseEl ? isNode_(baseEl, kNode.DOCUMENT_FRAGMENT_NODE) ? baseEl
+      : IsAInB_(baseEl) && getRootNode_mounted(baseEl) : doc)
+  const el = root && root.elementFromPoint(center![0], center![1])
+  return el && el !== doc.body ? el : null
 }
 
 //#endregion
@@ -584,19 +650,19 @@ export function set_OnDocLoaded_ (_newOnDocLoaded: typeof OnDocLoaded_): void { 
 export function set_onReadyState_ (_newOnReady: typeof onReadyState_): void { onReadyState_ = _newOnReady }
 
 export let createElement_ = doc.createElement.bind(doc) as {
-  <K extends "div" | "span" | "style" | "iframe" | "a" | "script" | "dialog" | "body" | "img" | "canvas"> (
+  <K extends "div" | "span" | "style" | "iframe" | "a" | "p" | "script" | "dialog" | "body" | "img" | "canvas"> (
       htmlTagName: K): HTMLElementTagNameMap[K]
 }
 export function set_createElement_ (_newCreateEl: typeof createElement_): void { createElement_ = _newCreateEl }
 
 export const appendNode_s = (parent: SafeElement | Document | DocumentFragment
     , child: Element | DocumentFragment | Text): void => {
-  OnChrome && Build.MinCVer < BrowserVer.MinEnsured$ParentNode$$appendAndPrepend
+  Build.BTypes & BrowserType.Chrome && Build.MinCVer < BrowserVer.MinEnsured$ParentNode$$appendAndPrepend
       ? parent.appendChild(child) : parent.append!(child) // lgtm [js/xss] lgtm [js/xss-through-dom]
 }
 
 export const append_not_ff = !OnFirefox ? (parent: Element, child: HTMLElement): void => {
-  (OnChrome && Build.MinCVer < BrowserVer.MinEnsured$ParentNode$$appendAndPrepend
+  (Build.BTypes & BrowserType.Chrome && Build.MinCVer < BrowserVer.MinEnsured$ParentNode$$appendAndPrepend
       ? ElementProto_not_ff!.appendChild : ElementProto_not_ff!.append!).call(parent, child)
 } : 0 as never
 
@@ -608,7 +674,7 @@ export const setClassName_s = (el: SafeHTMLElement, className: string): void => 
   el.className = className
 }
 
-export const setVisibility_s = (el: SafeHTMLElement, visible: boolean): void => {
+export const setVisibility_s = (el: SafeHTMLElement, visible?: boolean | BOOL): void => {
   el.style.visibility = visible ? "" : HDN
 }
 
@@ -645,10 +711,12 @@ export const attachShadow_ = <T extends HTMLDivElement | HTMLBodyElement> (box: 
       ? box.webkitCreateShadowRoot!() : box
 }
 
-export const scrollIntoView_ = (el: Element, dir?: boolean): void => {
-    OnFirefox ? el.scrollIntoView({ block: "nearest" })
+export const scrollIntoView_ = (el: Element, instant?: object | boolean, dir?: boolean, _unused?: undefined): void => {
+  // although Chrome 114 still ignores `behavior: "instant"`, here still set it for the future
+  OnFirefox ? el.scrollIntoView({ block: "nearest", behavior: instant ? "instant" : _unused })
       : ElementProto_not_ff!.scrollIntoView.call(el,
-          OnChrome && Build.MinCVer < BrowserVer.MinScrollIntoViewOptions && dir != null ? dir : { block: "nearest" })
+            OnEdge || OnChrome && Build.MinCVer < BrowserVer.MinScrollIntoViewOptions && dir != null
+            ? dir : { block: "nearest", behavior: instant ? "instant" : _unused })
 }
 
 export const modifySel = (sel: Selection, extend: BOOL | boolean | 2, di: BOOL | boolean
@@ -666,21 +734,27 @@ export const rAF_: (callback: FrameRequestCallback) => number =
 export const runJS_ = (code: string, returnEl?: HTMLScriptElement | null | 0
       ): void | HTMLScriptElement & SafeHTMLElement => {
     const docEl = !OnFirefox ? docEl_unsafe_() : null
-    const script = returnEl || createElement_("script");
+    const script = returnEl || createElement_("script"), kJS = "allow-scripts"
+    const sandbox = !isTop && ((frameElement_() || {}) as Partial<AccessableIFrameElement>).sandbox
     if (!Build.MV3) {
       script.type = "text/javascript";
       // keep it fast, rather than small
       !OnChrome || Build.MinCVer >= BrowserVer.MinEnsured$ParentNode$$appendAndPrepend
           ? script.append!(code) : textContent_s(script, code)
     }
-    if (!OnFirefox) {
-      docEl ? append_not_ff(docEl, script) : appendNode_s(doc, script)
+    if (sandbox && ! ((OnChrome && Build.MinCVer < BrowserVer.Min$HTMLIFrameElement$$sandbox$isTokenList || OnEdge)
+        && isTY(sandbox) ? sandbox.includes(kJS) : (sandbox as DOMTokenList).contains(kJS))) {
+      appendNode_s(createElement_("a"), script)
     } else {
-      appendNode_s(docEl_unsafe_() as SafeElement | null || doc, script)
-    }
-    if (Build.MV3) { // https://bugs.chromium.org/p/chromium/issues/detail?id=1207006#c4
-      setOrRemoveAttr_s(script, "oninput", code)
-      dispatchEvent_(script, new Event(INP, wrapEventInit_({}, 1, 1, 1)))
+      if (!OnFirefox) {
+        docEl ? append_not_ff(docEl, script) : appendNode_s(doc, script)
+      } else {
+        appendNode_s(docEl_unsafe_() as SafeElement | null || doc, script)
+      }
+      if (Build.MV3) { // https://bugs.chromium.org/p/chromium/issues/detail?id=1207006#c4
+        setOrRemoveAttr_s(script, "on" + INP, code)
+        dispatchEvent_(script, newEvent_(INP, 1, 1, 1))
+      }
     }
     return returnEl != null ? script as SafeHTMLElement & HTMLScriptElement : removeEl_s(script)
 }
@@ -695,5 +769,28 @@ export const blur_unsafe = (el: Element | null | undefined): void => {
 
 export const dispatchEvent_ = (target: Window | Document | SafeElement
     , event: Event): boolean => target.dispatchEvent(event)
+
+export const dispatchAsync_ = <T extends Event | kDispatch.clickFn | kDispatch.focusFn> (
+    target: T extends kDispatch.clickFn ? SafeHTMLElement : Document | SafeElement
+    , event: T, focusOpt?: T extends kDispatch.focusFn ? FocusOptions : undefined
+    ): Promise<T extends Event ? boolean : undefined> => {
+  if ((Build.BTypes & BrowserType.Edge
+        || Build.BTypes & BrowserType.Firefox && Build.MinFFVer < FirefoxBrowserVer.Min$queueMicrotask
+        || Build.BTypes & BrowserType.Chrome && Build.MinCVer < BrowserVer.Min$queueMicrotask) && !queueTask_) {
+    return Promise.resolve(isTY(event satisfies Event | number, kTY.num) ? focusOpt as never : event as Event)
+        .then<boolean>((event === kDispatch.clickFn ? (target as SafeHTMLElement).click as never
+          : event === kDispatch.focusFn ? target.focus as never : target.dispatchEvent
+        ).bind<EventTarget, [Event], boolean>(target as Document | SafeElement)
+    ) as Promise<T extends Event ? boolean : undefined>
+  }
+  return new Promise<T extends Event ? boolean : undefined>((resolve): void => {
+    queueTask_!((): void => {
+      const ret = event === kDispatch.clickFn ? (target as SafeHTMLElement).click()
+          : event === kDispatch.focusFn ? (target as Document | ElementToHTMLOrForeign).focus!(focusOpt)
+          : target.dispatchEvent(event as Event)
+      resolve(ret as T extends Event ? boolean : undefined)
+    })
+  })
+}
 
 //#endregion

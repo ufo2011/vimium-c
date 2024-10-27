@@ -6,7 +6,7 @@ import * as BgUtils_ from "./utils"
 import * as settings_ from "./settings"
 import { decodeFileURL_ } from "./normalize_urls"
 import { TabRecency_ } from "./tools"
-import { HistoryManager_ } from "./browsing_data_manager"
+import { HistoryManager_, normalizeUrlAndTitles_ } from "./browsing_data_manager"
 import HistoryItem = CompletersNS.HistoryItem
 import Bookmark = CompletersNS.Bookmark
 
@@ -17,7 +17,7 @@ export interface TabEx extends WritableTabEx {
   readonly text: string;
 }
 export declare const enum MatchCacheType {
-  history = 1, bookmarks = 2, tabs = 3,
+  kHistory = 1, kBookmarks = 2, kTabs = 3,
 }
 export declare const enum TabCacheType {
   none = 0, currentWindow = 1, onlyNormal = 2, evenHidden = 4,
@@ -124,8 +124,8 @@ export const MatchCacheManager_ = {
   },
   clear_ (type: MatchCacheType): void {
     for (const record of allRecords_) {
-      type < MatchCacheType.bookmarks ? record.history_ = null
-      : type < MatchCacheType.tabs ? record.bookmarks_ = null
+      type < MatchCacheType.kBookmarks ? record.history_ = null
+      : type < MatchCacheType.kTabs ? record.bookmarks_ = null
       : cachedTabs_ = null
     }
   },
@@ -137,6 +137,7 @@ export const MatchCacheManager_ = {
     }
     cachedTabs_ = tabs
     if (tabs) {
+      normalizeUrlAndTitles_(tabs)
       MatchCacheManager_._tabTimer = setTimeout(MatchCacheManager_.cacheTabs_, GlobalConsts.TabCacheLifeTime, null);
     }
   }
@@ -190,9 +191,10 @@ export const RegExpCache_ = {
       ws.push(new RegExp(start + "\\b", flags) as CachedRegExp);
     }
   },
-  fixParts_ (s: string): void {
+  fixParts_ (s: string, isShortUrl: boolean): void {
     if (!RegExpCache_.parts_) { return; }
-    RegExpCache_.parts_[0] = new RegExp(BgUtils_.escapeAllForRe_(s), RegExpCache_.parts_[0].flags as ""
+    s = BgUtils_.escapeAllForRe_(isShortUrl ? s : s.slice(0, -1))
+    RegExpCache_.parts_[0] = new RegExp(isShortUrl ? s : s + "(?:/|$)", RegExpCache_.parts_[0].flags as ""
       ) as CachedRegExp;
   }
 }
@@ -455,9 +457,10 @@ export const requireNormalOrIncognitoTabs_ = (wantInCurrentWindow: boolean, flag
     if (tabType_ !== newType) {
       cachedTabs_ = null, tabType_ = newType
     }
-    __tabs = __tabs || cachedTabs_
-    if (__tabs) {
-      func(query, __tabs);
+    const tabs = __tabs || cachedTabs_
+    MatchCacheManager_.cacheTabs_(tabs)
+    if (tabs) {
+      func(query, tabs)
     } else {
       const cb = func.bind(null, query)
       !wantInCurrentWindow ? Tabs_.query({}, cb)

@@ -3,9 +3,9 @@ export declare const enum kPgReq {
    /** 5..9 */ settingItem, runFgOn, keyMappingErrors, parseCSS, reloadCSS,
    /** 10..14 */ convertToUrl, updateMediaQueries, whatsHelp, checkNewTabUrl, checkSearchUrl,
    /** 15..19 */ focusOrLaunch, showUrl, shownHash, substitute, checkHarmfulUrl,
-   /** 20..24 */ popupInit, allowExt, toggleStatus, parseMatcher, initHelp,
+   /** 20..24 */ actionInit, allowExt, toggleStatus, parseMatcher, initHelp,
    /** 25..29 */ callApi, selfTabId, getStorage, setInLocal, updateOmniPayload,
-   /** 30 */ saveToSyncAtOnce,
+   /** 30..33 */ saveToSyncAtOnce, showInit, reopenTab, checkAllowingAccess,
   __mask = ""
 }
 
@@ -37,9 +37,9 @@ export interface PgReq {
   [kPgReq.shownHash]: [ void, string | null ]
   [kPgReq.substitute]: [ [string, SedContext], string ]
   [kPgReq.checkHarmfulUrl]: [ string, boolean ]
-  [kPgReq.popupInit]: [ void, { ver: string, runnable: boolean, url: string, tabId: number, frameId: number,
-    topUrl: string | null, frameUrl: string | null, lock: Frames.ValidStatus | null, status: Frames.ValidStatus,
-    unknownExt: string | null,
+  [kPgReq.actionInit]: [ void, { ver: string, runnable: boolean, url: string, tabId: number, frameId: number,
+    topUrl: string | undefined, frameUrl: string | null, lock: Frames.ValidStatus | null, status: Frames.ValidStatus,
+    hasSubDomain: 0 | 1 | 2, unknownExt: string | null,
     exclusions: {
       rules: SettingsNS.SettingsWithDefaults["exclusionRules"], onlyFirst: boolean, matchers: BaseUrlMatcher[],
       defaults: SettingsNS.SettingsWithDefaults["exclusionRules"]
@@ -61,6 +61,9 @@ export interface PgReq {
   [kPgReq.updateOmniPayload]: [ { key: keyof SettingsNS.DirectVomnibarItems,
       val: Values<SettingsNS.DirectVomnibarItems>[1] }, void ]
   [kPgReq.saveToSyncAtOnce]: [ void, void ]
+  [kPgReq.showInit]: [ void, { os: kOS } ]
+  [kPgReq.reopenTab]: [ { url: string, tabId: number }, void ]
+  [kPgReq.checkAllowingAccess]: [ void, [incognito: boolean, fileScheme: boolean] ]
 }
 
 export declare namespace Req2 {

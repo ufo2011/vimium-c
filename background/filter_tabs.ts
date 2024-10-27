@@ -1,9 +1,10 @@
 import {
-  OnFirefox, cRepeat, get_cOptions, curWndId_, curTabId_, recencyForTab_, CurCVer_, OnChrome, set_cRepeat
+  OnFirefox, cRepeat, get_cOptions, curWndId_, curTabId_, recencyForTab_, CurCVer_, OnChrome, set_cRepeat, lastWndId_,
+  set_lastWndId_, framesForTab_
 } from "./store"
 import * as BgUtils_ from "./utils"
 import {
-  Tabs_, getCurShownTabs_, getCurWnd, runtimeError_, isNotHidden_, getCurTab, getCurTabs,
+  Tabs_, getCurShownTabs_, getCurWnd, runtimeError_, isNotHidden_, getCurTab, getCurTabs, Window, Qs_,
   getTabUrl, getGroupId, isTabMuted, Q_, Windows_, selectIndexFrom
 } from "./browser"
 import { getPortUrl_, showHUD } from "./ports"
@@ -23,14 +24,14 @@ export const getTabRange = (current: number, total: number, countToAutoLimitBefo
 
 const innerGetTabRange = (current: number, total: number, countToAutoLimitBeforeScale: number | undefined
     , count: number, extraCount: 1 | 0 | undefined
-    , limited: LimitedRangeOptions["limited"] | null | undefined, hasFilter?: unknown): [number, number] => {
+    , limited: LimitedRangeOptions["limited"] | null | undefined, filter?: string | null): [number, number] => {
   const dir = count > 0
   if (extraCount) { count += dir ? extraCount : -extraCount }
   const end = current + count
   return end <= total && end > -2 ? dir ? [current, end] : [end + 1, current + 1] // normal range
       : limited === false || (limited == null || limited === "auto")
       && (Math.abs(count) < (countToAutoLimitBeforeScale || total) * GlobalConsts.ThresholdToAutoLimitTabOperation
-          || count < 10 || hasFilter && limited == null)
+          || count < 10 || filter && limited == null)
       ? Math.abs(count) < total ? dir ? [total - count, total] : [0, -count] // go forward and backward
         : [0, total] // all
       : dir ? [current, total] : [0, current + 1] // limited
@@ -82,7 +83,8 @@ export const onShownTabsIfRepeat_ = <All extends boolean> (allInRange: All, noSe
       && (isUsable === true || isNotHidden_(theOther[0]) && (!isUsable || isUsable(theOther[0])))
       && (!filter || filterTabsByCond_(curOrTabs[0], theOther, filter).length > 0)
       ? cRepeat < 0 ? callback([theOther[0], curOrTabs[0]], [0, 1, allInRange ? 2 : 1], resolve)
-      : callback([curOrTabs[0], theOther[0]], [allInRange ? 0 : 1, 0, 2], resolve) : getCurShownTabs_(onTabs)
+        : callback([curOrTabs[0], theOther[0]], [allInRange ? 0 : 1, 0, 2], resolve)
+      : getCurShownTabs_(onTabs)
       return runtimeError_()
     })
   }
@@ -124,7 +126,7 @@ export const getTabsIfRepeat_ = (count: number, callback_r: (tabsIncludingActive
     getCurTab((cur): void => {
       const newInd = cur[0].index + count
       newInd >= 0 ? Tabs_.query({ windowId: cur[0].windowId, index: newInd }, (other): void => {
-        other ? callback_r(count > 0 ? [cur[0], other[0]] : [other[0], cur[0]]) : getCurTabs(callback_r)
+        other && other[0] ? callback_r(count > 0 ? [cur[0], other[0]] : [other[0], cur[0]]) : getCurTabs(callback_r)
         return runtimeError_()
       }) : getCurTabs(callback_r)
     })
@@ -169,6 +171,16 @@ export const testBoolFilter_ = (filter: TabFilterOptions["filter"] | null | unde
   return val !== null ? parseBool(val, only) : null
 }
 
+const makeStringMatcher = (val: string, str: string | null | undefined): ((x?: string | null) => boolean) | null => {
+  const lastSlash = val && val[0] === "/" ? val.lastIndexOf("/") : 0
+  const strRe = lastSlash > 1 && (<RegExpOne> /^[a-z]+$/).test(val.slice(lastSlash + 1))
+      ? BgUtils_.makeRegexp_(val.slice(1, lastSlash)
+        , val.slice(lastSlash + 1).replace(<RegExpG> /g/g, ""), 0) as RegExpOne : null
+  const lower = !strRe && !!str && str.toLowerCase()
+  return strRe ? (str = null, x => strRe.test(x || ""))
+      : str ? str === lower ? x => !!x && x.toLowerCase().includes(lower) : x => !!x && x.includes(str!) : null
+}
+
 export interface FilterInfo { known?: boolean }
 
 export const filterTabsByCond_ = (activeTab: Tab | null | undefined
@@ -185,11 +197,8 @@ export const filterTabsByCond_ = (activeTab: Tab | null | undefined
     let cond: ((tab: Tab) => boolean) | null = null
     switch (key) {
     case "title": case "title*":
-      const title = val ? val : activeTab && activeTab.title
-      const lastSlash = val && val[0] === "/" ? val.lastIndexOf("/") : 0
-      const titleRe = lastSlash > 1 ? BgUtils_.makeRegexp_(val.slice(1, lastSlash)
-          , val.slice(lastSlash + 1).replace(<RegExpG> /g/g, ""), 0) as RegExpOne : null
-      cond = titleRe ? tab => titleRe.test(tab.title || "") : title ? tab => (tab.title || "").includes(title) : cond
+      const titleMatcher = makeStringMatcher(val, val ? val : activeTab && activeTab.title)
+      cond = titleMatcher ? (tab) => titleMatcher(tab.title) : null
       break
     case "url": case "urlhash": case "url+hash": case "url-hash": case "hash":
       let matcher: ValidUrlMatchers | null = null
@@ -200,7 +209,13 @@ export const filterTabsByCond_ = (activeTab: Tab | null | undefined
         const useHash = key.includes("hash")
         matcher = url ? Exclusions.createSimpleUrlMatcher_(":" + (useHash ? url : url.split("#", 1)[0])) : null
       }
-      cond = matcher ? tab => Exclusions.matchSimply_(matcher!, getTabUrl(tab)) : cond
+      const smartCase = !!matcher && matcher.t === kMatchUrl.StringPrefix && val === val.toLowerCase()
+      cond = matcher ? tab => Exclusions.matchSimply_(matcher!
+            , smartCase ? getTabUrl(tab).toLowerCase() : getTabUrl(tab)) : cond
+      break
+    case "title+url":
+      const strMatcher = val && makeStringMatcher(val, val)!
+      cond = strMatcher ? tab => strMatcher(tab.title) || strMatcher(getTabUrl(tab)) : cond
       break
     case "host": case "":
       const host = val ? val : key && activeTab ? BgUtils_.safeParseURL_(getTabUrl(activeTab))?.host : ""
@@ -313,7 +328,7 @@ export const sortTabsByCond_ = (allTabs: Readonly<Tab>[]
   const list: TabInfo[] = allTabs.map((i, ind): TabInfo => ({
     tab: i, ind, time: null, rhost: null, group: getGroupId(i), pinned: i.pinned
   }))
-  let scale: number, work = -1, changed = false, monoBase = 0
+  let scale: -1 | 1, work = -1, changed = false, monoBase = 0
   for (let key of (sortOpt instanceof Array ? sortOpt.slice(0)
           : (sortOpt === true ? "time" : sortOpt + "").split(<RegExpG> /[, ]+/g)).reverse() as ValidKeys[]) {
     scale = key[0] === "r" && key[1] !== "e" || key[0] === "-" ? (key = key.slice(1) as typeof key, -1) : 1
@@ -345,17 +360,64 @@ export const sortTabsByCond_ = (allTabs: Readonly<Tab>[]
         : work === 4 ? compareStr(a.tab.title, b.tab.title)
         : work === 5 ? a.tab.id - b.tab.id
         : work === 6 ? a.tab.windowId - b.tab.windowId
-        : a.ind - b.ind) * scale || a.ind - b.ind)
+        : a.ind - b.ind) * scale
+        || (a.group != null ? b.group != null ? 0 : -1 : b.group != null ? 1 : 0)
+        || a.ind - b.ind)
     list.forEach(refreshInd)
     changed = true
   }
   if (changed && list.some(i => i.group != null)) {
-    list.sort((a, b) => a.group == null ? b.group == null ? a.ind - b.ind : 1 : b.group == null ? -1
-        : a.group < b.group ? -1 : a.group > b.group ? 1 : a.ind - b.ind)
+    const group_min_index = new Map<chrome.tabs.GroupId, number>()
+    for (const { group, ind } of list) {
+      if (group != null && !group_min_index.has(group)) {
+        group_min_index.set(group, ind)
+      }
+    }
+    list.sort((a, b) => {
+      const ind_a = a.group != null ? group_min_index.get(a.group)! : a.ind
+      const ind_b = b.group != null ? group_min_index.get(b.group)! : b.ind
+      return ind_a - ind_b || a.ind - b.ind
+    })
   }
   if (changed) {
     list.forEach(refreshInd)
     list.sort((a, b) => a.pinned !== b.pinned ? a.pinned ? -1 : 1 : a.ind - b.ind)
   }
   return changed ? list.map(i => i.tab) : allTabs
+}
+
+export const findLastVisibleWindow_ = async <AcceptCur extends boolean> (wndType: "popup" | "normal" | undefined
+    , alsoCur: AcceptCur, incognito: boolean | null, curWndId: number, noMin?: boolean
+    ): Promise<Window | (AcceptCur extends false ? [Window[], Window | undefined] : null)> => {
+  const filter = (wnd: Window): boolean =>
+      (!wndType || wnd.type === wndType) && (incognito == null || wnd.incognito === incognito)
+      && (noMin || wnd.state !== "minimized")
+  if (lastWndId_ >= 0) {
+    const wnd = await Q_(Windows_.get, lastWndId_)
+    if (wnd && filter(wnd)) { return wnd }
+    set_lastWndId_(GlobalConsts.WndIdNone)
+  }
+  const otherTabs: (readonly [tabId: number, time: number])[] = []
+  {
+    const curIds = (await Q_(getCurTabs) || []).map(tab => tab.id)
+    curIds.push(curTabId_)
+    recencyForTab_.forEach((time, tabId) => { curIds.includes(tabId) || otherTabs.push([tabId, time]) })
+    otherTabs.sort((i, j) => j[1] - i[1])
+  }
+  if (otherTabs.length > 0) {
+    let tab: Tab | undefined = await Qs_(Tabs_.get, otherTabs[0][0])
+    if (!tab) {
+      const lastActive = otherTabs.find(i => framesForTab_.has(i[0]))
+      tab = lastActive && await Qs_(Tabs_.get, lastActive[0])
+    }
+    const wnd = tab && await Qs_(Windows_.get, tab.windowId)
+    if (wnd && filter(wnd)) { return wnd }
+  }
+  const allWnds = await Qs_(Windows_.getAll), matches = allWnds.filter(filter)
+  const otherWnds = matches.filter(i => i.id !== curWndId)
+  otherWnds.sort((i, j) => j.id - i.id)
+  const wnd2 = otherWnds.length > 0 ? otherWnds[0] : null
+  if (wnd2) { return wnd2 }
+  if (alsoCur) { return allWnds.find(w => w.id === curWndId) || allWnds.find(w => w.focused) || null as never }
+  return [matches, allWnds.find(i => i.id === curWndId)] as never
 }

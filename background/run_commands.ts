@@ -1,10 +1,14 @@
 import {
   framesForTab_, get_cOptions, cPort, cRepeat, bgC_, cmdInfo_, set_helpDialogData_, helpDialogData_, inlineRunKey_,
-  set_cOptions, set_cPort, cKey, set_cKey, set_cRepeat, curTabId_, OnEdge, runOneMapping_, blank_, set_cEnv
+  set_cOptions, set_cPort, cKey, set_cKey, set_cRepeat, curTabId_, OnEdge, runOneMapping_, blank_, set_cEnv,
+  substitute_, readInnerClipboard_, CONST_, OnChrome
 } from "./store"
 import * as BgUtils_ from "./utils"
-import { Tabs_, runtimeError_, getCurTab, getCurShownTabs_, tabsGet } from "./browser"
-import { ensureInnerCSS, ensuredExitAllGrab, indexFrame, showHUD, getCurFrames_ } from "./ports"
+import { Tabs_, runtimeError_, getCurTab, getCurShownTabs_, tabsGet, import2 } from "./browser"
+import { headClipNameRe_, tailClipNameRe_, tailSedKeysRe_ } from "./normalize_urls"
+import {
+  ensureInnerCSS, ensuredExitAllGrab, indexFrame, showHUD, getCurFrames_, refreshPorts_, waitForPorts_
+} from "./ports"
 import { getI18nJson, trans_ } from "./i18n"
 import {
   shortcutRegistry_, normalizedOptions_, availableCommands_,
@@ -17,6 +21,7 @@ let _gCmdTimer = 0
 let gOnConfirmCallback: ((force1: boolean, arg?: FakeArg) => void) | null | undefined
 let _gCmdHasNext: boolean | null
 let _cNeedConfirm: BOOL = 1
+let _helpDialogModule: typeof import("./help_dialog") | undefined
 
 /** operate command options */
 
@@ -53,13 +58,13 @@ export const overrideCmdOptions = <T extends keyof BgCmdOptions> (known: CmdOpti
   oriOptions || set_cOptions(known as KnownOptions<T> as KnownOptions<T> & SafeObject)
 }
 
-type StrStartWith$<K extends string> = K extends `$${string}` ? K : never
+type StrStartingWith$<K extends string> = K extends `$${string}` ? K : never
 type BgCmdCanBeOverride = keyof SafeStatefulBgCmdOptions | keyof StatefulBgCmdOptions
 type KeyCanBeOverride<T extends BgCmdCanBeOverride> =
     T extends keyof SafeStatefulBgCmdOptions ? SafeStatefulBgCmdOptions[T]
     : T extends keyof StatefulBgCmdOptions
     ? (StatefulBgCmdOptions[T] extends null ? never : StatefulBgCmdOptions[T] & keyof BgCmdOptions[T])
-      | Exclude<StrStartWith$<keyof BgCmdOptions[T] & string>, keyof Req.FallbackOptions>
+      | Exclude<StrStartingWith$<keyof BgCmdOptions[T] & string>, keyof Req.FallbackOptions>
     : never
 export const overrideOption = <T extends BgCmdCanBeOverride, K extends KeyCanBeOverride<T> = KeyCanBeOverride<T>>(
     field: K, value: K extends keyof BgCmdOptions[T]
@@ -68,7 +73,7 @@ export const overrideOption = <T extends BgCmdCanBeOverride, K extends KeyCanBeO
   curOptions = curOptions || get_cOptions<T, true>() as KnownOptions<T>
   curOptions[field as keyof BgCmdOptions[T]] = value
   const parentOptions = (curOptions as unknown as CommandsNS.Options).$o
-  if (parentOptions != null) { overrideOption(field, value, parentOptions as unknown as KnownOptions<T>) }
+  if (parentOptions != null) { overrideOption<T, K>(field, value, parentOptions as unknown as KnownOptions<T>) }
 }
 
 export const fillOptionWithMask = <Cmd extends keyof BgCmdOptions>(template: string
@@ -120,10 +125,16 @@ export const fillOptionWithMask = <Cmd extends keyof BgCmdOptions>(template: str
       if (!body) { return "$" }
       ok = 1
       useDict++
-      let encode = true
+      let encode = false
+      const sed = tailSedKeysRe_.exec(body)
+      sed && (body = body.slice(0, sed.index))
       if ((<RegExpOne> /^[sS]:/).test(body)) { encode = body[0] === "s"; body = body.slice(2) }
-      let val = body === "__proto__" || body[0] === "$" ? "" : (usableOptions as Dict<any>)[body]
+      const clip = tailClipNameRe_.exec(body) || headClipNameRe_.exec(body)
+      if (clip) { body = clip[0][0] === "<" ? body.slice(0, clip.index) : body.slice(clip[0].length) }
+      let val = clip ? readInnerClipboard_(clip[0][0] === "<" ? clip[0].slice(1) : clip[0].slice(0, -1))
+          : body === "__proto__" || body[0] === "$" ? "" : body ? (usableOptions as Dict<any>)[body] : getValue()
       val = typeof val === "string" ? val : val && typeof val === "object" ? JSON.stringify(val) : val + ""
+      sed && (val = substitute_(val, SedContext.NONE, BgUtils_.DecodeURLPart_(sed[0].slice(1))))
       return encode ? BgUtils_.encodeAsciiComponent_(val) : val
     })
   } else if (hasMask0) {
@@ -184,7 +195,7 @@ export const executeCommand = (registryEntry: CommandsNS.Item, count: number, la
         : (count | 0) || 1)
   if (count === 1) { /* empty */ }
   else if (repeat === 1) { count = 1 }
-  else if (repeat > 0 && (count > repeat || count < -repeat)) {
+  else if (repeat > 1 && (count > repeat || count < -repeat)) {
     if (fallbackCounter != null) {
       count = count < 0 ? -1 : 1
     } else if (!overriddenCount && (!options || options.confirmed !== true)) {
@@ -212,7 +223,7 @@ export const executeCommand = (registryEntry: CommandsNS.Item, count: number, la
     if (options && ((registryEntry.alias_ === kBgCmd.runKey || context.t) && registryEntry.background_
           || hasFallbackOptions(options as Req.FallbackOptions))) {
       const opt2: Req.FallbackOptions = {}
-      options ? overrideCmdOptions<kBgCmd.blank>(opt2 as {}, false, options) : BgUtils_.safer_(opt2)
+      overrideCmdOptions<kBgCmd.blank>(opt2 as {}, false, options)
       opt2.$retry = -maxRetried, opt2.$f = context
       context.t && registryEntry.background_ && !(options as Req.FallbackOptions).$else && (opt2.$else = "showTip")
       options = opt2 as typeof opt2 & SafeObject
@@ -275,9 +286,9 @@ export const needConfirm_ = (): boolean | BOOL => {
 }
 
 /** 0=cancel, 1=force1, count=accept */
-export const confirm_ = <T extends kCName> (command: CmdNameIds[T] extends kBgCmd ? T : never
+export const confirm_ = <T extends kCName> (command: CmdNameIds[T] extends kBgCmd ? T : [string | [string]]
     , askedCount: number): Promise<boolean> => {
-  if (!(Build.NDEBUG || !command.includes("."))) {
+  if (!(Build.NDEBUG || typeof command !== "string" || !command.includes("."))) {
     console.log("Assert error: command should has no limit on repeats: %c%s", "color:red", command)
   }
   if (!cPort) {
@@ -285,15 +296,15 @@ export const confirm_ = <T extends kCName> (command: CmdNameIds[T] extends kBgCm
     set_cRepeat(cRepeat > 0 ? 1 : -1)
     return Promise.resolve(cRepeat > 0)
   }
-  if (!helpDialogData_ || !helpDialogData_[1]) {
-    return getI18nJson("help_dialog").then(dict => {
-      helpDialogData_ ? helpDialogData_[1] = dict : set_helpDialogData_([null, dict])
-      return confirm_(command, askedCount)
+  const cmdName = typeof command === "string" ? command : typeof command[0] === "string" ? command[0] : null
+  if (!_helpDialogModule && cmdName) {
+    return initHelpDialog().then((): Promise<boolean> => {
+      return confirm_(command as (CmdNameIds[T] extends kBgCmd ? T : never), askedCount)
     })
   }
   const { promise_, resolve_ } = BgUtils_.deferPromise_<boolean>()
   const countToReplay = cRepeat, bakOptions = get_cOptions() as any, bakPort = cPort
-  setupSingletonCmdTimer(setTimeout(onConfirm, 3000, 0))
+  setupSingletonCmdTimer(setTimeout(onConfirm, 2000, 0, void 0))
   gOnConfirmCallback = (force1: boolean): void => {
     set_cKey(kKeyCode.None)
     set_cOptions(bakOptions)
@@ -303,17 +314,19 @@ export const confirm_ = <T extends kCName> (command: CmdNameIds[T] extends kBgCm
     resolve_(force1)
     setTimeout((): void => { _cNeedConfirm = 1 }, 0)
   }
-  void Promise.resolve(trans_("cmdConfirm", [askedCount, helpDialogData_[1].get(command) || `### ${command} ###`]))
+  void Promise.resolve(!cmdName ? (command[0] as [string])[0] : trans_("cmdConfirm", [askedCount
+      , helpDialogData_![1]!.get(_helpDialogModule!.normalizeCmdName_(cmdName as kCName)) || `### ${cmdName} ###`]))
   .then((msg): void => {
-    (getCurFrames_()?.top_ || cPort).postMessage({ N: kBgReq.count, c: "", i: _gCmdTimer, m: msg })
+    (getCurFrames_()?.top_ || cPort).postMessage({ N: kBgReq.count, c: "", i: _gCmdTimer, m: msg
+        , r: typeof command !== "string" })
   })
   return promise_
 }
 
-const onConfirm = (response: FgReq[kFgReq.cmd]["r"]): void => {
+const onConfirm = (response: Extract<FgReq[kFgReq.cmd], { i: object }>["r"], request?: BgReq[kBgReq.count]): void => {
   const callback = gOnConfirmCallback
   gOnConfirmCallback = null
-  response > 1 && callback && callback(response < 3)
+  ; (response > 1 || request?.i) && callback && callback(response < 3)
 }
 
 const setupSingletonCmdTimer = (newTimer: number): void => {
@@ -321,16 +334,20 @@ const setupSingletonCmdTimer = (newTimer: number): void => {
   _gCmdTimer = newTimer
 }
 
-export const onConfirmResponse = (request: FgReq[kFgReq.cmd], port: Port): void => {
-  const cmd = request.c as StandardShortcutNames, id = request.i
+export const onBeforeConfirm = (response: FgReq[kFgReq.beforeCmd]) => {
+  if (response.i >= -1 && _gCmdTimer === response.i) { clearTimeout(response.i) }
+}
+
+export const onConfirmResponse = (response: FgReq[kFgReq.cmd], port: Port): void => {
+  const id = typeof response.i !== "number" ? response.i.i : 0
   // if id < -1, then pass it, so that 3rd-party extensions may use kFgReq.cmd to run commands
-  if (id >= -1 && _gCmdTimer !== id) { return } // an old / aborted / test message
+  if (response.i === 0 || id >= -1 && _gCmdTimer !== id) { return } // an old / aborted / test message
   setupSingletonCmdTimer(0)
-  if (request.r) {
-    onConfirm(request.r)
+  if (response.r) {
+    onConfirm(response.r, response.i)
     return
   }
-  executeCommand(shortcutRegistry_!.get(cmd)!, request.n, kKeyCode.None, port, 0)
+  executeCommand(shortcutRegistry_!.get(response.i.c as StandardShortcutNames)!, response.n, kKeyCode.None, port, 0)
 }
 
 /** forward a triggered command */
@@ -349,10 +366,11 @@ export const executeShortcut = (shortcutName: StandardShortcutNames, ref: Frames
   const isRunKey = registry.alias_ === kBgCmd.runKey && registry.background_
   if (isRunKey) { inlineRunKey_(registry) }
   setupSingletonCmdTimer(0)
-  if (ref) {
+  if (ref && !(ref.cur_.s.flags_ & Frames.Flags.ResReleased)) {
     let port = ref.cur_
     setupSingletonCmdTimer(setTimeout(executeShortcut, 100, shortcutName, null))
-    port.postMessage({ N: kBgReq.count, c: shortcutName, i: _gCmdTimer, m: "" })
+    port.postMessage({ N: kBgReq.count, c: shortcutName, i: _gCmdTimer, m: "", r: false })
+    ref.flags_ & Frames.Flags.ResReleased && refreshPorts_(ref, 0)
     ensuredExitAllGrab(ref)
     return
   }
@@ -424,7 +442,7 @@ export const wrapFallbackOptions = <T extends KeysWithFallback<CmdOptions>, S ex
   return options_mutable as unknown as CmdOptions[T]
 }
 
-const makeFallbackContext = (old: Req.FallbackOptions["$f"], counterStep: number, newTip: kTip | 0 | false
+export const makeFallbackContext = (old: Req.FallbackOptions["$f"], counterStep: number, newTip: kTip | 0 | false
     ): NonNullable<Req.FallbackOptions["$f"]> => {
   return {
     i: (old ? old.i : 0) + counterStep,
@@ -460,11 +478,12 @@ export const runNextCmdBy = (useThen: BOOL, options: Req.FallbackOptions, timeou
   if (hasFallback) {
     const fStatus: NonNullable<FgReq[kFgReq.nextKey]["f"]> = { c: options.$f, r: options.$retry, u: 0, w: 0 }
     const noDelay = nextKey && (<RegExpOne> /\$D/).test(nextKey.split("#", 1)[0])
-    setupSingletonCmdTimer(setTimeout((): void => {
-      const frames = framesForTab_.get(curTabId_),
-      port = cPort && cPort.s.tabId_ === curTabId_ && frames && frames.ports_.indexOf(cPort) > 0 ? cPort
+    setupSingletonCmdTimer(setTimeout(async (): Promise<void> => {
+      const frames = framesForTab_.get(curTabId_)
+      await waitForPorts_(frames, true)
+      const port = cPort && cPort.s.tabId_ === curTabId_ && frames && frames.ports_.indexOf(cPort) > 0 ? cPort
           : !frames ? null : frames.cur_.s.status_ === Frames.Status.disabled
-          && frames.ports_.filter(i => i.s.status_ !== Frames.Status.disabled)
+          && frames.ports_.filter(i => i.s.status_ !== Frames.Status.disabled && !(i.s.flags_&Frames.Flags.ResReleased))
               .sort((a, b) => a.s.frameId_ - b.s.frameId_)[0] || frames.cur_
       frames && ensuredExitAllGrab(frames)
       runOneMapping_(nextKey, port, fStatus)
@@ -474,7 +493,7 @@ export const runNextCmdBy = (useThen: BOOL, options: Req.FallbackOptions, timeou
 }
 
 export const runNextOnTabLoaded = (options: OpenUrlOptions | Req.FallbackOptions | CommandsNS.Options
-    , targetTab: Tab | null | undefined | /* in cur without wait */ false, callback?: () => void): void => {
+    , targetTab: Pick<Tab, "id"> | null | undefined | /* in cur without wait */ false, callback?: () => void): void => {
   const nextKey = (options as Req.FallbackOptions).$then
   if ((!nextKey || typeof nextKey !== "string") && !callback) {
     return
@@ -503,6 +522,9 @@ export const runNextOnTabLoaded = (options: OpenUrlOptions | Req.FallbackOptions
   setupSingletonCmdTimer(setInterval((): void => {
     tabsGet(tabId !== GlobalConsts.TabIdNone ? tabId : curTabId_, onTimer)
   }, evenLoading ? 50 : 100)) // it's safe to clear an interval using `clearTimeout`
+  if (nextKey && (<RegExpOne> /\$D/).test(nextKey.split("#", 1)[0])) {
+    tabsGet(tabId !== GlobalConsts.TabIdNone ? tabId : curTabId_, onTimer)
+  }
 }
 
 export const waitAndRunKeyReq = (request: FgReq[kFgReq.nextKey], port: Port | null): void => {
@@ -515,4 +537,21 @@ export const waitAndRunKeyReq = (request: FgReq[kFgReq.nextKey], port: Port | nu
   } else {
     runNextCmdBy(1, options, fallbackInfo && fallbackInfo.w)
   }
+}
+
+export const initHelpDialog = (): Promise<typeof import("./help_dialog") | void> => {
+  const curHData = helpDialogData_ || []
+  return _helpDialogModule ? Promise.resolve(_helpDialogModule) : Promise.all([
+    import2<typeof import("./help_dialog")>(CONST_.HelpDialogJS),
+    curHData[0] != null ? null : BgUtils_.fetchFile_("help_dialog.html"),
+    curHData[1] != null ? null : getI18nJson("help_dialog")
+  ]).then(([helpDialog, temp1, temp2]): typeof import("./help_dialog") => {
+    const newHData = helpDialogData_ || set_helpDialogData_([null, null])
+    temp1 && (newHData[0] = temp1)
+    temp2 && (newHData[1] = temp2)
+    return _helpDialogModule = helpDialog
+  }, Build.NDEBUG ? OnChrome && Build.MinCVer < BrowserVer.Min$Promise$$Then$Accepts$null
+      ? undefined : null as never : (args): void => {
+    console.error("Promises for initHelp failed: %o ; %o", args[0], args[1])
+  })
 }

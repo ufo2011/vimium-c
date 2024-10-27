@@ -1,12 +1,13 @@
 import {
-  findCSS_, innerCSS_, omniPayload_, set_findCSS_, set_innerCSS_, CurCVer_, CurFFVer_, IsEdg_, omniStyleOverridden_,
+  findCSS_, innerCSS_, omniPayload_, set_findCSS_, set_innerCSS_, CurCVer_, CurFFVer_, IsEdg_, omniConfVer_,
   OnChrome, OnEdge, OnFirefox, isHighContrast_ff_, set_isHighContrast_ff_, bgIniting_, CONST_, set_helpDialogData_,
-  framesForOmni_, settingsCache_, set_omniStyleOverridden_, updateHooks_, storageCache_, installation_
+  settingsCache_, updateHooks_, storageCache_, installation_,contentConfVer_, contentPayload_, lastVisitTabTime_,
+  runOnTee_
 } from "./store"
-import { asyncIter_, fetchFile_, spacesRe_ } from "./utils"
+import { fetchFile_, nextConfUpdate, spacesRe_ } from "./utils"
 import { getFindCSS_cr_, set_getFindCSS_cr_ } from "./browser"
-import { ready_, broadcastOmni_, postUpdate_, setInLocal_ } from "./settings"
-import { asyncIterFrames_ } from "./ports"
+import { ready_, broadcastOmniConf_, postUpdate_, setInLocal_, updatePayload_, broadcast_ } from "./settings"
+import { asyncIterFrames_, getFrames_ } from "./ports"
 
 export declare const enum MergeAction {
   virtual = -1, readFromCache = 0, rebuildWhenInit = 1, rebuildAndBroadcast = 2,
@@ -19,6 +20,8 @@ interface ParsedSections {
 
 let StyleCacheId_: string
 let findCSS_file_old_cr: FindCSS | null
+let hasReliableWatchers: boolean = OnFirefox && Build.MinFFVer >= FirefoxBrowserVer.MinMediaQueryListenersWorkInBg
+let _mediaTimer = !Build.MV3 && hasReliableWatchers ? -1 : 0
 
 export const reloadCSS_ = (action: MergeAction, knownCssStr?: string): SettingsNS.MergedCustomCSS | void => {
   if (action === MergeAction.virtual) {
@@ -60,6 +63,10 @@ export const reloadCSS_ = (action: MergeAction, knownCssStr?: string): SettingsN
         return `rgba(${r},${g},${b},${alpha.slice(0, 4)})`
       })
     }
+    if (OnChrome && Build.MinCVer <= BrowserVer.CSS$Contain$BreaksHelpDialogSize
+        && CurCVer_ === BrowserVer.CSS$Contain$BreaksHelpDialogSize) {
+      css = css.replace(<RegExpG> /layout /g, "")
+    }
     const cssFile = parseSections_(css)
     let isHighContrast_ff = false, hcChanged_ff = false
     if (OnFirefox && !Build.MV3) {
@@ -97,9 +104,13 @@ export const reloadCSS_ = (action: MergeAction, knownCssStr?: string): SettingsN
             && CurCVer_ < BrowserVer.MinAbsolutePositionNotCauseScrollbar)) {
       css = css.replace(".LH{", ".LH{box-sizing:border-box;")
     }
+    if (OnEdge || OnChrome && Build.MinCVer < BrowserVer.MinMaybePopoverToggleEvent
+        && CurCVer_ < BrowserVer.MinMaybePopoverToggleEvent) {
+      css = css.replace(<RegExpG> /\n\.PO\{[^}]+\}/, "")
+    }
     if (OnFirefox) {
       const ind1 = css.indexOf(".LH{") + 4, ind2 = css.indexOf("}", ind1)
-      let items = css.slice(ind1, ind2).replace("2.5px 3px 2px", "3px").replace("0.5px", "1px")
+      let items = css.slice(ind1, ind2).replace("0.5px", "1px")
       css = css.slice(0, ind1) + items + css.slice(ind2)
     }
     if (OnFirefox && isHighContrast_ff) {
@@ -133,6 +144,12 @@ export const reloadCSS_ = (action: MergeAction, knownCssStr?: string): SettingsN
     }
     if (OnFirefox) { /** {@link ../tests/dom/firefox-position_fixed-in-dialog.html} */
       css += ".DLG>.Omnibar{position:absolute}"
+    }
+    if (OnEdge || OnChrome && Build.MinCVer < BrowserVer.MinCssMinMax && CurCVer_ < BrowserVer.MinCssMinMax
+        || OnFirefox && Build.MinFFVer < FirefoxBrowserVer.MinCssMinMax && CurFFVer_ < FirefoxBrowserVer.MinCssMinMax) {
+      css = css.replace(<RegExpOne & RegExpSearchable<0>>/width:min\([^)]+\)/
+          , s => `width:calc${s.slice(9).split(",", 1)[0]});max-width:${s.split(",", 2)[1].slice(0, -1)}`)
+        .replace(<RegExpG & RegExpSearchable<0>>/\bm(?:in|ax)\([^)]+\)/g, s => `calc${s.slice(3).split(",", 1)[0]})`)
     }
     setInLocal_("innerCSS", StyleCacheId_ + css)
     let findCSS = cssFile.find!
@@ -200,43 +217,179 @@ export const mergeCSS = (css2Str: string, action: MergeAction | "userDefinedCss"
   setInLocal_(O, omni2 || null)
   reloadCSS_(MergeAction.readFromCache, newInnerCSS)
   if (action !== MergeAction.readFromCache && action !== MergeAction.rebuildWhenInit) {
+    nextConfUpdate(0)
     asyncIterFrames_(Frames.Flags.CssUpdated, (frames: Frames.Frames): void => {
         for (const port of frames.ports_) {
           const flags = port.s.flags_
-          if (port.s.flags_ & Frames.Flags.hasCSS) {
+          if (flags & Frames.Flags.hasCSS) {
             port.postMessage({
               N: kBgReq.showHUD, H: innerCSS_,
               f: flags & Frames.Flags.hasFindCSS ? OnChrome ? getFindCSS_cr_!(port.s) : findCSS_ : void 0
             })
+            port.postMessage({ N: kBgReq.settingsUpdate, d: {}, v: contentConfVer_ })
           }
         }
     })
-    broadcastOmni_({ N: kBgReq.omni_updateOptions, d: { c: omniPayload_.c } })
+    broadcastOmniConf_({ c: omniPayload_.c })
   }
 }
 
-export const setOmniStyle_ = (req: FgReq[kFgReq.setOmniStyle], port?: Port): void => {
-  let styles: string, curStyles = omniPayload_.t
-  if (!req.o && omniStyleOverridden_) {
-    return
-  }
-  {
-    let toggled = ` ${req.t} `, extSt = curStyles && ` ${curStyles} `, exists = extSt.includes(toggled),
-    newExist = req.e != null ? req.e : exists
-    styles = newExist ? exists ? curStyles : curStyles + toggled : extSt.replace(toggled, " ")
-    styles = styles.trim().replace(spacesRe_, " ")
-    if (req.b === false) { omniPayload_.t = styles; return }
-    if (req.o) {
-      set_omniStyleOverridden_(newExist !== (` ${settingsCache_.vomnibarOptions.styles} `.includes(toggled)))
+interface BaseMediaQueryList {
+  media: string
+  matches: boolean
+  onchange?: ((event: Event) => void) | null
+}
+
+const matchMedia_: (media: string) => BaseMediaQueryList = !Build.MV3 ? matchMedia : (media): BaseMediaQueryList => {
+  return { media, matches: false }
+}
+
+export const MediaWatcher_ = {
+  watchers_: [
+    Build.MV3 || (OnChrome && Build.MinCVer >= BrowserVer.MinMediaQuery$PrefersReducedMotion)
+      || (OnFirefox && Build.MinFFVer >= FirefoxBrowserVer.MinMediaQuery$PrefersReducedMotion)
+    ? MediaNS.Watcher.NotWatching : MediaNS.Watcher.WaitToTest,
+    Build.MV3 || (OnChrome && Build.MinCVer >= BrowserVer.MinMediaQuery$PrefersColorScheme)
+      && (OnFirefox && Build.MinFFVer >= FirefoxBrowserVer.MinMediaQuery$PrefersColorScheme)
+    ? MediaNS.Watcher.NotWatching : MediaNS.Watcher.WaitToTest
+  ] as Array<MediaNS.Watcher & number | BaseMediaQueryList>,
+  get_ (key: MediaNS.kName): boolean | null {
+    let watcher = MediaWatcher_.watchers_[key];
+    return typeof watcher === "object" ? watcher.matches : null;
+  },
+  listen_ (key: MediaNS.kName, listenType: 0 | 1 | 2): void {
+    const doListen = listenType === 2
+    let watchers = MediaWatcher_.watchers_, cur = watchers[key],
+    name = !key ? "prefers-reduced-motion" as const : "prefers-color-scheme" as const;
+    if (!Build.MV3 && cur === MediaNS.Watcher.WaitToTest && doListen) {
+      watchers[key] = cur = matchMedia_(`(${name})`).matches ? MediaNS.Watcher.NotWatching
+          : MediaNS.Watcher.InvalidMedia;
+    }
+    if (doListen && cur === MediaNS.Watcher.NotWatching) {
+      const query = matchMedia_(`(${name}: ${!key ? "reduce" : "dark"})`);
+      Build.MV3 || (query.onchange = MediaWatcher_._onChange)
+      watchers[key] = query;
+      if (!_mediaTimer) {
+        if (Build.MV3) {
+          MediaWatcher_.resume_()
+        } else {
+          _mediaTimer = setInterval(MediaWatcher_.RefreshAll_, GlobalConsts.MediaWatchInterval)
+        }
+      }
+    } else if (!doListen && typeof cur === "object") {
+      Build.MV3 || (cur.onchange = null)
+      watchers[key] = MediaNS.Watcher.NotWatching;
+      if (_mediaTimer > 0 && watchers.every(i => typeof i !== "object")) {
+        clearInterval(_mediaTimer)
+        _mediaTimer = 0
+      }
+    }
+  },
+  update_ (this: void, key: MediaNS.kName, embed?: 1 | 0, rawMatched?: boolean | null): void {
+    let watcher = MediaWatcher_.watchers_[key]
+    if (!Build.MV3 && !hasReliableWatchers && OnFirefox && embed == null && typeof watcher === "object") {
+      watcher.onchange = null
+      watcher = matchMedia_(watcher.media)
+      watcher.onchange = MediaWatcher_._onChange
+      MediaWatcher_.watchers_[key] = watcher
+    }
+    const finalMatched: boolean = typeof watcher === "object" ? watcher.matches : rawMatched != null ? rawMatched
+        : (key ? settingsCache_.autoDarkMode : settingsCache_.autoReduceMotion) === 1
+    setMediaState_(key, finalMatched, embed ? 0 : 1)
+  },
+  RefreshAll_ (this: void): void {
+    if (_mediaTimer > 0) {
+      if (performance.now() - lastVisitTabTime_ > 1000 * 60 * 4.5) {
+        clearInterval(_mediaTimer)
+        _mediaTimer = 0
+      }
+    }
+    if (Build.MV3) {
+      if (OnChrome && Build.MinCVer < BrowserVer.MinOffscreenAPIs && CurCVer_ < BrowserVer.MinOffscreenAPIs) {
+        return
+      }
+      const args = MediaWatcher_.watchers_.map(i => typeof i === "object" ? i.media : "")
+      if (args.join("")) {
+        void runOnTee_(kTeeTask.updateMedia, args, null).then(MediaWatcher_._onAsyncResults_mv3)
+      }
+      return
+    }
+    for (let arr = MediaWatcher_.watchers_, i = arr.length; 0 <= --i; ) {
+      let watcher = arr[i];
+      if (typeof watcher === "object") {
+        MediaWatcher_.update_(i);
+      }
+    }
+  },
+  resume_ (): void {
+    if (_mediaTimer) { return }
+    _mediaTimer = -2
+    setTimeout((): void => {
+      MediaWatcher_.RefreshAll_()
+      _mediaTimer = setInterval(MediaWatcher_.RefreshAll_, GlobalConsts.MediaWatchInterval)
+    }, 0)
+  },
+  _onAsyncResults_mv3: Build.MV3 ? (rawRet: unknown): void => {
+    const ret = rawRet as boolean[]
+    for (let i = 0; i < MediaWatcher_.watchers_.length; i++) {
+      const watcher = MediaWatcher_.watchers_[i]
+      if (typeof watcher === "object" && watcher.matches !== ret[i]) {
+        watcher.matches = ret[i]
+        MediaWatcher_.update_(i)
+      }
+    }
+  } : 0 as never,
+  _onChange: Build.MV3 ? 0 as never : function (this: BaseMediaQueryList): void {
+    if (!hasReliableWatchers) {
+      _mediaTimer > 0 && clearInterval(_mediaTimer)
+      _mediaTimer = -1
+      hasReliableWatchers = true
+    }
+    let index = MediaWatcher_.watchers_.indexOf(this);
+    if (index >= 0) {
+      MediaWatcher_.update_(index);
+    }
+    if (!Build.NDEBUG) {
+      console.log("Media watcher:", this.media, "has changed to",
+          matchMedia(this.media).matches, "/", index < 0 ? index : MediaWatcher_.get_(index));
     }
   }
-  if (styles === curStyles) { return }
-  omniPayload_.t = styles
-  const request2: Req.bg<kBgReq.omni_updateOptions> = { N: kBgReq.omni_updateOptions, d: { t: styles } }
-  asyncIter_(framesForOmni_.slice(0), (frame): number => {
-    frame !== port && framesForOmni_.includes(frame) && frame.postMessage(request2)
-    return 1
-  })
+}
+
+export const setMediaState_ = (key: MediaNS.kName, matched: boolean
+    , broadcast: 0 | 1 | 2 | 9, omni_port?: Port): void => {
+  const payloadKey = key ? "d" : "m"
+  const newPayloadVal = updatePayload_(payloadKey, matched)
+  let styles: string = omniPayload_.t
+  {
+    const toggled = key ? " dark " : " less-motion "
+    const extSt = styles && ` ${styles} `, exists = extSt.includes(toggled)
+    styles = matched ? exists ? styles : styles + toggled : extSt.replace(toggled, " ")
+    styles = styles.trim().replace(spacesRe_, " ")
+  }
+  if (broadcast === 9) {
+    for (const content_port of getFrames_(omni_port!)?.ports_ || []) {
+      content_port.postMessage({ N: kBgReq.settingsUpdate, d: { [payloadKey]: newPayloadVal }, v: contentConfVer_ })
+    }
+    omni_port!.postMessage({ N: kBgReq.omni_updateOptions, d: { t: styles }, v: omniConfVer_ })
+    return
+  }
+  if (contentPayload_[payloadKey] !== newPayloadVal || broadcast === 2) {
+    (contentPayload_ as Generalized<Pick<typeof contentPayload_, typeof payloadKey>>)[payloadKey] = newPayloadVal
+    broadcast && broadcast_({ N: kBgReq.settingsUpdate, d: [payloadKey] })
+  }
+  if (styles !== omniPayload_.t || broadcast === 2) {
+    omniPayload_.t = styles
+    broadcast && broadcastOmniConf_({ t: styles })
+  }
+}
+
+updateHooks_.autoDarkMode = updateHooks_.autoReduceMotion = (value: 0 | 1 | 2 | boolean
+      , keyName: "autoReduceMotion" | "autoDarkMode"): void => {
+    const key = keyName.length > 12 ? MediaNS.kName.PrefersReduceMotion : MediaNS.kName.PrefersColorScheme;
+    value = typeof value === "boolean" ? value ? 2 : 0 : value
+    MediaWatcher_.listen_(key, value);
+    MediaWatcher_.update_(key, 0, value === 2 ? null : value > 0)
 }
 
 OnChrome && set_getFindCSS_cr_(((sender: Frames.Sender): FindCSS => {
@@ -264,13 +417,17 @@ void ready_.then((): void => {
           && (!OnEdge || "all" in ((globalThis as MaybeWithWindow).document!.body as HTMLElement).style)
         ? "a" : "")
       + ";"
-set_innerCSS_(storageCache_.get("innerCSS") || "")
-if (innerCSS_ && !innerCSS_.startsWith(StyleCacheId_)) {
+  set_innerCSS_(storageCache_.get("innerCSS") || "")
+  if (innerCSS_ && !innerCSS_.startsWith(StyleCacheId_)) {
     storageCache_.set("vomnibarPage_f", "")
     reloadCSS_(MergeAction.rebuildWhenInit)
-} else {
+  } else {
     reloadCSS_(MergeAction.readFromCache, innerCSS_)
     installation_ && installation_.then(details => details && reloadCSS_(MergeAction.rebuildWhenInit))
-}
+  }
   updateHooks_.userDefinedCss = mergeCSS
+  if (!Build.MV3 && OnFirefox && Build.MinFFVer < FirefoxBrowserVer.MinMediaQueryListenersWorkInBg) {
+    hasReliableWatchers = CurFFVer_ > FirefoxBrowserVer.MinMediaQueryListenersWorkInBg - 1
+    _mediaTimer = hasReliableWatchers ? -1 : 0
+  }
 })

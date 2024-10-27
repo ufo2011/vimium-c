@@ -1,7 +1,7 @@
 import { CONST_, CurCVer_, CurFFVer_, OnChrome, OnEdge, OnFirefox, searchEngines_, substitute_ } from "./store"
 import * as BgUtils_ from "./utils"
 import {
-  checkSpecialSchemes_,
+  checkSpecialSchemes_, resetLastUrlType_, getDelimiter_,
   convertToUrl_, formatVimiumUrl_, lastUrlType_, removeComposedScheme_, searchVariableRe_, searchWordRe_
 } from "./normalize_urls"
 
@@ -52,7 +52,7 @@ export const parseSearchUrl_ = (request: FgReqWithRes[kFgReq.parseSearchUrl]): F
     } else {
       arr = [url];
     }
-  } else if (re == " " || re === "+") {
+  } else if (re == " " || re === "+" || re instanceof Array) {
     url = arr[0].toLowerCase()
     let colon = url.indexOf(":")
     colon = colon > 0 && colon < url.length ? colon : 0
@@ -61,7 +61,20 @@ export const parseSearchUrl_ = (request: FgReqWithRes[kFgReq.parseSearchUrl]): F
       colon = schemeType !== Urls.TempType.Unspecified && schemeType <= Urls.Type.PlainVimium ? colon : 0
     }
     isResultUrl = colon > 0 ? url.startsWith("data:") ? 2 : 1 : 0
-    arr = isResultUrl ? [arr[0]] : arr[0].split(re)
+    if (isResultUrl) {
+      arr = [arr[0]]
+    } else {
+      const useDefaultDelimiter = typeof re === "object"
+      let re2: RegExp | string = useDefaultDelimiter ? re[0] : re
+      if (useDefaultDelimiter && re2 === "+") {
+        let offset = pattern.prefix_.length
+        if (!pattern.matcher_.global) { offset += (arr as RegExpExecArray).index }
+        offset = httpType + offset + Math.max(0, s0.slice(offset).indexOf(arr[0]))
+        re2 = getDelimiter_(request.u, offset)
+        re2 = re2 === "%20" ? <RegExpOne> /%20| / : "+"
+      }
+      arr = arr[0].split(re2)
+    }
   } else {
     arr = arr[0].split(re);
   }
@@ -199,7 +212,7 @@ export const parseUpperUrl_ = (request: FgReq[kFgReq.parseUpperUrl]): ParsedUppe
 }
 
 const upperGitUrls = (url: string, path: string): string | void | null => {
-  const obj = BgUtils_.safeParseURL_(url), host: string | undefined = obj ? obj.host : ""
+  const host = BgUtils_.safeParseURL_(url)?.host
   if (!host) { return }
   if (!(<RegExpI> /git\b|\bgit/i).test(host) || !(<RegExpI> /^[\w\-]+(\.\w+)?(:\d{2,5})?$/).test(host)) {
     return
@@ -298,7 +311,7 @@ const detectLinkDeclaration_ = (str: string): string => {
   }
   if (url && endChar.includes(url[0])) { url = url.slice(1).trim() }
   if (nextTasks & 1 && url && leftCharRe.test(url[0])) { url = url.slice(1) }
-  convertToUrl_("javascript:;") // just to reset lastUrlType_
+  resetLastUrlType_()
   url = fixCharsInUrl_(url, false, true)
   return lastUrlType_ <= Urls.Type.MaxOfInputIsPlainUrl && !url.startsWith("vimium:") ? url : str;
 }
@@ -325,16 +338,17 @@ export const fixCharsInUrl_ = (url: string, alwaysNo3002?: boolean, forceConvers
 }
 
 export const parseSearchEngines_ = (str: string, map: Map<string, Search.Engine>): Search.Rule[] => {
-  let ids: string[], tmpRule: Search.TmpRule | null, tmpKey: Search.Rule["delimiter_"],
+  let ids: string[], tmpRule: Search.TmpRule | null, delimiter: Search.Rule["delimiter_"],
   key: string, obj: Search.RawEngine,
-  ind: number, rules: Search.Rule[] = [], re = searchWordRe_,
-  rSpace = <RegExpOne> /\s/,
-  func = (function (k: string): boolean {
-    return (k = k.trim()) && k !== "__proto__" && k.length < Consts.MinInvalidLengthOfSearchKey
+  ind: number, rules: Search.Rule[] = [],
+  reWhiteSpace = <RegExpOne> /\s/,
+  register = (function (k: string): boolean {
+    return (k = k.trim()) && !(OnChrome && Build.MinCVer < BrowserVer.MinEnsuredES6$ForOf$Map$SetAnd$Symbol
+        && k === "__proto__") && k.length < Consts.MinInvalidLengthOfSearchKey
       ? (map.set(k, obj), true) : false
   }),
-  pair: RegExpExecArray | null
-  for (let val of str.replace(<RegExpSearchable<0>> /\\\\?\n/g, t => t.length === 3 ? "\\\n" : "").split("\n")) {
+  pair: RegExpExecArray | null;
+  for (let val of str.replace(<RegExpSearchable<0>> /\\(?:\n|\\\n[^\S\n]*)/g, "").split("\n")) {
     val = val.trim();
     if (val < kChar.minNotCommentHead) { continue; } // mask: /[!"#]/
     ind = 0;
@@ -346,14 +360,14 @@ export const parseSearchEngines_ = (str: string, map: Map<string, Search.Engine>
     val = val.slice(ind + 1).trimLeft();
     if (!val) { continue; }
     key = val.replace(<RegExpG & RegExpSearchable<0>> /\\\s/g, "\\s");
-    ind = key.search(rSpace);
+    ind = key.search(reWhiteSpace)
     let blank = "";
-    if (ind > 0) {
+    if (ind >= 0) {
       str = val.slice(ind);
       val = key.slice(0, ind);
       ind = str.search(<RegExpI & RegExpSearchable<0>> /\sblank=/i);
       if (ind >= 0) {
-        let ind2 = str.slice(ind + 7).search(rSpace);
+        let ind2 = str.slice(ind + 7).search(reWhiteSpace)
         ind2 = ind2 > 0 ? ind + 7 + ind2 : 0;
         blank = str.slice(ind + 7, ind2 || void 0);
         str = str.slice(0, ind) + (ind2 ? str.slice(ind2) : "");
@@ -366,24 +380,28 @@ export const parseSearchEngines_ = (str: string, map: Map<string, Search.Engine>
     val = val.replace(<RegExpG & RegExpSearchable<0>> /\\s/g, " "
       ).trim().replace(<RegExpG & RegExpSearchable<2>> /([^\\]|^)%(s)/gi, "$1$$$2"
       ).replace(<RegExpG & RegExpSearchable<0>> /\\%/g, "%");
-    obj = {
-      name_: "",
-      blank_: blank,
-      url_: val
-    };
-    ids = ids.filter(func);
+    obj = { name_: "", url_: val, blank_: blank, complex_: map.size > 1 }
+    if (ids.includes("~") && obj.complex_) {
+      convertToUrl_(val, null, Urls.WorkType.KeepAll)
+      if (lastUrlType_ > Urls.Type.MaxOfInputIsPlainUrl) {
+        ids = ids.filter(i => i !== "~")
+      }
+    }
+    ids = ids.filter(register)
     if (ids.length === 0) { continue; }
     if (ind === -1) {
-      re.lastIndex = 0;
-      while ((pair = (re as RegExp as RegExpOne).exec(val)) && pair[0].endsWith("$")) { /* empty */ }
+      searchWordRe_.lastIndex = 0;
+      while ((pair = searchWordRe_.exec(val)) && pair[0].endsWith("$")) { /* empty */ }
       if (pair && (ind = pair.index + 1)) {
         key = pair[2];
         if (key) {
           key = (<RegExpI> /^s:/i).test(key) ? key[0] === "s" ? "+" : " " : key
+          delimiter = ""
         } else {
           key = pair[1] === "s" ? "+" : " ";
+          delimiter = [key]
         }
-        val = val.replace(re, (_full: string, s1: string | undefined): string => "$" + (s1 || "s")).toLowerCase()
+        val = val.replace(searchWordRe_, (_, s1: string | undefined): string => "$" + (s1 || "s")).toLowerCase()
         val = convertToUrl_(val, null, Urls.WorkType.ConvertKnown);
         if (lastUrlType_ > Urls.Type.MaxOfInputIsPlainUrl) {
           val = val.replace(<RegExpG & RegExpSearchable<0>> /%24(%24|s)/g, decodeURIComponent)
@@ -392,37 +410,43 @@ export const parseSearchEngines_ = (str: string, map: Map<string, Search.Engine>
         val = val.replace(<RegExpG & RegExpSearchable<0>> /\$[$s]/g, (s: string, index: number): string => {
           return s === "$$" ? (ind > 0 || ind--,  "$") : (ind = ind > 0 ? ind : ind + index + 1, s)
         })
-        if (tmpRule = reParseSearchUrl_(val, ind)) {
+        if (tmpRule = reParseSearchUrl_(val, ind, key)) {
           if (key.includes("$")) {
-            key = key.replace(searchVariableRe_, "(.*)");
-            tmpKey = new RegExp("^" + key, (<RegExpI> /[a-z]/i).test(key) ? "i" as "" : ""
+            key = key.replace(searchVariableRe_, s => s === "$$" ? "\\$" : "(.*)")
+            delimiter = new RegExp("^" + key, (<RegExpI> /[a-z]/i).test(key) ? "i" as "" : ""
               ) as RegExpI | RegExpOne;
           } else {
-            tmpKey = key.trim() || " ";
+            delimiter = delimiter || key.trim() || " "
           }
           rules.push({
             prefix_: tmpRule.prefix_,
             matcher_: tmpRule.matcher_,
-            name_: ids[0].trimRight(), delimiter_: tmpKey
+            name_: ids[0].trimRight(), delimiter_: delimiter
           });
         }
       }
-    } else if (str.charCodeAt(ind + 4) === kCharCode.slash) {
+    } else if (str.charAt(ind + 4) && !reWhiteSpace.test(str.charAt(ind + 4))) {
       key = ind > 1 ? str.slice(1, ind).trim() : "";
-      str = str.slice(ind + 5);
-      ind = str.search(<RegExpOne> /[^\\]\//) + 1;
+      const useSlash = str.charCodeAt(ind + 4) === kCharCode.slash
+      if (useSlash) {
+        str = str.slice(ind + 5);
+        ind = str.search(<RegExpOne> /[^\\]\//) + 1;
+      } else {
+        str = str.slice(ind + 4)
+        ind = str.search(reWhiteSpace)
+      }
       val = str.slice(0, ind);
-      str = str.slice(ind + 1);
-      ind = str.search(rSpace);
-      const tmpKey2 = BgUtils_.makeRegexp_(val, ind >= 0 ? str.slice(0, ind) : str);
+      str = str.slice(useSlash ? ind + 1 : ind)
+      ind = str.search(reWhiteSpace)
+      const tmpKey2 = BgUtils_.makeRegexp_(val, useSlash ? ind >= 0 ? str.slice(0, ind) : str : "")
       if (tmpKey2) {
         key = prepareReParsingPrefix_(key);
         rules.push({prefix_: key, matcher_: tmpKey2, name_: ids[0].trimRight(),
-            delimiter_: obj.url_.lastIndexOf("$S") >= 0 ? " " : "+"});
+            delimiter_: [ obj.url_.lastIndexOf("$S") >= 0 ? " " : "+" ]})
       }
       str = ind >= 0 ? str.slice(ind + 1) : "";
     } else {
-      str = str.slice(ind + 4);
+      str = str.slice(ind + 4)
     }
     str = str.trimLeft();
     obj.name_ = str ? BgUtils_.DecodeURLPart_(str) : ids[ids.length - 1].trimLeft();
@@ -430,7 +454,7 @@ export const parseSearchEngines_ = (str: string, map: Map<string, Search.Engine>
   return rules;
 }
 
-const reParseSearchUrl_ = (url: string, ind: number): Search.TmpRule | null => {
+const reParseSearchUrl_ = (url: string, ind: number, pattern: string): Search.TmpRule | null => {
   if (ind < 1 || !BgUtils_.protocolRe_.test(url)) { return null; }
   let prefix: string, str: string, str2: string, ind2: number;
   prefix = url.slice(0, ind - 1);
@@ -440,16 +464,18 @@ const reParseSearchUrl_ = (url: string, ind: number): Search.TmpRule | null => {
     if (ind2 = str.lastIndexOf("&") + 1) {
       str2 = str.slice(ind2);
     }
+    const excluded = (pattern.includes("&") ? "" : "&") + (pattern.includes("#") ? "" : "#")
     if (str2 && str2.indexOf("=") >= 1) {
       str = "[#&?]";
-      url = "([^#&]*)"
+      url = `([^${excluded}]*)`
     } else {
       str2 = str;
       str = url[ind - 1] === "#" ? "#" : str2 ? "[#?]" : "\\?";
-      url = "([^#&?]*)"
+      url = `([^${excluded}?]*)`
     }
   } else {
-    str = "^([^#?]*)";
+    const excluded = (pattern.includes("#") ? "" : "#") + (pattern.includes("?") ? "" : "?")
+    str = `^([^${excluded}]*)`
     if (str2 = url.slice(prefix.length + 2)) {
       if (ind = str2.search(<RegExpOne> /[#?]/) + 1) {
         str2 = str2.slice(0, ind - 1);

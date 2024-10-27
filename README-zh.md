@@ -3,29 +3,27 @@
   <span style="color: #2f508e;">Vim</span>ium <span style="color: #a55e18;">C</span> - 全键盘操作浏览器
 </h2>
 
-[![版本](https://img.shields.io/github/v/release/gdh1995/vimium-c?logo=GitHub&label=gdh1995%2Fvimium-c&color=critical
+[![版本](https://img.shields.io/badge/gdh1995-v1.99.993-critical?logo=GitHub
   )](https://github.com/gdh1995/vimium-c/releases)
-[![MIT 许可协议](https://img.shields.io/badge/许可协议-MIT-blue)](LICENSE.txt)
+[![Apache-2.0 许可协议](https://img.shields.io/badge/许可协议-Apache--2.0-blue)](LICENSE.txt)
 [![GitHub 收藏](https://img.shields.io/github/stars/gdh1995/vimium-c?logo=GitHub&label=收藏&labelColor=181717&color=critical
   )](https://github.com/gdh1995/vimium-c/stargazers)
 [![Gitee 收藏](https://gitee.com/gdh1995/vimium-c/badge/star.svg?theme=dark
   )](https://gitee.com/gdh1995/vimium-c/stargazers)
-[![异常代码数](https://img.shields.io/lgtm/alerts/g/gdh1995/vimium-c?logo=lgtm&logoWidth=18&label=lgtm
-  )](https://lgtm.com/projects/g/gdh1995/vimium-c/alerts/)
 
-[![Firefox 63+](https://img.shields.io/amo/v/vimium-c@gdh1995.cn?logo=Firefox%20Browser&logoColor=white&label=Firefox%2063%2B&labelColor=FF7139
+[![Firefox 101+](https://img.shields.io/amo/v/vimium-c@gdh1995.cn?logo=Firefox%20Browser&logoColor=white&label=Firefox%20101%2B&labelColor=FF7139
   )](https://addons.mozilla.org/firefox/addon/vimium-c/?src=external-readme)
 [![用户数](https://img.shields.io/amo/users/vimium-c@gdh1995.cn?logo=Firefox%20Browser&logoColor=white&label=用户数&labelColor=FF7139
   )](https://addons.mozilla.org/firefox/addon/vimium-c/?src=external-readme)
 [![评分](https://img.shields.io/amo/rating/vimium-c@gdh1995.cn?logo=Firefox%20Browser&logoColor=white&label=评分&labelColor=FF7139&color=blue
   )](https://addons.mozilla.org/firefox/addon/vimium-c/reviews/?src=external-readme)
-[![Edge 79+](https://img.shields.io/badge/dynamic/json?logo=Microsoft%20Edge&label=Edge%2079%2B&prefix=v&query=%24.version&url=https%3A%2F%2Fmicrosoftedge.microsoft.com%2Faddons%2Fgetproductdetailsbycrxid%2Faibcglbfblnogfjhbcmmpobjhnomhcdo
+[![Edge 102+](https://img.shields.io/badge/dynamic/json?logo=Microsoft%20Edge&label=Edge%20102%2B&prefix=v&query=%24.version&url=https%3A%2F%2Fmicrosoftedge.microsoft.com%2Faddons%2Fgetproductdetailsbycrxid%2Faibcglbfblnogfjhbcmmpobjhnomhcdo
   )](https://microsoftedge.microsoft.com/addons/detail/aibcglbfblnogfjhbcmmpobjhnomhcdo)
 [![用户数](https://img.shields.io/badge/dynamic/json?logo=Microsoft%20Edge&label=用户数&query=%24.activeInstallCount&url=https%3A%2F%2Fmicrosoftedge.microsoft.com%2Faddons%2Fgetproductdetailsbycrxid%2Faibcglbfblnogfjhbcmmpobjhnomhcdo
   )](https://microsoftedge.microsoft.com/addons/detail/aibcglbfblnogfjhbcmmpobjhnomhcdo)
 [![评分](https://img.shields.io/badge/dynamic/json?logo=Microsoft%20Edge&label=评分&query=%24.averageRating&url=https%3A%2F%2Fmicrosoftedge.microsoft.com%2Faddons%2Fgetproductdetailsbycrxid%2Faibcglbfblnogfjhbcmmpobjhnomhcdo
   )](https://microsoftedge.microsoft.com/addons/detail/aibcglbfblnogfjhbcmmpobjhnomhcdo)
-[![Chrome 47+](https://img.shields.io/chrome-web-store/v/hfjbmagddngcpeloejdejnfgbamkjaeg?logo=Google%20Chrome&logoColor=white&label=Chrome%2047%2B&labelColor=4285F4&color=critical
+[![Chrome 102+](https://img.shields.io/chrome-web-store/v/hfjbmagddngcpeloejdejnfgbamkjaeg?logo=Google%20Chrome&logoColor=white&label=Chrome%20102%2B&labelColor=4285F4&color=critical
   )](https://chrome.google.com/webstore/detail/vimium-c-all-by-keyboard/hfjbmagddngcpeloejdejnfgbamkjaeg)
 [![用户数](https://img.shields.io/chrome-web-store/users/hfjbmagddngcpeloejdejnfgbamkjaeg?logo=Google%20Chrome&logoColor=white&label=用户数&labelColor=4285F4&color=critical
   )](https://chrome.google.com/webstore/detail/vimium-c-all-by-keyboard/hfjbmagddngcpeloejdejnfgbamkjaeg)
@@ -41,7 +39,8 @@ Vimium C 是一款开源、免费的键盘增强类浏览器扩展，支持为�
 只要有键盘，您就能自由点击网页中的链接和按钮、选择和复制文字和网址，也能轻松操作浏览器标签页，
 还能在一个便捷的搜索框中随意搜索历史记录、收藏夹和打开的标签页等等。
 
-Vimium C 支持 Firefox 63+、新版 Microsoft Edge 和 Chrome 47+ 等现代浏览器。
+Vimium C 支持 Firefox 101+、新版 Microsoft Edge 102+ 和 Chrome 102+ 等现代浏览器；
+如果从源码重新编译，还可以支持 Chromium 32~108 和 Firefox 63~100。
 
 本项目的前身是[<span style="color: #2f508e;">Vim</span>ium](https://github.com/philc/vimium
   )。和其相比，除了大量细节改进、新增很多命令参数外，Vimium C 添加了完整的 <span style="color: #a55e18;">中文
@@ -51,12 +50,15 @@ Vimium C 支持 Firefox 63+、新版 Microsoft Edge 和 Chrome 47+ 等现代浏�
   )功能，还能运行在某些接受 Vimium C 的扩展程序的私有页面里，并且对CPU和内存资源的<span
     style="color: #a55e18;">消耗很低</span>。
 
-本项目主要由 [gdh1995](https://github.com/gdh1995) 开发并维护，并且以 [MIT 许可协议](LICENSE.txt) 开源。
+本项目主要由 [gdh1995](https://github.com/gdh1995) 开发并维护，
+且以 [Apache-2.0 许可协议](LICENSE.txt) 开源。
 除部分源自 [Vimium](https://github.com/philc/vimium) 的以 MIT 许可协议 开源的英文语句外，
 本项目的翻译文件（[_locales/](https://github.com/gdh1995/vimium-c/tree/master/_locales) 文件夹）归属于
 [CC-BY-SA-4.0](https://creativecommons.org/licenses/by-sa/4.0/)（创作共用-署名-相同方式共享 4.0）协议。
 
 本项目的主仓库是 https://github.com/gdh1995/vimium-c 和 https://gitee.com/gdh1995/vimium-c 。
+
+Vimium C 的部分旧代码以 MIT 许可协议开源，可以前往 https://github.com/gdh1995/vimium-c/tree/MIT-licensed-v1 获得源码。
 
 [Here's its description in English](README.md)（点击查看英文介绍）。
 
@@ -151,7 +153,7 @@ Vimium C 具有完善的安全机制：
 
 # 更新说明
 
-参见 [RELEASE-NOTES.md](RELEASE-NOTES.md)（目前暂仅提供英文说明）。
+参见 [RELEASE-NOTES.md](RELEASE-NOTES.md)（暂仅提供英文说明）。
 
 
 <a name="donate"></a><a name="donating"></a><a name="donation"></a>
@@ -172,7 +174,7 @@ you may donate any small amount of money to him through
   [Alipay](https://intl.alipay.com/) or [WeChat](https://www.wechat.com/). Thanks a lot!
 
 
-捐赠列表详见 / A donation list is in : https://github.com/gdh1995/vimium-c/wiki/Donation-List .
+部分捐赠列表详见 / A partial donation list is in : https://github.com/gdh1995/vimium-c/wiki/Donation-List .
 
 <img width="240" alt="gdh1995 的支付宝二维码" src="https://gdh1995.cn/alipay-recv-money.png"
   /> <img width="240" alt="gdh1995 的微信赞赏码" src="https://gdh1995.cn/wechat-recv-money.png"

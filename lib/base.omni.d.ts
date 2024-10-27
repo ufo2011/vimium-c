@@ -1,10 +1,7 @@
 /// <reference path="../typings/lib/window.d.ts" />
 declare namespace VomnibarNS {
 interface BaseFgOptions extends Pick<CmdOptions[kFgCmd.vomnibar], "s" | "t"> {
-  // physical pixel size (if C<52) and devicePixelRatio
-  w: number;
-  h: number;
-  z: number;
+  w: [hostInnerWidth: number, hostInnerHeight: number, devicePixelRatio: number]
   p: "" | FgRes[kFgReq.parseSearchUrl];
 }
 interface FgOptions extends BaseFgOptions, Partial<GlobalOptions> {
@@ -18,8 +15,9 @@ const enum kCReq {
   _mask = "",
 }
 const enum kFReq {
-  hide, focus, style, iframeIsAlive,
-  hud, evalJS, scroll, scrollGoing, scrollEnd, broken, unload,
+  hide, focus, style, iframeIsAlive, hud,
+  evalJS, scroll, scrollGoing, stopScroll, broken,
+  unload, scaled_old_cr,
   _mask = "",
 }
 interface CReq {
@@ -36,8 +34,7 @@ interface FReq {
   };
   [kFReq.style]: {
     // unit: physical pixel (if C<52)
-    h: number;
-    m?: number;
+    /** current height */ h: number
   };
   [kFReq.hud]: { k: kTip };
   [kFReq.focus]: {
@@ -47,10 +44,11 @@ interface FReq {
     u: string;
   };
   [kFReq.broken]: {};
-  [kFReq.scrollEnd]: {};
+  [kFReq.stopScroll]: {}
   [kFReq.scrollGoing]: {};
   [kFReq.unload]: {};
   [kFReq.iframeIsAlive]: { /** hasOptionsPassed */ o: BOOL };
+  [kFReq.scaled_old_cr]: { t: string }
 }
 interface IframePort {
   postMessage<K extends keyof FReq> (this: IframePort, msg: FReq[K] & Msg<K>): void | 1;
@@ -58,5 +56,7 @@ interface IframePort {
 }
 type FgOptionsToFront = CReq[kCReq.activate];
 
-interface ContentOptions extends GlobalOptions {}
+interface ContentOptions extends GlobalOptions {
+  /** on Firefox and has filter (maybe from dark reader's Filter(+) mode) */ d?: boolean
+}
 }

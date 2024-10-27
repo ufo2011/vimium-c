@@ -1,3 +1,10 @@
+/**
+ * Source is from https://github.com/terser/terser :
+ * * Terser is released under the BSD licens4e:
+ * * Copyright 2012-2018 (c) Mihai Bazon <mihai.bazon@gmail.com>
+ *
+ * Type is learnt and then organized by Gong Dahan (gdh1995@qq.com)
+ */
 /// <reference no-default-lib="true"/>
 /// <reference path="es.d.ts" />
 

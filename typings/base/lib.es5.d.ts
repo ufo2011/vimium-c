@@ -340,6 +340,7 @@ interface CallableFunction extends Function {
       * @param args Arguments to bind to the parameters of the function.
       */
     bind<T>(this: T, thisArg: ThisParameterType<T>): OmitThisParameter<T>;
+    bind<T, A extends any[], R>(this: (this: T, ...args: A) => R, thisArg: T extends void ? null | 0 : T): (...args: A) => R;
     bind<T, A0, A extends any[], R>(this: (this: T, arg0: A0, ...args: A) => R, thisArg: T extends void ? null | 0 : T, arg0: A0): (...args: A) => R;
     bind<T, A0, A1, A extends any[], R>(this: (this: T, arg0: A0, arg1: A1, ...args: A) => R, thisArg: T extends void ? null | 0 : T, arg0: A0, arg1: A1): (...args: A) => R;
     bind<T, A0, A1, A2, A extends any[], R>(this: (this: T, arg0: A0, arg1: A1, arg2: A2, ...args: A) => R, thisArg: T extends void ? null | 0 : T, arg0: A0, arg1: A1, arg2: A2): (...args: A) => R;
@@ -1112,15 +1113,8 @@ interface JSON {
       * @param replacer A function that transforms the results.
       * @param space Adds indentation, white space, and line break characters to the return-value JSON text to make it easier to read.
       */
-    stringify<T>(value: T, replacer?: null, space?: string | number): string;
+    stringify<T extends object | number | string | boolean | null>(value: T, replacer?: null, space?: string | number): string
     stringify(value: any, replacer?: (key: string, value: any) => any, space?: string | number): string;
-    /**
-      * Converts a JavaScript value to a JavaScript Object Notation (JSON) string.
-      * @param value A JavaScript value, usually an object or array, to be converted.
-      * @param replacer An array of strings and numbers that acts as a approved list for selecting the object properties that will be stringified.
-      * @param space Adds indentation, white space, and line break characters to the return-value JSON text to make it easier to read.
-      */
-    stringify(value: any, replacer?: (number | string)[] | null, space?: string | number): string;
 }
 
 /**

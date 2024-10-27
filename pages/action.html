@@ -8,7 +8,7 @@
     <script type="module" src="async_bg.js" blocking="render"></script>
     <link rel="stylesheet" href="options.css">
     <script type="module" src="options_base.js" blocking="render"></script>
-    <script type="module" src="options_popup.js" blocking="render"></script>
+    <script type="module" src="options_action.js" blocking="render"></script>
     <style>
 * {
 	margin: 0;
@@ -25,7 +25,7 @@ p {
 }
 
 #helpText, #state {
-	font-family: "Helvetica Neue",Helvetica,Arial,sans-serif;
+	font-family: "Helvetica Neue",Arial,sans-serif;
 }
 
 #state {
@@ -74,7 +74,7 @@ a.decorate-none:not(:hover) {
 
 
 /* Make exclusionRules smaller than on the options page, because there are likely to be fewer
-	 matching rules, and the popup obscures the underlying page.
+	 matching rules, and the action page obscures the underlying page.
  */
 #exclusionRules {
 	height: 144px;
@@ -135,8 +135,8 @@ a.decorate-none:not(:hover) {
         <span style="display: none;"><strong><kbd>&lt;c-enter&gt;</kbd></strong>
           <span data-i="123">to save and close.</span></span>
       </span>
-      <button id="exclusionAddButton" class="fixed-size" data-i="2">Add Rule</button>
-      <button id="saveOptions" class="fixed-size" disabled="disabled">No Changes</button>
+      <button id="exclusionAddButton" class="fixed-size" data-i="2">Add rule</button>
+      <button id="saveOptions" class="fixed-size" disabled="disabled">No changes</button>
     </div>
     <div id="blocked-msg" style="box-sizing: border-box; display: none; padding: 8px 20px 12px;">
       <h4>

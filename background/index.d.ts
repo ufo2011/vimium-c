@@ -1,11 +1,7 @@
 type SimulatedMap = IterableMap<string, any> & Set<string> & { map_: SafeDict<1>, isSet_: BOOL }
 
 declare namespace Search {
-  interface RawEngine {
-    url_: string;
-    blank_: string;
-    name_: string;
-  }
+  interface RawEngine { name_: string; url_: string; blank_: string; complex_: boolean }
   interface Engine extends Readonly<RawEngine> {}
   interface Result {
     readonly url_: string;
@@ -20,13 +16,14 @@ declare namespace Search {
     readonly prefix_: string;
     readonly matcher_: RegExp;
     readonly name_: string;
-    readonly delimiter_: RegExpOne | RegExpI | string;
+    readonly delimiter_: RegExpOne | RegExpI | string | [ string ]
   }
 }
 
 declare namespace Urls {
   const enum kEval {
-    math = 0, copy = 1, search = 2, ERROR = 3, status = 4, paste = 5, run = 6, plainUrl = 7,
+    math = 0, copy = 1, search = 2, ERROR = 3, status = 4, paste = 5, run = 6, plainUrl = 7, run1 = 8,
+    browserSearch = 9,
   }
 
   interface BaseEvalResult extends Array<any> {
@@ -55,7 +52,10 @@ declare namespace Urls {
   interface StatusEvalResult extends BasePlainEvalResult<kEval.status> {
     readonly [0]: Frames.ForcedStatusText;
   }
-  interface RunEvalResult extends Urls.BaseEvalResult { [0]: ["run" | "openUrls", ...string[]]; [1]: Urls.kEval.run }
+  interface RunEvalResult extends Urls.BaseEvalResult {
+    [0]: ["run" | "run1" | "openUrls", ...string[]]
+    [1]: Urls.kEval.run
+  }
 
   type EvalArrayResultWithSideEffects = CopyEvalResult;
 
@@ -147,7 +147,7 @@ declare namespace Frames {
     readonly ports_: Port[]
     lock_: { status_: ValidStatus, passKeys_: string | null } | null
     flags_: Flags
-    unknownExt_?: null | /** id */ string | /** too many */ 2 | /** the popup dialog has shown */ -1
+    unknownExt_?: null | /** id */ string | /** too many */ 2 | /** the action dialog has shown */ -1
   }
 
   interface FramesMap extends Map<number, Frames> {
@@ -159,6 +159,9 @@ declare namespace Frames {
   }
 }
 
+interface WSender {
+  readonly s: Readonly<Frames.Sender>;
+}
 interface Port extends Frames.Port {
   readonly s: Readonly<Frames.Sender>;
 }
@@ -169,17 +172,13 @@ declare const enum IncognitoType {
 }
 
 declare namespace MarksNS {
-  interface StoredGlobalMark {
-    tabId: number;
-    url: BaseMarkProps["u"];
-    scroll: BaseMarkProps["s"];
-  }
-
-  interface InfoToGo extends FocusOrLaunch, Partial<BaseMark> {
-    /** scroll */ s: ScrollInfo;
+  interface MarkToGo extends WithEnsured<FocusOrLaunch, "s"> {
+    /** markName */ n: string;
     /** tabId */ t?: number;
   }
-  type MarkToGo = InfoToGo & BaseMark;
+  interface GlobalMarkV1 { tabId: number; url: string; /** `undefined` is just in case */ scroll?: ScrollInfo }
+  type StoredMarkV2 = /** global marks */ (Ensure<MarkToGo, "u" | "t"> & { s?: ScrollInfo | number })
+      | /** local marks */ (ScrollInfo | number)
 }
 
 declare namespace ExclusionsNS {
@@ -210,6 +209,7 @@ declare namespace CommandsNS {
     host?: string | ValidUrlMatchers | null
     /** (deprecated) @see host */ url?: string
     fullscreen?: boolean
+    incognito?: boolean
     iframe?: string | boolean | ValidUrlMatchers | null
     options?: (object & EnvItemOptions) | null
   }
@@ -242,7 +242,7 @@ declare namespace CompletersNS {
   type Visibility = kVisibility.hidden | kVisibility.visible
   interface DecodedItem { readonly u: string; t: string }
   interface HistoryItem extends DecodedItem { readonly u: string; time_: number; title_: string; visible_: Visibility }
-  const enum BookmarkStatus { notInited = 0, initing = 1, inited = 2 }
+  const enum BookmarkStatus { notInited = 0, initing = 1, inited = 2, revoked = 3 }
   interface BaseBookmark {
     readonly id_: string
     readonly path_: string
@@ -294,29 +294,30 @@ declare namespace MediaNS {
     InvalidMedia = 0,
     WaitToTest,
     NotWatching,
+    _mask = ""
   }
 }
 
 declare namespace SettingsNS {
   interface BackendSettings extends BaseBackendSettings {
+    allBrowserUrls: boolean
     clipSub: string;
     exclusionListenHash: boolean;
     exclusionOnlyFirstMatch: boolean;
     exclusionRules: ExclusionsNS.StoredRule[];
     extAllowList: string;
-    hideHud: boolean;
     keyMappings: string;
     localeEncoding: string;
     newTabUrl: string;
     nextPatterns: string;
+    notifyUpdate: boolean;
     previousPatterns: string;
-    allBrowserUrls: boolean
+    preferBrowserSearch: boolean
     searchUrl: string;
     searchEngines: string;
     showActionIcon: boolean;
-    showAdvancedOptions: boolean;
     showInIncognito: boolean;
-    notifyUpdate: boolean;
+    titleIgnoreList: string
     userDefinedCss: string;
     vimSync: boolean | null;
     vomnibarPage: string;
@@ -365,14 +366,15 @@ import SettingsWithDefaults = SettingsNS.SettingsWithDefaults;
 declare namespace BackendHandlersNS {
   interface SpecialHandlers {
     [kFgReq.gotoSession]: {
-      (this: void, request: { s: CompletersNS.SessionId; a: false }, port: Port): void;
-      (this: void, request: { s: CompletersNS.SessionId; a?: true }): void;
+      (this: void, request: { s: CompletersNS.SessionId; a: 0 | 1 | 2 }, port: Port): void;
+      (this: void, request: { s: CompletersNS.SessionId; a?: 1 }): void;
     };
     [kFgReq.checkIfEnabled]: ExclusionsNS.Listener & (
         (this: void, request: FgReq[kFgReq.checkIfEnabled], port: Frames.Port) => void);
     [kFgReq.focusOrLaunch]: (this: void, request: FgReq[kFgReq.focusOrLaunch], port?: Port | null) => void
     [kFgReq.removeSug]: (this: void, request: FgReq[kFgReq.removeSug], _port?: Port | null) => void
     [kFgReq.key]: (this: void, request: FgReq[kFgReq.key], port: Port | null) => void
+    [kFgReq.recheckTee]: () => FgRes[kFgReq.recheckTee]
   }
   type FgRequestHandlers = {
     readonly [K in keyof FgReqWithRes | keyof FgReq]:
@@ -399,6 +401,10 @@ interface SetTimeout {
   <T1>(this: void, handler: (this: void, a1: T1) => void, timeout: number, a1: T1): number;
 }
 
+interface SetInterval {
+  <T1>(this: void, handler: (this: void, a1: T1) => void, timeout: number, a1: T1): number
+}
+
 interface IterableMap<K extends string | number, V> extends Map<K, V> {
   keys (): IterableIterator<K> & K[]
 }
@@ -407,3 +413,9 @@ type ExtApiResult<T> = [T, undefined] | [undefined, { message?: any }]
 declare function fetch(input: `/${string}` | `data:${string}`, init?: Partial<Request>): Promise<Response>;
 
 interface MaybeWithWindow { window?: Window; document?: HTMLDocument }
+
+interface InfoOnSed {
+  keyword_?: string | null
+  actAnyway_?: boolean | null
+  noSysClip_?: boolean | null
+}

@@ -1,13 +1,14 @@
 import {
   set_evalVimiumUrl_, copy_, evalVimiumUrl_, substitute_, paste_, cPort, curTabId_, framesForTab_, needIcon_, setIcon_,
-  set_cPort, searchEngines_
+  set_cPort, searchEngines_, OnEdge, OnChrome, CurCVer_, OnFirefox, CurFFVer_
 } from "./store"
 import { decodeEscapedURL_, spacesRe_, DecodeURLPart_ } from "./utils"
-import { import2 } from "./browser"
+import { browser_, import2 } from "./browser"
 import { convertToUrl_, lastUrlType_, createSearchUrl_, quotedStringRe_ } from "./normalize_urls"
 import { parseSearchUrl_ } from "./parse_urls"
 import { getPortUrl_, showHUD, showHUDEx } from "./ports"
 import * as Exclusions from "./exclusions"
+import { parseReuse } from "./open_urls"
 
 set_evalVimiumUrl_(function (path: string, workType?: Urls.WorkType
     , onlyOnce?: boolean | null, _isNested?: number): Urls.Url | null {
@@ -44,8 +45,8 @@ set_evalVimiumUrl_(function (path: string, workType?: Urls.WorkType
     return [path, Urls.kEval.ERROR];
   } }
   else if (workType >= Urls.WorkType.ActAnyway) { switch (cmd) {
-  case "run":
-    return [["run", path], Urls.kEval.run]
+  case "run": case "run1": case "run-one": case "run-one-key":
+    return [[cmd, path], Urls.kEval.run]
   case "status": case "state":
     if (workType >= Urls.WorkType.EvenAffectStatus) {
       /*#__NOINLINE__*/ forceStatus_(path as Frames.ForcedStatusText)
@@ -69,6 +70,35 @@ set_evalVimiumUrl_(function (path: string, workType?: Urls.WorkType
     const path3 = copy_(path);
     return typeof path3 === "string" ? [path, Urls.kEval.copy]
         : path3.then<Urls.CopyEvalResult>(path32 => [path32, Urls.kEval.copy])
+  case "browser-search": case "browser-search2": case "browser-search.at": case "browser-search-at":
+  case "bs": case "bs2": case "bs.at": case "bs-at": case "b-s": case "b-s2": case "b-s.at": case "b-s-at":
+  case "b-search": case "b-search2": case "b-search.at": case "b-search-at":
+    if (OnChrome ? Build.MinCVer >= BrowserVer.Min$search$$query || CurCVer_ > BrowserVer.Min$search$$query - 1
+        : OnFirefox ? (Build.MinFFVer >= FirefoxBrowserVer.Min$search$$search
+            || CurFFVer_ > FirefoxBrowserVer.Min$search$$search - 1)
+        : !OnEdge && browser_.search) {
+      let disposition: Parameters<typeof chrome.search.query>[0]["disposition"] = "NEW_TAB"
+      if (cmd.endsWith("2") || cmd.endsWith("at")) {
+        const prefixArr = (<RegExpOne> /^[-\w][^ /]*/).exec(path)
+        if (prefixArr) {
+          const reuse = parseReuse(prefixArr[0] as UserReuseType & string)
+          disposition = reuse === ReuseType.newWnd ? "NEW_WINDOW"
+              : reuse >= ReuseType.current || reuse === ReuseType.reuseInCurWnd ? "CURRENT_TAB" : disposition
+          path = path.slice(prefixArr[0].length + 1)
+        }
+      }
+      path = path.trim().replace(spacesRe_, " ")
+      if (OnFirefox && Build.MinFFVer < FirefoxBrowserVer.Min$search$$query
+          && CurFFVer_ < FirefoxBrowserVer.Min$search$$query) {
+        browser_.search.search(disposition === "CURRENT_TAB" && curTabId_ >= 0 ? { tabId: curTabId_, query: path }
+            : { query: path })
+      } else {
+        browser_.search.query({ disposition, text: path })
+      }
+      return [path, Urls.kEval.browserSearch]
+    } else {
+      return ["Browser API not supported", Urls.kEval.ERROR]
+    }
   } }
   switch (cmd) {
   case "urls":
@@ -289,7 +319,7 @@ const callOpenUrls = (path: string, workType: Urls.WorkType): Urls.ErrorEvalResu
   const keys = path.slice(0, ind - 1).split(path.lastIndexOf(" ", ind - 1) >= 0 ? " " : "|")
       .filter(i => searchEngines_.map.has(i))
   if (keys.length <= 0) { return ["No valid search engines found", Urls.kEval.ERROR] }
-  const query = path.slice(ind).split(" ")
+  const query = path.slice(ind).trim().split(" ")
   const urls: Urls.RunEvalResult[0] = ["openUrls"]
   // `as string` is safe when only used by {@see open_urls.ts#onEvalUrl_}
   for (const keyword of keys) { urls.push(createSearchUrl_(query, keyword, workType) as string) }

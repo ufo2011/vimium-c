@@ -1,4 +1,7 @@
 type BOOL = 0 | 1;
+type _IfMixOr<T, R> = string extends T ? string | R : number extends T ? number | R : boolean extends T ? true | R : T
+type IfTrueOr<T, R> = T extends false | 0 | "" | null | undefined | void ? R : _IfMixOr<T, R>
+
 interface Function { readonly arguments: IArguments }
 interface Dict<T> {
   [key: string]: T | undefined;
@@ -129,7 +132,14 @@ interface HTMLInputElement extends HTMLEditableELement {
   className: string
   showPicker? (): void
 }
+interface HTMLSelectElement extends HTMLEditableELement {
+  showPicker? (): void
+}
 interface HTMLTextAreaElement extends HTMLEditableELement {}
+interface HTMLSummaryElement extends SafeHTMLElement { localName: "summary" }
+interface HTMLLabelableElement extends SafeHTMLElement {
+  localName: "button" | "input" | "meter" | "output" | "progress" | "select" | "textarea"
+}
 
 declare var Response: { new (blob: Blob): Response }
 
@@ -146,7 +156,27 @@ declare namespace chrome.tabs {
     cookieStoreId?: GroupId
     openInReaderMode?: boolean
   }
-  export function group (options: { tabIds: number | number[], groupId?: number }): Promise<object>
+  interface UpdateProperties {
+    autoDiscardable?: boolean
+  }
+  export function group (options: { tabIds: number | number[], groupId?: number, createProperties?: {
+      windowId?: number } }): Promise<number>
+  export function ungroup (tabIds: number | number[], callback?: () => void): void
+}
+
+declare namespace chrome.tabGroups {
+  interface TabGroup {
+    id: number
+    collapsed: boolean
+    color: "grey" | "blue" | "red"
+    title?: string
+    windowId: number
+  }
+  export function update (groupId: number, properties: PartialOf<TabGroup, "collapsed" | "color" | "title">
+      ): Promise<TabGroup | undefined>
+  export function query (queryInfo: PartialOf<TabGroup, "collapsed" | "color" | "title" | "windowId">
+      ): Promise<TabGroup | undefined>
+  export function move (groupId: number, prop: {index: number, windowId?: number}, callback: (_: unknown) => void): void
 }
 
 declare namespace chrome.scripting {
@@ -162,8 +192,32 @@ declare namespace chrome.scripting {
     world?: "ISOLATED" | "MAIN" // "ISOLATED" is since C95+
     func?: (...args: Args) => Res // C92+
   }
+  interface RegisteredContentScript {
+    allFrames?: boolean
+    css?: string[]
+    excludeMatches?: string[]
+    id: string
+    js?: string[] /// files
+    matches: string[]
+    persistAcrossSessions?: boolean // default to true
+    runAt?: "document_start" | "document_end" | "document_idle"
+    world?: "ISOLATED" | "MAIN"
+  }
   export function executeScript<Args extends (string | number | boolean | null)[], Res>(
       injection: ScriptInjection<Args, Res>, callback?: (results: {frameId: number, result: Res}[]) => void): 1
+  export function registerContentScripts(scripts: RegisteredContentScript[]): Promise<void>
+}
+
+declare namespace chrome.search {
+  export function query(queryInfo: { disposition?: "CURRENT_TAB" | "NEW_TAB" | "NEW_WINDOW", text: string }): 1;
+  export function search(queryInfo: { query: string, tabId?: number }): 1;
+}
+
+declare namespace chrome.storage {
+  var session: LocalStorageArea & {
+    setAccessLevel (level: "TRUSTED_AND_UNTRUSTED_CONTEXTS" | "TRUSTED_CONTEXTS"): Promise<void>
+    get <K extends string> (field: K | K[]): Promise<Record<K, unknown>>
+  }
 }
 
 declare namespace chrome.bookmarks {
@@ -176,13 +230,34 @@ declare namespace chrome.clipboard {
 declare namespace chrome.extension {
   export const getBackgroundPage: (() => Window | null) | undefined
 }
+declare namespace chrome.dom {
+  export const openOrClosedShadowRoot: ((element: HTMLElement) => ShadowRoot | null) | undefined
+}
 declare namespace chrome.runtime {
   interface BrowserInfo {
     name: string
     version: string
   }
+  interface Manifest {
+    host_permissions: chrome.permissions.kPermission[]
+    optional_host_permissions: chrome.permissions.kPermission[]
+  }
+  interface MessageSender {
+    documentLifecycle?: "prerender" | "active" | "cached" | "pending_deletion"
+  }
   export function getBrowserInfo(exArg?: FakeArg): Promise<BrowserInfo>
   export const getFrameId: ((frame: Window | HTMLIFrameElement | HTMLFrameElement) => number) | undefined
+}
+
+declare namespace chrome.offscreen {
+  export type kReason = "CLIPBOARD" | "MATCH_MEDIA" | "BLOBS"
+  export const Reason: {
+    BLOBS: "BLOBS",
+    CLIPBOARD: "CLIPBOARD",
+    MATCH_MEDIA?: "MATCH_MEDIA",
+  }
+  export function createDocument(args: { reasons: kReason[], url: string, justification: string }, cb: () => void): void
+  export function closeDocument(callback: (_fake: FakeArg) => void): void
 }
 
 declare module chrome.downloads {
@@ -200,7 +275,7 @@ declare module chrome.downloads {
 }
 
 declare module chrome.permissions {
-  export type kPermission = "downloads" | "downloads.shelf"
+  export type kPermission = "bookmarks" | "downloads" | "downloads.shelf" | "history"
       | "chrome://new-tab-page/*" | "chrome://newtab/*" | "chrome://*/*"
       | "clipboardRead" | "contentSettings" | "notifications" | "cookies"
   export interface Request { origins?: kPermission[]; permissions?: kPermission[] }
@@ -222,9 +297,13 @@ interface Element {
   ariaDisabled?: boolean | string | null
   ariaHasPopup?: string | null
   ariaHidden?: string | null
+  ariaReadOnly?: string | null
+}
+interface FocusOptions {
+  preventScroll?: boolean
 }
 interface HTMLElement {
-  focus (options?: { preventScroll?: boolean }): void
+  focus (options?: FocusOptions): void
 }
 
 interface HTMLMediaElement {
@@ -264,7 +343,7 @@ interface NavigatorID {
   readonly vendorSub: string;
 }
 
-interface UABrandInfo { brand: string, version: number }
+interface UABrandInfo { brand: string, version: string }
 interface Navigator {
   scheduling?: {
     isInputPending (options?: { includeContinuous?: boolean }): boolean // options must be an cls intance on C84 if exp
@@ -298,10 +377,20 @@ interface URLPattern extends URLPatternDict {
   test (url: string): boolean
 }
 interface URLPatternResult {}
-declare var URLPattern: { new (template: string | URLPatternDict): URLPattern } | undefined
+declare var URLPattern: {
+  new (template: string, base: string, options?: { ignoreCase?: boolean }): URLPattern // tested on Chrome 110
+  new (template: string | URLPatternDict): URLPattern
+} | undefined
 
 declare module crypto {
   const getRandomValues: (buffer: Uint8Array) => unknown
+}
+
+interface PopoverElement extends SafeHTMLElement {
+  popover: null | "auto" | "manual"
+  hidePopover (): void
+  showPopover (): void
+  togglePopover (forced?: boolean): void
 }
 
 declare const enum Instruction { next = 0, return = 2, /** aka. "goto" */ break = 3, yield = 4 }
@@ -317,9 +406,12 @@ declare var Reflect: Reflect | undefined
 declare var InstallTrigger: object | undefined, MathMLElement: object | undefined, safari: object | null | undefined
 
 interface CSS { escape? (value: string): string }
+interface CSSStyleDeclaration { colorScheme?: string }
 
 interface KeyboardEventInit { keyCode?: number; which?: number }
 
 type GlobalFetch = (input: string, init?: Partial<Request & {signal: object}>) => Promise<Response>
+declare var queueMicrotask: (callback: (this: void) => void) => void
 
 interface HTMLImageElement { referrerpolicy?: string }
+interface HTMLFrameElement { sandbox?: DOMTokenList }

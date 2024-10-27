@@ -1,14 +1,14 @@
 import {
   clickable_, vApi, isAlive_, safer, timeout_, escapeAllForRe, tryCreateRegExp, VTr, isTY, Lower, chromeVer_, OnSafari,
-  OnChrome, OnFirefox, OnEdge, evenHidden_, doc, firefoxVer_, urlSameIgnorehash
+  OnChrome, OnFirefox, OnEdge, evenHidden_, doc, firefoxVer_, urlSameIgnoringHash
 } from "../lib/utils"
 import {
   htmlTag_, isAriaFalse_, isStyleVisible_, querySelectorAll_unsafe_, isIFrameElement, ALA, attr_s, findAnchor_,
-  contains_s, notSafe_not_ff_, hasTag_, AriaArray, testMatch, uneditableInputs_, findSelectorByHost
+  contains_s, isSafeEl_, hasTag_, AriaArray, testMatch, uneditableInputs_, findSelectorByHost
 } from "../lib/dom_utils"
-import { getBoundingClientRect_, isNotInViewport, view_, VisibilityType } from "../lib/rect"
+import { getBoundingClientRect_, isNotInViewport, view_, kInvisibility } from "../lib/rect"
 import { kSafeAllSelector, detectUsableChild } from "./link_hints"
-import { traverse, ngEnabled, extraClickable_ } from "./local_links"
+import { traverse, ngEnabled_, extraClickable_ } from "./local_links"
 import { find_box } from "./mode_find"
 import { omni_box } from "./omni"
 import { flash_ } from "./dom_ui"
@@ -21,6 +21,7 @@ export const isInteractiveInPage = (element: SafeElement): boolean => {
   let rect: ClientRect
   return (rect = getBoundingClientRect_(element)).width > 2 && rect.height > 2
       && (isStyleVisible_(element) || !!(evenHidden_ & kHidden.VisibilityHidden))
+      || !!(evenHidden_ & kHidden.Size0)
 }
 
 export const filterTextToGoNext: VApiTy["g"] = (candidates, names, options, maxLen): number => {
@@ -43,7 +44,7 @@ export const filterTextToGoNext: VApiTy["g"] = (candidates, names, options, maxL
         || (OnFirefox ? (element as HTMLElement | SVGElement).onclick : attr_s(element, "onclick"))
         || ((s = OnChrome && Build.MinCVer >= BrowserVer.MinEnsured$Element$$role
                 ? element.role : attr_s(element, "role")) ? (<RegExpI> /^(button|link)$/i).test(s)
-          : ngEnabled && attr_s(element, "ng-click"))) {
+          : ngEnabled_ === 1 && attr_s(element, "ng-click"))) {
       if ((isAriaFalse_(element, kAria.disabled) && isAriaFalse_(element, kAria.hasPopup) || fromMatchSelector)
           && isInteractiveInPage(element)) {
         hints.push([element as SafeElementForMouse])
@@ -62,8 +63,8 @@ export const filterTextToGoNext: VApiTy["g"] = (candidates, names, options, maxL
   for (; i < names.length; i++) {
     if (GlobalConsts.SelectorPrefixesInPatterns.includes(names[i][0])) {
       const arr = querySelectorAll_unsafe_(names[i]);
-      if (arr && arr[0] && (OnFirefox || !notSafe_not_ff_!(arr[0]))) {
-        candidates.push([arr[0] as SafeElement as SafeElementForMouse, vApi, i << 23, ""])
+      if (arr && arr[0] && isSafeEl_(arr[0])) {
+        candidates.push([arr[0] satisfies SafeElement as SafeElementForMouse, vApi, i << 23, ""])
         names.length = i + 1
       }
     }
@@ -72,7 +73,7 @@ export const filterTextToGoNext: VApiTy["g"] = (candidates, names, options, maxL
   for (; 0 <= --index; ) {
     const link = links[index][0]
     s = "lang" in link ? (s = link.innerText, s.length > 2 && hasTag_("a", link) && link.childElementCount === 1
-              && (ch = !(Build.BTypes & ~BrowserType.Safari)
+              && (ch = Build.BTypes === BrowserType.Safari as number
                     || !(Build.BTypes & ~(BrowserType.Chrome | BrowserType.Safari))
                         && Build.MinCVer >= BrowserVer.MinEnsuredAriaProperties ? link.ariaLabel : attr_s(link, ALA))
               && (link.firstElementChild as Element as TypeToPick<Element, HTMLElement, "innerText">).innerText === s
@@ -91,12 +92,12 @@ export const filterTextToGoNext: VApiTy["g"] = (candidates, names, options, maxL
       for (i = 0; i < names.length; i++) {
         if (s.length < lenLimits[i] && s.includes(names[i])) {
           if (!s.includes(refusedStr) && (len = (s = s.trim()).split(wsRe).length) <= maxLen
-              && (!excOnHost || !testMatch(excOnHost, [link]))
+              && (!excOnHost || !testMatch(excOnHost, link))
               && (s !== "back" ? s !== "more"
                     || !(OnSafari || OnChrome && Build.MinCVer >= BrowserVer.MinEnsuredAriaProperties
                           ? link.ariaHasPopup : attr_s(link, AriaArray[kAria.hasPopup]))
-                  : OnChrome && Build.MinCVer < BrowserVer.MinEnsured$Element$$Closest
-                    && chromeVer_ < BrowserVer.MinEnsured$Element$$Closest ? hasTag_("a", link)
+                  : OnChrome && Build.MinCVer < BrowserVer.Min$Element$$closest
+                    && chromeVer_ < BrowserVer.Min$Element$$closest ? hasTag_("a", link)
                   : link.closest!("a"))
               ) {
             maxLen > len && (maxLen = len + 1);
@@ -172,7 +173,7 @@ export const findNextInRel = (options: CmdOptions[kFgCmd.goNext]
       : ":-webkit-any" + query.slice(3).replace("~= i", ""))!
   let s: string | null | undefined;
   type HTMLElementWithRel = HTMLAnchorElement | HTMLAreaElement | HTMLLinkElement;
-  let matched: HTMLElementWithRel | undefined, invisible: VisibilityType | 9 = 9, tag: "a" | "area" | "link" | ""
+  let matched: HTMLElementWithRel | undefined, invisible: kInvisibility | 9 = 9, tag: "a" | "area" | "link" | ""
   const re1 = <RegExpOne> /\s/
   if (OnChrome && Build.MinCVer < BrowserVer.MinEnsured$ForOf$ForDOMListTypes
       && Build.MinCVer >= BrowserVer.BuildMinForOf
@@ -188,18 +189,18 @@ export const findNextInRel = (options: CmdOptions[kFgCmd.goNext]
         && ((s = (element as HTMLElementWithRel).href) || tag < "aa")
         && (tag > "b" || isInteractiveInPage(element))) {
       if (matched) {
-        if (s && urlSameIgnorehash(s, matched.href)) {
+        if (s && !urlSameIgnoringHash(s, matched.href || s)) {
           return null;
         }
       }
       if (!matched || (invisible < 9 ? invisible : (invisible = isNotInViewport(matched as typeof element)))
           || !options.n && !isNotInViewport(element)) {
-        invisible = !matched || invisible ? 9 : VisibilityType.Visible
+        invisible = !matched || invisible ? 9 : kInvisibility.Visible
         matched = element as HTMLElementWithRel
       }
     }
   }
-  if (matched && (invisible < 9 ? invisible : isNotInViewport(matched as SafeHTMLElement)) > VisibilityType.OutOfView) {
+  if (matched && (invisible < 9 ? invisible : isNotInViewport(matched as SafeHTMLElement)) > kInvisibility.OutOfView) {
     s = matched.href
     options.match = `a[href*="${OnEdge || OnChrome && Build.MinCVer < BrowserVer.Min$CSS$$escape
           ? s.slice(new URL(s).origin.length).replace(<RegExpG> /"|\\/g, "\\$&")
@@ -216,8 +217,8 @@ export const findNextInRel = (options: CmdOptions[kFgCmd.goNext]
 }
 
 export const jumpToNextLink: VApiTy["j"] = (linkElement: GoNextBaseCandidate[0], options): void => {
-  const invisible = options.a ? VisibilityType.NoSpace : isNotInViewport(linkElement)
-  const avoidClick = invisible > VisibilityType.OutOfView
+  const invisible = options.a ? kInvisibility.NoSpace : isNotInViewport(linkElement)
+  const avoidClick = invisible > kInvisibility.OutOfView
   const url = (avoidClick || invisible && !options.v)
       && ((linkElement as TypeToPick<Element, HTMLLinkElement, "href">).href ||
           (findAnchor_(linkElement) || linkElement as TypeToPick<Element, HTMLLinkElement, "href">).href)
@@ -225,7 +226,7 @@ export const jumpToNextLink: VApiTy["j"] = (linkElement: GoNextBaseCandidate[0],
   if (avoidClick && url) {
     contentCommands_[kFgCmd.framesGoBack](safer<CmdOptions[kFgCmd.framesGoBack]>({ r: 1, u: url }))
   } else {
-    options.v && invisible === VisibilityType.OutOfView && view_(linkElement)
+    options.v && invisible === kInvisibility.OutOfView && view_(linkElement, 1)
     flash_(linkElement) // here calls getRect -> preparCrop_
     timeout_((): void => { void catchAsyncErrorSilently(click_async(linkElement)) }, 100)
   }

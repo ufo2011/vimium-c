@@ -36,7 +36,7 @@
               </tr></thead>
               <tbody></tbody>
             </table>
-            <template id="exclusionTemplate"><table><tr class="exclusionRule">
+            <template id="exclusionTemplate"><table><tr class="exclusionRule" draggable="true">
                 <td>
                   <input type="text" class="pattern" placeholder=":https://example.net/" autocomplete="off" />
                 </td>
@@ -51,9 +51,9 @@
             </template>
           </div>
           <div id="exclusionToolbar" style="visibility: hidden;">
-            <button class="float-right fixed-size" id="exclusionAddButton" data-i="2" tabindex="1">Add Rule</button>
+            <button class="float-right fixed-size" id="exclusionAddButton" data-i="2">Add rule</button>
             <button class="float-right fixed-size" id="exclusionSortButton" data-delay=""
-                data-i="3">Sort Rules</button>
+                data-i="3">Sort rules</button>
             <label class="booleanOption innerLine" style="display: none;" tabindex="-1" aria-hidden="true">
               <input id="exclusionOnlyFirstMatch" type="checkbox" tabindex="-1" aria-hidden="true"
                   data-model="Boolean" />
@@ -70,7 +70,8 @@
           </div>
         </td>
         <td class="help"><div class="help-inner">
-          <span data-i="6">Wholly or partially disable Vimium C.
+          <span data-i="6"></span><a href="#" data-vim-url="vimium://wiki/Enable-or-Disable-all-frames-by-a-shortcut"
+              data-i="6_2">Wholly or partially disable</a><span data-i="6_3"> Vimium C.
             A "</span><var data-i="Pattern">Pattern</var><span data-i="7">" is a JS regular expression
               if it starts with "</span><kbd class="wrap-space">^</kbd><span data-i="8">",
             or "</span><kbd class="wrap-space">:</kbd><span data-i="9">" + the header of a URL</span><span
@@ -98,22 +99,27 @@
           <textarea id="keyMappings" class="code" inputmode="text" data-model="Text" data-check=""
             placeholder="# Insert your preferred key mappings here."></textarea>
           <div class="info">
-            <span data-i="16_2">The related option "</span><label data-for="#keyLayout:#alwaysIgnore,#ignoreIfNotASCII"
-                class="ref-text name-of-related" role="link">Always ignore keyboard layout</label><span
+            <span data-i="16_2">The related "</span><label data-for="#keyLayout:#alwaysIgnore,#ignoreIfNotASCII"
+                class="ref-text name-of-related" role="link" for="alwaysIgnore">Always ignore keyboard layout</label><span
                 data-i="16_3"
               >" is </span><span class="status-of-related">enabled</span><span data-i="16_4"></span>
           </div>
         </td>
         <td id="mappingsHelp" class="help"><div class="help-inner">
-          <div data-i="17">Remap keys and commands. Some examples:</div>
+          <div>
+            <span data-i="17"></span><a href="#" title="Key Mapping Rule Help"
+                data-vim-url="vimium://home#custom-key-mappings" data-i="17_2-t"
+              ><span data-i="17_3">Remap keys and commands</span></a><span data-i="17_4">. Some examples:</span>
+          </div>
           <code>
-          <pre>
-map f <a href="#" target="_blank" rel="noopener noreferrer" title="Help" data-i="help-t"
-    data-vim-url data-href="vimium://home/wiki/Add-or-remove-hints">LinkHints.activate</a>
+          <pre title="Please note this group of settings and mapKey directives can only take effect inside Vimium C"
+              data-i="47_3-t">
+map f <a href="#" title="LinkHints Configuration" data-i="17_5-t" data-vim-url="vimium://wiki/Add-or-remove-hints"
+    >LinkHints.activate</a>
 unmap &lt;a-f1&gt;
 mapKey &lt;c-s-e&gt; &lt;esc&gt;
-<span>shortcut createTab position="end" url=&#8230;</span>
-<span>shortcut userCustomized1 command="goBack"</span>
+shortcut createTab position="end" url=&#8230;
+shortcut userCustomized1 command="goBack"
 # "unmapAll" <span data-i="18">unmaps all above and default</span></pre>
           </code>
           <a id="showCommands" href="#commands" data-hash="commands" data-delay="" data-i="19">
@@ -121,19 +127,18 @@ mapKey &lt;c-s-e&gt; &lt;esc&gt;
           </span><a
               class="wrap-left-space" data-auto-resize="keyMappings" role="button" tabindex="0" data-i="autoResize">
             Auto resize</a><span data-i="period">.</span>
-          <br><a href="#" target="_blank" rel="noopener noreferrer"
-              data-vim-url data-href="vimium://home/wiki/Use-in-another-keyboard-layout" data-i="20">
+          <br><a href="#" data-vim-url="vimium://wiki/Use-in-another-keyboard-layout" data-i="20">
             How to map keys in another keyboard layout?
           </a>
-          <br><a href="#" target="_blank" rel="noopener noreferrer" data-vim-url
-              data-href="vimium://home/wiki/Map-a-key-to-different-commands-on-different-websites" data-i="20_2">
-            How to map differently on websites?</a> <a href="#" target="_blank" rel="noopener noreferrer"
-              data-vim-url data-href="vimium://home/wiki" data-i="20_3">How to &#8230;?
+          <br><a href="#"
+              data-vim-url="vimium://wiki/Map-a-key-to-different-commands-on-different-websites" data-i="20_2">
+            How to map differently on websites?</a> <a href="#"
+              data-vim-url="vimium://wiki" data-i="20_3">How to &#8230;?
           </a>
-          <br><i data-i="21">Global shortcuts</i><span data-i="22"> are
-            on </span><a id="openExtensionsPage" href="chrome://extensions/shortcuts"
+          <br><span data-i="21">Global shortcuts</span><span data-i="22"> are
+            on </span><a id="openExtensionsPage" href="chrome://extensions/shortcuts" target="_blank"
             >chrome://extensions/&#8230;</a><span data-i="23">; </span><a id="shortcutHelper"
-              target="_blank" rel="noopener noreferrer" aria-haspopup="popup"
+              target="_blank" rel="noopener noreferrer" aria-haspopup="true"
               href="https://chrome.google.com/webstore/detail/shortcut-forwarding-tool/clnalilglegcjmlgenoppklmfppddien"
               data-i="sft-t" title="Shortcut Forwarding Tool:&#10;Provide 32 configurable shortcuts"
               ><span data-i="24">More?</span></a>
@@ -147,7 +152,7 @@ mapKey &lt;c-s-e&gt; &lt;esc&gt;
             /><input id="linkHintNumbers" type="text" data-model="NonEmptyText"
             data-converter="lower chars" class="code" style="display: none;" autocomplete="off" />
           <div class="info">
-            <span data-i="16_2">The related option "</span><label data-for="#filterLinkHints"
+            <span data-i="16_2">The related "</span><label data-for="#filterLinkHints" for="filterLinkHints"
                 class="ref-text" role="link" data-i="37_2">Use link name</label><span data-i="16_3"
               >" is </span><span class="status-of-related">enabled</span><span
                 data-i="16_4"></span><span data-i="semicolon">;</span><span data-i="NS">
@@ -158,11 +163,18 @@ mapKey &lt;c-s-e&gt; &lt;esc&gt;
           The characters placed next to each link after typing "f" to enter link-hint mode.
         </div></td>
       </tr>
-      <tr id="searchUrlBox">
+      <tr>
         <td class="caption" data-i="29">Default search engine</td>
         <td>
           <input id="searchUrl" type="text" inputmode="url" data-model="NonEmptyText" data-check="" autocomplete="off"/>
-          <div class="info" data-i="nonEmpty">Delete all to reset this option.</div>
+          <div class="info">
+            <span data-i="16_2">The related "</span><label
+                data-for="#preferBrowserSearch" for="preferBrowserSearch"
+                class="ref-text" role="link" data-i="58_2">Prefer browser's engine</label><span data-i="16_3"
+              >" is </span><span class="status-of-related">enabled</span><span
+                data-i="16_4"></span><span data-i="semicolon">;</span><span data-i="NS">
+            </span><span data-i="nonEmpty">Delete all to reset this option.</span>
+          </div>
         </td>
         <td class="help"><div class="help-inner line-input">
           <span data-i="30">Used when no search engine (or "</span><kbd>~</kbd><span data-i="31">") matched.</span>
@@ -188,30 +200,39 @@ key: https://c.com/$s/space=\s\ space_end
               data-i="NS"></span><a
               data-auto-resize="searchEngines" role="button" tabindex="0" data-i="autoResize">Auto resize
             </a><span data-i="period">.</span><br>
-          <a href="#" target="_blank" rel="noopener noreferrer" data-i="36"
-              data-vim-url data-href="vimium://home/wiki/Search-engine-rules">
+          <a href="#" data-vim-url="vimium://wiki/Search-engine-rules" data-i="36">
             How to write advanced search engine rules?
           </a>
         </div></td>
       </tr>
-      </tbody>
-      <tbody id="advancedOptions">
         <tr><td colspan="2"><header id="advanced" data-i="39">Advanced Options</header></td><td></td></tr>
         <tr id="optionalPermissionsBox">
           <td class="caption" data-i="103_2">Optional permissions</td>
-          <td id="optionalPermissions">
+          <td id="optionalPermissions" data-model="">
+            <label class="optional-permission" tabindex="-1" aria-hidden="true">
+              <input type="checkbox" tabindex="-1" aria-hidden="true" readonly id="in-incognito" />
+              <span class="checkboxHint" role="checkbox" tabindex="0" aria-hidden="false">
+                <span data-i="103_7">Allow in Incognito</span><span data-i="rec_perm"></span>
+              </span>
+            </label>
+            <label class="optional-permission" tabindex="-1" aria-hidden="true">
+              <input type="checkbox" tabindex="-1" aria-hidden="true" readonly id="on-file-urls" />
+              <span class="checkboxHint" role="checkbox" tabindex="0" aria-hidden="false">
+                <span data-i="103_8">Allow access to file URLs</span><span data-i="rec_perm"></span>
+              </span>
+            </label>
             <template id="optionalPermissionsTemplate">
               <label class="optional-permission" tabindex="-1" aria-hidden="true">
-                <input type="checkbox" tabindex="-1" aria-hidden="true"/>
+                <input type="checkbox" tabindex="-1" aria-hidden="true" />
                 <span class="checkboxHint" role="checkbox" tabindex="0" aria-hidden="false"></span>
               </label>
             </template>
           </td>
-          <td class="help"><div class="help-inner">
+          <td class="help"><div id="optionalPermissionsHelp" class="help-inner">
             <div data-i="103_3">Check to enable some features on this computer.</div>
             <div id="navPermissionTip" style="display: none;"><span data-i="103_4">Some permissions
               can only be granted or revoked on</span>
-              <a href="chrome://settings/content">chrome://settings/content</a><span
+              <a id="gotoCrSC" href="chrome://settings/content" target="_blank">chrome://settings/content</a><span
                 data-i="103_5"> manually.</span></div>
             <div data-i="103_6">Note: these may not be synchronized by your browser.</div>
           </div></td>
@@ -228,7 +249,8 @@ key: https://c.com/$s/space=\s\ space_end
             </label>
           </td>
           <td class="help" rowspan="2"><div class="help-inner line-help">
-            <div data-i="47_3">Please note that this group of settings can only take effect inside Vimium C.</div>
+            <div data-i="47_3">Please note this group of settings and <kbd>mapKey</kbd> directives
+              can only take effect inside Vimium C.</div>
             <div data-i="47_4">
               "Ignoring" means to use the en-US QWERTY layout and ignore CapsLock status during recognizing keys.</div>
           </div></td>
@@ -238,7 +260,7 @@ key: https://c.com/$s/space=\s\ space_end
             <label class="booleanOption" tabindex="-1" aria-hidden="true">
               <input id="ignoreIfAlt" type="checkbox" tabindex="-1" aria-hidden="true" />
               <span data-i="48" class="checkboxHint" role="checkbox" tabindex="0" aria-hidden="false"
-                >Ignore layout when holding down Alt (Option) key</span>
+                >Ignore layout when holding down Alt (Option, &#8997;) key</span>
             </label>
           </td>
         </tr>
@@ -247,7 +269,7 @@ key: https://c.com/$s/space=\s\ space_end
             <label class="booleanOption" tabindex="-1" aria-hidden="true">
               <input id="ignoreIfNotASCII" type="checkbox" tabindex="-1" aria-hidden="true" />
               <span data-i="49" data-i2="49_2" class="checkboxHint" role="checkbox" tabindex="0" aria-hidden="false"
-                >Ignore keyboard layout if a key is not located in 7-bit ASCII</span>
+                >Ignore layout if a key is not located in 7-bit ASCII</span>
             </label>
           </td>
           <td class="help"><div class="help-inner line-help" data-i="49_3">
@@ -282,6 +304,20 @@ key: https://c.com/$s/space=\s\ space_end
               Right-Shift (left if partially selected) is "</span>&lt;s-modifier&gt;<span data-i="53_4">".</span>
           </div></td>
         </tr>
+        <tr>
+          <td class="caption"></td>
+          <td>
+            <label class="booleanOption" tabindex="-1" aria-hidden="true">
+              <input id="inPrivResistFp" type="checkbox" tabindex="-1" aria-hidden="true" />
+              <span data-i="53_41" class="checkboxHint" role="checkbox" tabindex="0" aria-hidden="false"
+                >Has enabled "privacy.resistFingerprinting" on about:config</span>
+            </label>
+          </td>
+          <td class="help"><div class="help-inner line-help" data-i="53_42">
+            Then the browser only allows simple composed keys.
+            On macOS, This helps a little when CapsLock is on.
+          </div></td>
+        </tr>
         <tr id="testKeyInputBox">
           <td class="caption"></td>
           <td>
@@ -292,9 +328,11 @@ key: https://c.com/$s/space=\s\ space_end
             </label>
             <span id="testKeyInput" tabindex="0" autocomplete="off" /></span>
           </td>
-          <td class="help"><div class="help-inner line-help" data-i="53_6">
-            Here are key names directly received from this browser,
-            so not affected by exclusion rules or "mapKey"s.
+          <td class="help"><div class="help-inner line-help">
+            <span data-i="53_6">
+              Here're raw keys received from the browser, so nothing to do with exclusion rules or "mapKey"s.
+            </span><a href="https://gdh1995.cn/vimium-c/keyboard-test.html" target="_blank" rel="noopener noreferrer"
+                data-i="53_7">Online tests</a><span data-i="period">.</span>
           </div></td>
         </tr>
       </tbody>
@@ -335,11 +373,11 @@ key: https://c.com/$s/space=\s\ space_end
           <td class="help"><div class="help-inner line-help">
             <span data-i="44_3">
             In link-hint mode, this option lets you select a link by typing its text.
-            </span><a href="#" target="_blank" rel="noopener noreferrer" data-i="help" data-vim-url
-                data-href="vimium://home/wiki/Using-Link-Hints">Online help</a><span data-i="period">.</span>
+            </span><a href="#" data-vim-url="vimium://wiki/Using-Link-Hints" data-i="help"
+                >Online help</a><span data-i="period">.</span>
           </div></td>
         </tr>
-        <tr id="waitForEnterBox">
+        <tr>
           <td class="caption"></td>
           <td>
             <label class="booleanOption" tabindex="-1" aria-hidden="true">
@@ -398,8 +436,25 @@ key: https://c.com/$s/space=\s\ space_end
                 >Hide the Heads Up Display (HUD) in insert mode</span>
             </label>
           </td>
-          <td class="help"><div class="help-inner line-help" data-i="58">
-            When enabled, the HUD will not be displayed in insert mode, just like a parameter of `hideHUD=true`.
+          <td class="help"><div class="help-inner line-help">
+            <span data-i="58">Hide "Insert mode" and "Readonly" tips on HUD;
+                "</span><kbd>enterInsertMode hideHUD=true</kbd><span data-i="58_1">" is also quiet.</span>
+          </div></td>
+        </tr>
+        <tr>
+          <td class="caption"></td>
+          <td>
+            <label class="booleanOption" tabindex="-1" aria-hidden="true">
+              <input id="preferBrowserSearch" type="checkbox" tabindex="-1" aria-hidden="true" data-model="Boolean"
+                  data-permission="C87,F63" />
+              <span data-i="58_3" class="checkboxHint" role="checkbox" tabindex="0" aria-hidden="false"
+                >Prefer the browser's default search engine</span>
+            </label>
+          </td>
+          <td class="help"><div class="help-inner line-help">
+            <span data-i="58_4">If simply search words, prefer the browser's default search engine. </span><span
+                data-i="22">See </span><a id="browserSettingsSearch" href="chrome://settings/search" target="_blank"
+                >chrome://settings/search</a><span data-i="period">.</span>
           </div></td>
         </tr>
         <tr>
@@ -435,7 +490,7 @@ key: https://c.com/$s/space=\s\ space_end
           <td>
             <label class="booleanOption" tabindex="-1" aria-hidden="true">
               <input id="showActionIcon" type="checkbox" tabindex="-1" aria-hidden="true"
-                  data-model="Boolean" data-permission="browser_action" />
+                  data-model="Boolean" data-permission="action" />
               <span data-i="63" class="checkboxHint" role="checkbox" tabindex="0" aria-hidden="false"
                 >Show extension icon dynamically on the top right</span>
             </label>
@@ -461,7 +516,7 @@ key: https://c.com/$s/space=\s\ space_end
           <td>
             <label class="booleanOption" tabindex="-1" aria-hidden="true">
               <input id="notifyUpdate" type="checkbox" tabindex="-1" aria-hidden="true" data-model="Boolean" />
-              <span data-i="64_3" class="checkboxHint" role="checkbox" tabindex="0" aria-hidden="false"
+              <span data-i="64_5" class="checkboxHint" role="checkbox" tabindex="0" aria-hidden="false"
                 >Show a notification on a new release</span>
             </label>
           </td>
@@ -480,7 +535,7 @@ key: https://c.com/$s/space=\s\ space_end
             Need to reload Vimium C manually.
           </div></td>
         </tr>
-        <tr id="newTabUrlBox">
+        <tr>
           <td class="caption" data-i="25">New tab URL</td>
           <td>
             <input id="newTabUrl" type="text" inputmode="url" data-model="NonEmptyText" data-check autocomplete="off" />
@@ -488,15 +543,13 @@ key: https://c.com/$s/space=\s\ space_end
           </td>
           <td class="help"><div class="help-inner">
             <span data-i="lquote">"</span><kbd class="sel-all" role="button" tabindex="0">pages/blank.html</kbd><span
-                data-i="rquote">" </span><span data-i="26">for a blank page.
+                data-i="rquote">"</span> <span data-i="26">for a blank page.
             </span><a target="_blank" rel="noopener noreferrer" data-i="NewTabAdapterDesc-t"
                 id="newTabAdapter" title="NewTab Adapter:&#10;Take over browser's new tab settings"
                 href="https://chrome.google.com/webstore/detail/newtab-adapter/cglpcedifkgalfdklahhcchnjepcckfn"
             ><span data-i="27">Like to focus web page on </span><span id="Ctrl">Ctrl</span>+T<span
-                data-i="27_2">?</span></a> <a
-                href="#" target="_blank" rel="noopener noreferrer" data-i="28"
-                data-vim-url data-href="vimium://home/wiki/Use-another-extension-as-the-New-Tab"
-            >How to open another newtab?
+                data-i="27_2">?</span></a> <a href="#" data-vim-url="vimium://wiki/Use-another-extension-as-the-New-Tab"
+                data-i="28">How to open another newtab?
             </a>
           </div></td>
         </tr>
@@ -521,13 +574,42 @@ key: https://c.com/$s/space=\s\ space_end
           </div></td>
         </tr>
         <tr>
+          <td class="caption" data-i="95_4">Ignore list of readonly textbox</td>
+          <td>
+            <textarea id="ignoreReadonly" class="code" data-model="CssSelector" data-check=""></textarea>
+            <div class="info" data-i="nonEmpty">Delete all to reset this option.</div>
+          </td>
+          <td class="help"><div class="help-inner">
+            <span data-i="95_5">If a readonly textbox gets focused, specify if to keep a current normal mode,
+              or otherwise to enter insert mode. </span><span data-i="106">Format: </span>
+            <code><pre>
+host.com##.class,#id-selector
+#id-on-any-host,[attr="value"]</pre></code>
+            <a data-auto-resize="ignoreReadonly" role="button" tabindex="0" data-i="autoResize">Auto resize
+            </a><span data-i="period">.</span>
+          </div></td>
+        </tr>
+        <tr>
+          <td class="caption" data-i="95_2">Compatibility of Escape</td>
+          <td>
+            <textarea id="passEsc" class="code min-height-4" data-model="CssSelector" data-check=""></textarea>
+            <div class="info" data-i="nonEmpty">Delete all to reset this option.</div>
+          </td>
+          <td class="help"><div class="help-inner"><span data-i="95_3">
+            In plain insert mode, specify when to pass <kbd>Escape</kbd> keydown events to pages and delay blurring.
+            The default value may collapse some search suggestions. </span><a
+              data-auto-resize="passEsc" role="button" tabindex="0" data-i="autoResize">Auto resize
+            </a><span data-i="period">.</span>
+          </div></td>
+        </tr>
+        <tr>
           <td class="caption" data-i="72">Custom CSS for Vimium C UI</td>
           <td>
             <textarea id="userDefinedCss" class="code min-height-4" inputmode="text" data-model="Text" lang="en"
               placeholder="/* example: */ .LH { color: red; }
 /* #find */ * { color: green; }
 /* #omni */
-* { color: blue; } .transparent { opacity: 1; }"
+* { color: blue; } .inactive { opacity: 1; }"
               ></textarea>
           </td>
           <td class="help"><div class="help-inner">
@@ -538,8 +620,7 @@ key: https://c.com/$s/space=\s\ space_end
               default styles.
             </span><a class="wrap-left-space" data-auto-resize="userDefinedCss" role="button" tabindex="0"
                 data-i="autoResize">Auto resize</a><span data-i="period">.</span><br>
-            <a href="#" target="_blank" rel="noopener noreferrer" data-i="76_2"
-                data-vim-url data-href="vimium://home/wiki/Style-the-UI-of-Vimium-C-using-Custom-CSS">
+            <a href="#" data-vim-url="vimium://wiki/Style-the-UI-of-Vimium-C-using-Custom-CSS" data-i="76_2">
               How to style UI components in different DOM scopes?</a>
           </div></td>
         </tr>
@@ -552,21 +633,21 @@ key: https://c.com/$s/space=\s\ space_end
           <td class="help"><div class="help-inner">
             <div data-i="78">Adjust some inner behaviors of Vomnibar:</div>
             <div class="help-block">
-              <div><span data-i="lquote">"</span><var>maxMatches</var><span data-i="rquote">" </span><span
+              <div><span data-i="lquote">"</span><var>maxMatches</var><span data-i="rquote">"</span> <span
                   data-i="79">should be in</span> <kbd>3 ~ 25</kbd>
                 <span data-i="79_2"></span><span data-i="semicolon">;</span></div>
-              <div><span data-i="lquote">"</span><var>queryInterval</var><span data-i="rquote">" </span><span
+              <div><span data-i="lquote">"</span><var>queryInterval</var><span data-i="rquote">"</span> <span
                   data-i="79">should be in</span> <kbd>0 ~ 1200</kbd><span data-i="81">
                 (unit: ms)</span><span data-i="80"> ;</span></div>
-              <div><span data-i="lquote">"</span><var>size</var><span data-i="rquote">" </span><span
+              <div><span data-i="lquote">"</span><var>size</var><span data-i="rquote">"</span> <span
                   data-i="82">is to calculate Vomnibar's height;</span></div>
-              <div class="indent"><span data-i="lquote">"</span><var>styles</var><span data-i="rquote">" </span><span
+              <div class="indent"><span data-i="lquote">"</span><var>styles</var><span data-i="rquote">"</span> <span
                   data-i="83">may be "</span><kbd class="sel-all">dark</kbd><span
                   data-i="83_2">" &amp; "</span><kbd class="sel-all">mono-url</kbd><span
                   data-i="83_2">" &amp; "</span><kbd class="sel-all">time</kbd><span
                   data-i="83_2">" &amp; "</span><kbd class="sel-all">absolute-time</kbd><span
                   data-i="84">".</span></div>
-              <div><span data-i="lquote">"</span><var>actions</var><span data-i="rquote">" </span><span
+              <div><span data-i="lquote">"</span><var>actions</var><span data-i="rquote">"</span> <span
                   data-i="83">may be "</span><kbd class="sel-all">opener</kbd><span
                   data-i="83_2">" &amp; "</span><kbd class="sel-all">icase</kbd><span data-i="84">".</span></div>
             </div>
@@ -586,17 +667,32 @@ p:regexp-to-replace:target-string:i"
           <td class="help"><div class="help-inner"><div><span data-i="86_3">
             Substitute text before doing real actions, when copying / pasting through Vimium C's commands.<br>
             Support a simpler version of syntax of the "sed" tool.</span><br>
-            <span data-i="86_32">The prefix character may be </span><kbd>c|p|s|i|g</kbd><span data-i="86_4">&#8230;;
+            <span data-i="86_32">The prefix character may be</span> <kbd>c|p|s|i|g</kbd><span data-i="86_4"> &#8230;;
             "c" means copying, "p" for pasting and "s" for both</span><span data-i="period">.</span><span data-i="NS">
             </span><a class="wrap-left-space" data-auto-resize="clipSub" role="button" tabindex="0"
                 data-i="autoResize">Auto resize</a><span data-i="period">.</span></div>
-            <div><a href="#" target="_blank" rel="noopener noreferrer" data-i="86_5"
-                data-vim-url data-href="vimium://home/wiki/Substitute-URLs-and-text-during-commands"
+            <div><a href="#" data-vim-url="vimium://wiki/Substitute-URLs-and-text-during-commands" data-i="86_5"
                 >How to substitute text during other commands?</a></div>
           </div></td>
         </tr>
         <tr>
-          <td class="caption" data-i="87">Block list of words for Vomnibar</td>
+          <td class="caption" data-i="87">Ignore list of history titles</td>
+          <td>
+            <textarea id="titleIgnoreList" class="code min-height-4" data-model="Text"></textarea>
+          </td>
+          <td class="help"><div class="help-inner">
+            <div data-i="87_2">
+              Usually Vomnibar follows title changes in browsing history.
+              However, if you do want to ignore some changed titles, you may add RegExp lines here.</div>
+            <span data-i="87_3">One piece per line</span><span
+                data-i="89_2">; no trimming; case-sensitive; "</span><kbd>#</kbd><span
+                data-i="90">" at the beginning means comments</span><span data-i="period">.</span><span data-i="NS">
+            </span><a class="wrap-left-space" data-auto-resize="titleIgnoreList" role="button" tabindex="0"
+                data-i="autoResize">Auto resize</a><span data-i="period">.</span>
+          </div></td>
+        </tr>
+        <tr>
+          <td class="caption" data-i="87_4">Block list of words for Vomnibar</td>
           <td>
             <textarea id="omniBlockList" class="code min-height-4 masked" data-model="MaskedText"></textarea>
           </td>
@@ -604,7 +700,8 @@ p:regexp-to-replace:target-string:i"
             <div data-i="88">For a bookmark / history item,
             if its title or URL contains any word or phrase in this list,
             it will not be listed on Vomnibar or the browser omnibox.</div>
-            <span data-i="89">One piece per line; no trimming; case-sensitive; "</span><kbd>#</kbd><span
+            <span data-i="89">One piece per line</span><span
+                data-i="89_2">; no trimming; case-sensitive; "</span><kbd>#</kbd><span
                 data-i="90">" at the beginning means comments</span><span data-i="period">.</span><span data-i="NS">
             </span><a class="wrap-left-space" data-auto-resize="omniBlockList" role="button" tabindex="0"
                 data-i="autoResize">Auto resize</a><span data-i="period">.</span>
@@ -625,20 +722,8 @@ p:regexp-to-replace:target-string:i"
                 data-i="period">.</span><span data-i="NS">
             </span><a class="wrap-left-space" data-auto-resize="extAllowList" role="button" tabindex="0"
                 data-i="autoResize">Auto resize</a><span data-i="period">.</span><br>
-            <a href="#" target="_blank" rel="noopener noreferrer" data-i="95"
-                data-vim-url ="vimium://home/wiki/Inject-into-other-extensions">
+            <a href="#" data-vim-url="vimium://wiki/Inject-into-other-extensions" data-i="95">
               How to inject Vimium C into other extensions?</a>
-          </div></td>
-        </tr>
-        <tr>
-          <td class="caption" data-i="95_2">Compatibility of Escape</td>
-          <td>
-            <input id="passEsc" type="text" inputmode="text" lang="en" data-model="NonEmptyText" autocomplete="off" />
-            <div class="info" data-i="nonEmpty">Delete all to reset this option.</div>
-          </td>
-          <td class="help"><div class="help-inner break-all" data-i="95_3">
-            In plain insert mode, specify when to pass <kbd>Escape</kbd> keydown events to pages and delay blurring.
-            The default value may collapse some search suggestions.
           </div></td>
         </tr>
         <tr>
@@ -667,13 +752,11 @@ so only the default inner version will be used on them"
           <td>
             <input id="localeEncoding" type="text" inputmode="text" lang="en"
                 data-model="Text" data-converter="lower" autocomplete="off" />
-            <div class="info"><kbd>utf-8</kbd> <span data-i="99_2">works just like it's empty.</span></div>
+            <div class="info">utf-8 <span data-i="99_2">works just like it's empty.</span></div>
           </td>
           <td class="help"><div class="help-inner">
-            <span data-i="100">In order to recognize URLs not encoded by</span> <kbd>utf-8</kbd>
-              <span data-i="101">.</span><br>
-            <span data-i="102">The default</span> <kbd class="sel-all">gbk</kbd>
-              <span data-i="103">is for Chinese, Japanese and Korean.</span>
+            <span data-i="100">In order to recognize URLs not encoded by "utf-8".</span><br>
+            <span data-i="102">The default "gbk" is for Chinese, Japanese and Korean.</span>
           </div></td>
         </tr>
         <tr>
@@ -701,27 +784,24 @@ so only the default inner version will be used on them"
         <span id="helpText">
           <a id="openInTab" href="" target="_blank" style="display: none;">Open this options page in a new tab.</a>
           <span><span class="Vim">Vim</span>ium <span class="C">C</span>
-          <a href="#" data-vim-url data-href="vimium://release"
-              target="_blank" rel="noopener noreferrer"><span id="version"></span></a><span
+          <a href="#" data-vim-url="vimium://release"><span id="version"></span></a><span></span><span
               data-i="comma">,</span><span data-i="NS">
             </span><span id="browserName"></span><span data-i="period">.</span></span><br>
           <strong><kbd>&lt;c-enter&gt;</kbd></strong> <span data-i="112">to save <i>all</i> options,
           </span><strong id="questionShortcut">?</strong> <span data-i="113">to show help.</span>
         </span>
         <span id="footerButtons">
-          <button id="advancedOptionsButton" class="fixed-size" data-hash="advanced" role="checkbox"
-            >Show<span data-i="39"> Advanced Options</span></button>
-          <button id="saveOptions" class="fixed-size" disabled="disabled" data-i="115">No Changes</button>
+          <button id="saveOptions" class="fixed-size" disabled="disabled" data-i="115">No changes</button>
         </span>
         <span id="settingFileManager">
           <input  id="settingsFile" type="file" class="hidden" accept="application/json" data-delay="continue" />
-          <button id="importButton" class="left" data-i="116">Import Settings</button><select
+          <button id="importButton" class="left" data-i="116">Import settings</button><select
               id="importOptions" class="right" data-delay="">
-            <option value="exported" selected="selected" data-i="117">&nbsp;Exported File</option>
-            <option class="option-hr" disabled="disabled">&nbsp;-----------------</option>
-            <option id="recommendedSettings" value="recommended" data-i="118">&nbsp;Recommended</option>
+            <option value="exported" selected="selected" data-i="117">&nbsp;&nbsp;Exported file&nbsp;&nbsp;</option>
+            <option class="option-hr" disabled="disabled">---------------------</option>
+            <option id="recommendedSettings" value="recommended" data-i="118">&nbsp;&nbsp;Recommended&nbsp;&nbsp;</option>
           </select>
-          <button id="exportButton" data-hash="export" data-delay="event" data-i="119">Export Settings</button>
+          <button id="exportButton" data-hash="export" data-delay="event" data-i="119">Export settings</button>
         </span>
       </div>
     </div>

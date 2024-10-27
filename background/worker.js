@@ -16,9 +16,9 @@ import "./run_keys.js"
 import "./tools.js"
 import "./clipboard.js"
 import "./eval_urls.js"
+import "./filter_tabs.js"
 import "./open_urls.js"
 import "./frame_commands.js"
-import "./filter_tabs.js"
 import "./tab_commands.js"
 import "./all_commands.js"
 import "./request_handlers.js"
@@ -39,4 +39,3 @@ __moduleMap.page_handlers = __moduleMap.page_handlers || page_handlers
 __moduleMap.help_dialog   = __moduleMap.help_dialog   || help_dialog
 __moduleMap.math_parser   = __moduleMap.math_parser   || math_parser
 //#endregion
-// syntax: since Chrome 63 (BrowserVer.MinUsableScript$type$$module$InExtensions)

@@ -1,5 +1,8 @@
 {
-    "files.associations": {
+    "editor.rulers": [
+		120
+	],
+	"files.associations": {
         "*.json": "jsonc"
     },
     "files.eol": "\n",
@@ -22,7 +25,7 @@
         "**/*.py": true,
         "**/.DS_Store": true
     },
-    "typescript.tsdk": "node_modules\\typescript\\lib",
+    "typescript.tsdk": "node_modules/typescript/lib",
     "css.lint.vendorPrefix": "ignore",
     "css.lint.zeroUnits": "warning",
     "css.lint.validProperties": [

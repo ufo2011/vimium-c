@@ -1,15 +1,16 @@
 import {
   CurCVer_, CurFFVer_, OnChrome, OnFirefox, OnEdge, $, pageTrans_, browser_, nextTick_, enableNextTick_, kReadyInfo,
-  import2, TransTy, isVApiReady_, post_, disconnect_, simulateClick, ValidFetch, hasShift_
+  import2_, TransTy, isVApiReady_, post_, disconnect_, simulateClick_, ValidFetch, hasShift_, setupPageOs_, isRepeated_, prevent_
 } from "./async_bg"
 import { kPgReq } from "../background/page_messages"
-import type * as i18n_popup from "../i18n/zh/popup.json"
+import type * as i18n_action from "../i18n/zh/action.json"
 
 interface VDataTy {
   full: string
   type: "image" | "url" | "text" | ""
   original: string;
   url: string;
+  rawSrc?: string
   file?: string;
   auto?: boolean | "once";
   pixel?: boolean
@@ -118,6 +119,8 @@ async function App (this: void): Promise<void> {
       file = decodeURLPart_(val).split(<RegExpOne> /\||\uff5c| [-\xb7] /, 1)[0].trim();
       file = file.replace(<RegExpG> /[\r\n"]/g, "");
       VData.file = file;
+    } else if (key === "src") {
+      VData.rawSrc = decodeURLPart_(val)
     } else {
       val = val.toLowerCase();
       if (key === "auto") {
@@ -154,7 +157,9 @@ async function App (this: void): Promise<void> {
   switch (type) {
   case "image":
     if (VData.auto) {
-      let newUrl = await parseClearImageUrl_(url);
+      let usableSrc = (<RegExpI> /^(blob|data):/i).test(url.slice(0, 5)) && VData.rawSrc || url
+      let newUrl = await parseClearImageUrl_(
+          useBG && await post_(kPgReq.substitute, [usableSrc, SedContext.image]) || usableSrc, usableSrc)
       if (newUrl) {
         console.log("Auto predict a better URL:\n %o =>\n %o", url, newUrl);
         url = VData.url = newUrl;
@@ -280,7 +285,7 @@ async function App (this: void): Promise<void> {
   bgLink.onclick = VShown ? clickShownNode : defaultOnClick;
 }
 
-export const sTrans_: TransTy<keyof typeof i18n_popup> = (k, a): string => pageTrans_(k, a) || ""
+export const sTrans_: TransTy<keyof typeof i18n_action> = (k, a): string => pageTrans_(k, a) || ""
 
 enableNextTick_(kReadyInfo.show)
 void isVApiReady_.then((): void => { VApi!.u = getContentUrl_ })
@@ -289,16 +294,17 @@ nextTick_((): void => {
   window.onhashchange = App // eslint-disable-line @typescript-eslint/no-misused-promises
   window.onpopstate = App // eslint-disable-line @typescript-eslint/no-misused-promises
   void App().then((): void => { void isVApiReady_.then(disconnect_) })
+  void post_(kPgReq.showInit).then((conf): void => { setupPageOs_(conf.os) })
 })
 
-window.onunload = destroyObject_;
+window.onpagehide = destroyObject_;
 
 body.ondrop = (e): void => {
   const files = e.dataTransfer.files
   if (files.length === 1) {
     const file = files.item(0), name = file.name
     if (file.type.startsWith("image/") || ImageExtRe.test(name)) {
-      (e as Event as EventToPrevent).preventDefault()
+      prevent_(e as Event as EventToPrevent)
       _nextUrl = "#!image download=" + encodeAsciiComponent_(name) + "&" + URL.createObjectURL(file);
       void App()
     }
@@ -310,7 +316,7 @@ body.ondragover = body.ondragenter = (e): void => {
   if (items.length === 1) {
     const item = items[0]
     if (item.type.startsWith("image/")) {
-      (e as Event as EventToPrevent).preventDefault()
+      prevent_(e as Event as EventToPrevent)
     }
   }
 }
@@ -319,7 +325,7 @@ document.addEventListener("keydown", function (this: void, event): void {
   if (VData.type === "image" && imgOnKeydown(event)) {
     return;
   }
-  if (!(event.ctrlKey || event.metaKey) || event.altKey || event.repeat || hasShift_(event)) { return }
+  if (!(event.ctrlKey || event.metaKey) || event.altKey || isRepeated_(event) || hasShift_(event)) { return }
   const str = String.fromCharCode(event.keyCode as kKeyCode | kCharCode as kCharCode);
   if (str === "S") {
     clickLink({
@@ -330,7 +336,7 @@ document.addEventListener("keydown", function (this: void, event): void {
   } else if (str === "A") {
     toggleInvert(event);
   } else if (str === "O") {
-    event.preventDefault()
+    prevent_(event)
     const input = document.createElement("input")
     input.type = "file"
     input.accept = "image/*"
@@ -356,7 +362,7 @@ function showBgLink(this: void): void {
 
 function clickLink(this: void, options: { [key: string]: string }
     , event: MouseEventToPrevent | KeyboardEventToPrevent): void {
-  event.preventDefault();
+  prevent_(event)
   if (!VData.url) { return; }
   const a = document.createElement("a")
     Object.setPrototypeOf(options, null);
@@ -365,12 +371,12 @@ function clickLink(this: void, options: { [key: string]: string }
   }
   a.href = VData.url; // lgtm [js/client-side-unvalidated-url-redirection] lgtm [js/xss] lgtm [js/xss-through-dom]
   if (!OnFirefox) {
-    simulateClick(a, event)
+    simulateClick_(a, event)
     return
   }
   browser_.permissions.contains({ permissions: ["downloads"] }, (permitted: boolean): void => {
     if (!permitted) {
-      simulateClick(a, event);
+      simulateClick_(a, event);
     } else {
       const opts: chrome.downloads.DownloadOptions = { url: a.href }
       if (a.download) { opts.filename = a.download }
@@ -397,11 +403,11 @@ function imgOnKeydown(event: KeyboardEventToPrevent): boolean {
         return true
       }
     }
-    event.preventDefault();
+    prevent_(event)
     if (keybody === kChar.enter && viewer_ && viewer_.isShown && !viewer_.hiding && !viewer_.played) {
       viewer_.play(true);
     } else if (!viewer_ || !viewer_.isShown || viewer_.hiding) {
-      simulateClick(VShown as ValidNodeTypes, event);
+      simulateClick_(VShown as ValidNodeTypes, event);
     }
     return true;
   }
@@ -413,7 +419,7 @@ function imgOnKeydown(event: KeyboardEventToPrevent): boolean {
   case "c--": case "m--": case "-": case "down": action = -1; break;
   default: return false;
   }
-  event.preventDefault();
+  prevent_(event)
   event.stopImmediatePropagation();
   if (viewer_ && viewer_.viewed) {
     doImageAction(viewer_, action);
@@ -466,7 +472,7 @@ function defaultOnClick(event: MouseEventToPrevent): void {
 }
 
 function clickShownNode(event: MouseEventToPrevent): void {
-  event.preventDefault();
+  prevent_(event)
   const a = VShown as ValidNodeTypes;
   if (a.onclick) {
     a.onclick(event);
@@ -475,8 +481,7 @@ function clickShownNode(event: MouseEventToPrevent): void {
 
 function showText(tip: string | Urls.kEval, details: string | string[]): void {
   tip = typeof tip === "number" ? ["math", "copy", "search", "ERROR", "status", "paste", "run"
-      , "url"
-      ][tip] : tip;
+      , "url", "run-one-key"][tip] : tip;
   ($("#textTip").dataset as KnownShowDataset).text = sTrans_(`t_${tip as "math" | "copy"}`) || tip;
   ($(".colon").dataset as KnownShowDataset).colon = sTrans_("colon") + sTrans_("NS")
   const textBody = $("#textBody");
@@ -498,9 +503,10 @@ function copyThing(event: EventToPrevent): void {
   if (VData.type === "image" && VData.url) {
     if (sel.type === "Range" && !VData.url.startsWith(location.protocol)) {
       // e.g. Ctrl+A and then Ctrl+C; work well with MS Word
+      if (VApi) { VApi.h(kTip.raw, 0, sTrans_("imgCopied", ["HTML"])) }
       return;
     }
-    event.preventDefault();
+    prevent_(event)
     const clipboard = navigator.clipboard;
     if (OnFirefox || OnChrome
           && Build.MinCVer >= BrowserVer.MinEnsured$Clipboard$$write$and$ClipboardItem
@@ -511,7 +517,7 @@ function copyThing(event: EventToPrevent): void {
       }).then(res => res.blob()).catch(() => (_copyStr(VData.url), 0 as const)
       ).then(blob => _shownBlob = blob),
       navClipPromise = blobPromise.then<0 | void>(blob => {
-        if (!blob) { return }
+        if (!blob) { return 0 }
         if (OnFirefox && !globalThis.ClipboardItem) { throw new Error("") } // dom.events.asyncClipboard.clipboardItem
         const kPngType = "image/png", item: { [mime: string]: Blob } = {
           // Chrome 79 refuses image/jpeg
@@ -532,13 +538,15 @@ function copyThing(event: EventToPrevent): void {
         return doWrite().catch(() => (delete item["text/html"], doWrite()))
       }),
       finalPromise = OnFirefox
-          ? navClipPromise.catch((): any => {
+          ? navClipPromise.catch((): PromiseOr<void> => {
             const clip = _shownBlob && (browser as typeof chrome).clipboard
-            return clip && (Build.MinFFVer < FirefoxBrowserVer.Min$Blob$$arrayBuffer
+            return clip ? (Build.MinFFVer < FirefoxBrowserVer.Min$Blob$$arrayBuffer
                   && !(_shownBlob as Blob).arrayBuffer ? new Response(_shownBlob as Blob) : _shownBlob as Blob
-                ).arrayBuffer().then(arr => clip.setImageData(arr, "png"))
+                ).arrayBuffer().then(arr => clip.setImageData(arr, "png")) : void 0
           }) : navClipPromise;
-      finalPromise.catch(ex => { console.log(ex); _copyStr(VData.url); });
+      finalPromise.then((result: void | 0) => {
+        if (VApi && result !== 0) { VApi.h(kTip.raw, 0, sTrans_("imgCopied", ["PNG"])) }
+      }, (ex): void => { console.log("On copy image:", ex); _copyStr(VData.url) })
       return;
     }
   }
@@ -548,17 +556,17 @@ function copyThing(event: EventToPrevent): void {
 
 function _copyStr(str: string, event?: EventToPrevent): void {
   if (!(str && VApi)) { return; }
-  event && event.preventDefault();
+  event && prevent_(event)
   VApi.p({
     H: kFgReq.copy,
     s: str
   });
 }
 
-function toggleInvert(event: EventToPrevent): void {
+function toggleInvert(event: KeyboardEventToPrevent): void {
   if (VData.type === "image") {
     if (VData.error || viewer_ && viewer_.isShown && !viewer_.hiding) {
-      event.preventDefault();
+      prevent_(event)
     } else {
       (VShown as ValidNodeTypes).classList.toggle("invert");
     }
@@ -590,7 +598,7 @@ function loadViewer(): Promise<ViewerModule> {
   }
   // eslint-disable-next-line @typescript-eslint/no-unsafe-call
   !Build.NDEBUG && (window as any).define && (window as any).define.noConflict()
-  return Promise.all([import2("../lib/viewer.js"), loadCSS("../lib/viewer.css")])
+  return Promise.all([import2_("../lib/viewer.js"), loadCSS("../lib/viewer.css")])
       .then(([viewerJS]: any): ViewerModule => {
     viewerJS = viewerJS && typeof viewerJS === "function" ? viewerJS
         : (window as unknown as { Viewer: typeof viewerJS }).Viewer
@@ -697,13 +705,11 @@ function clean(): void {
   }
 }
 
-async function parseClearImageUrl_(originUrl: string): Promise<string | null> {
-  const stdUrl = originUrl;
-  originUrl = useBG && await post_(kPgReq.substitute, [originUrl, SedContext.image]) || originUrl
+async function parseClearImageUrl_(originUrl: string, stdUrl?: string): Promise<string | null> {
   function safeParseURL(url1: string): URL | null { try { return new URL(url1); } catch {} return null; }
   const parsed = safeParseURL(originUrl);
   if (!parsed || !(<RegExpI> /^(ht|s?f)tp/i).test(parsed.protocol)) { return null; }
-  const {origin, pathname: path} = parsed;
+  let {origin, pathname: path} = parsed
   let search = parsed.search;
   function DecodeURLPart_(this: void, url1: string | undefined): string {
     try {
@@ -711,6 +717,11 @@ async function parseClearImageUrl_(originUrl: string): Promise<string | null> {
     } catch {}
     return url1 as string;
   }
+  if (OnChrome && Build.MinCVer < BrowserVer.MinNew$URL$NotDecodePathname
+      && CurCVer_ < BrowserVer.MinNew$URL$NotDecodePathname && originUrl.split(/[?#]/)[0].includes("%")) {
+    path = originUrl.split(/[?#]/, 1)[0].slice(origin.length)
+  }
+  stdUrl = stdUrl || originUrl
   if (search.length > 10) {
     for (const item of search.slice(1).split("&")) {
       const key = item.split("=", 1)[0];
@@ -719,7 +730,7 @@ async function parseClearImageUrl_(originUrl: string): Promise<string | null> {
         if (!val.includes("://") && (<RegExpOne> /%(?:3[aA]|2[fF])/).test(val)) {
           val = DecodeURLPart_(val).trim();
         }
-        if (val.includes("/") && safeParseURL(val) != null) {
+        if (val.includes("/") && !!safeParseURL(val)) {
           if ((<RegExpOne> /^(?:imgurl|mediaurl|objurl|origin(?:al)?|real\w*|src|url)$/i).test(key)) {
             return val;
           }
@@ -746,6 +757,13 @@ async function parseClearImageUrl_(originUrl: string): Promise<string | null> {
   if ((arr1 = (<RegExpOne> /[?&]s=\d{2,4}(&|$)/).exec(search)) && search.split("=").length <= 4) {
     return origin + path;
   }
+  let secondFound = 0
+  for (const i of ["/revision/latest/scale-"]) {
+    if (path.includes(i)) {
+      path = path.split(i)[0]
+      secondFound = 1
+    }
+  }
   search = path;
   let offset = search.lastIndexOf("/") + 1;
   search = search.slice(offset);
@@ -766,6 +784,12 @@ async function parseClearImageUrl_(originUrl: string): Promise<string | null> {
         len += arr2[0].length;
       }
       search = path.slice(offset + len);
+      if (path.lastIndexOf("@", offset + len) >= 0 && search.includes("!")) {
+        const tail = search.slice(search.indexOf("!")).toLowerCase()
+        if (tail.includes("cover") && (<RegExpI> /^![a-z\d_\.-]+\.(avif|jpe?g|a?png|svg|webp)$/).test(tail)) {
+          search = search.split("!")[0]
+        }
+      }
       if ((<RegExpOne> /[@!]$/).test(search || path.charAt(offset - 1))) {
         if (search) {
           search = search.slice(0, -1);
@@ -801,7 +825,7 @@ async function parseClearImageUrl_(originUrl: string): Promise<string | null> {
   } else {
     found = 0;
   }
-  return found !== 0 ? origin + path.slice(0, offset) + search
+  return found !== 0 ? origin + path.slice(0, offset) + search : secondFound ? origin + path
       : stdUrl !== originUrl ? originUrl : null;
 }
 
@@ -944,8 +968,8 @@ function recoverHash_(notUpdateHistoryState?: BOOL): void {
   }
   let url = "#!" + type + " "
       + (VData.incognito ? "incognito=1&" : "")
-      + (VData.file ? "download=" + encodeAsciiComponent_(VData.file)
-          + "&" : "")
+      + (VData.file ? "download=" + encodeAsciiComponent_(VData.file) + "&" : "")
+      + (VData.rawSrc ? "src=" + encodeAsciiComponent_(VData.rawSrc) + "&" : "")
       + (VData.auto ? "auto=" + (VData.auto === "once" ? "once" : 1) + "&" : "")
       + (VData.pixel ? "pixel=1&" : "")
       + VData.original;
@@ -999,8 +1023,8 @@ function getContentUrl_(): string {
 
 if (!Build.NDEBUG) {
   Object.assign(window as any, {
-    showBgLink, clickLink, simulateClick, imgOnKeydown, doImageAction, decodeURLPart_,
-    importBody, defaultOnClick, clickShownNode, showText, copyThing, _copyStr, toggleInvert, import2, loadCSS,
+    showBgLink, clickLink, simulateClick: simulateClick_, imgOnKeydown, doImageAction, decodeURLPart_,
+    importBody, defaultOnClick, clickShownNode, showText, copyThing, _copyStr, toggleInvert, import2: import2_, loadCSS,
     defaultOnError, loadViewer, showSlide, clean, parseClearImageUrl_, tryToFixFileExt_, fetchImage_,
     destroyObject_, tryDecryptUrl, disableAutoAndReload_, resetOnceProperties_, recoverHash_, encrypt_,
     getOmni_: getContentUrl_,

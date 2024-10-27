@@ -1,16 +1,16 @@
 import {
-  OnFirefox, OnEdge, OnChrome, $, pageTrans_, enableNextTick_, nextTick_, kReadyInfo, TransTy, IsEdg_, post_,
-  toggleReduceMotion, hasShift_
+  OnFirefox, OnEdge, OnChrome, $, pageTrans_, enableNextTick_, nextTick_, kReadyInfo, type TransTy, IsEdg_, post_,
+  toggleReduceMotion_, hasShift_, PageOs_, setupPageOs_, prevent_, CurCVer_, escapeAllForRe_
 } from "./async_bg"
 import {
-  bgSettings_, ExclusionVisibleVirtualNode, ExclusionRulesOption_, setupBorderWidth_, showI18n, kExclusionChange,
-  ExclusionBaseVirtualNode, setupSettingsCache_
+  bgSettings_, type ExclusionVisibleVirtualNode, ExclusionRulesOption_, setupBorderWidth_, showI18n_, kExclusionChange,
+  type ExclusionBaseVirtualNode, setupSettingsCache_
 } from "./options_base"
 import { kPgReq, PgReq } from "../background/page_messages"
-import type * as i18n_popup from "../i18n/zh/popup.json"
+import type * as i18n_action from "../i18n/zh/action.json"
 
 type CachedMatcher = ValidUrlMatchers | false
-let conf_: PgReq[kPgReq.popupInit][1]
+let conf_: PgReq[kPgReq.actionInit][1]
 let url: string, topUrl = ""
 let inited: 0 | 1 /* no initial matches */ | 2 /* some matched */ | 3 /* is saving (temp status) */ = 0
 let saved = true, oldPass: string | null = null
@@ -25,9 +25,15 @@ let stateValue = stateAction.nextElementSibling, stateTail = stateValue.nextElem
 const testers_: SafeDict<Promise<CachedMatcher> | CachedMatcher> = Object.create(null)
 let _onlyFirstMatch: boolean
 
-const pTrans_: TransTy<keyof typeof i18n_popup> = (k, a): string => pageTrans_(k, a) || ""
+const aTrans_: TransTy<keyof typeof i18n_action> = (k, a): string => pageTrans_(k, a) || ""
 
 class PopExclusionRulesOption extends ExclusionRulesOption_ {
+  override init_ (element: HTMLElement): void {
+    super.init_(element)
+    this.$list_.onmousedown = (event: MouseEventToPrevent): void => {
+      event.detail > 1 && (event.target as EnsuredMountedElement).localName !== "input" && prevent_(event)
+    }
+  }
   override addRule_ (_pattern: string, autoFocus?: false): void {
     super.addRule_(PopExclusionRulesOption.generateDefaultPattern_(), autoFocus)
   }
@@ -37,7 +43,7 @@ class PopExclusionRulesOption extends ExclusionRulesOption_ {
   }
   override populateElement_ (rules1: ExclusionsNS.StoredRule[]): void {
     super.populateElement_(rules1)
-    this.populateElement_ = null as never // ensure .populateElement_ is only executed for once
+    PopExclusionRulesOption.prototype.populateElement_ = null as never
     PopExclusionRulesOption.prototype.checkNodeVisible_ = ExclusionRulesOption_.prototype.checkNodeVisible_
     let visible_ = this.list_.filter((i): i is ExclusionVisibleVirtualNode => i.visible_), some = visible_.length > 0
     let element1: SafeHTMLElement
@@ -59,9 +65,9 @@ class PopExclusionRulesOption extends ExclusionRulesOption_ {
   override updateVNode_ (vnode: ExclusionVisibleVirtualNode, pattern: string, passKeys: string): void {
     const patternIsSame = vnode.rule_.pattern === pattern, oldMatcher = vnode.matcher_
     super.updateVNode_(vnode, pattern, passKeys)
-    const tip = !pattern ? "" : !passKeys ? pTrans_("completelyDisabled") || "completely disabled"
+    const tip = !pattern ? "" : !passKeys ? aTrans_("completelyDisabled") || "completely disabled"
         : passKeys.length > 1 && passKeys[0] === "^"
-        ? pTrans_("onlyHook") || "only hook such keys" : pTrans_("passThrough") || "pass through such keys"
+        ? aTrans_("onlyHook") || "only hook such keys" : aTrans_("passThrough") || "pass through such keys"
     vnode.$pattern_.title !== pattern && (vnode.$pattern_.title = pattern)
     vnode.$keys_.title !== tip && (vnode.$keys_.title = tip)
     if (patternIsSame) {
@@ -77,7 +83,7 @@ class PopExclusionRulesOption extends ExclusionRulesOption_ {
     if (!pattern || pattern === PopExclusionRulesOption.generateDefaultPattern_()) {
       patternElement.title = patternElement.style.color = ""
     } else if ((matcher = parseMatcher(vnode)) instanceof Promise) {
-      void matcher.then((): void => { this.updateLineStyle_(vnode, pattern) })
+      matcher.then(this.updateLineStyle_.bind(this as PopExclusionRulesOption, vnode, pattern))
     } else if (doesMatchCur_(matcher)) {
       patternElement.title = patternElement.style.color = ""
     } else {
@@ -87,9 +93,11 @@ class PopExclusionRulesOption extends ExclusionRulesOption_ {
     }
   }
   static generateDefaultPattern_ (this: void): string {
-    const main = url.split(<RegExpOne> /[?#]/)[0]
-    const url2 = main.startsWith("http:")
-      ? "^https?://" + main.split("/", 3)[2].replace(<RegExpG> /[$()*+.?\[\\\]\^{|}]/g, "\\$&") + "/"
+    const hasSubDomain = conf_.hasSubDomain
+    const main = (hasSubDomain ? topUrl : url).split(<RegExpOne> /[?#]/)[0]
+    const url2 = hasSubDomain || main.startsWith("http:")
+      ? (hasSubDomain < 2 && main[4] !== ":" ? "^https://" : "^https?://") + (hasSubDomain ? "(?:[^/]+\.)?" : "")
+        + escapeAllForRe_(main.split("/", 3)[2]) + "/"
       : main.startsWith(location.origin + "/")
       ? ":vimium:/" + new URL(main).pathname.replace("/pages", "")
       : (<RegExpOne> /^[^:]+:\/\/./).test(main) && !main.startsWith("file:")
@@ -125,21 +133,21 @@ const _doUpdateState = (oldInited: typeof inited
   const same = pass === oldPass
   const isReversed = !!pass && pass.length > 2 && pass[0] === "^"
   stateAction.textContent =
-    (isSaving ? pass ? pTrans_("137") + pTrans_(isReversed ? "138" : "139") : pTrans_("140")
-      : pTrans_(same ? "141" : "142") + pTrans_(pass ? isReversed ? "138" : "139" : same ? "143" : "143_2")
+    (isSaving ? pass ? aTrans_("137") + aTrans_(isReversed ? "138" : "139") : aTrans_("140")
+      : aTrans_(same ? "141" : "142") + aTrans_(pass ? isReversed ? "138" : "139" : same ? "143" : "143_2")
       ).replace(" to be", "")
-    + pTrans_("colon") + pTrans_("NS")
+    + aTrans_("colon") + aTrans_("NS")
   /* note: on C91, Win10, text may have a negative margin-left (zh/fr) when inline-block and its left is inline */
   stateValue.className = pass ? "code" : ""
   stateValue.textContent = pass ? isReversed ? pass.slice(2) : pass
-    : pTrans_("143_3") + pTrans_(pass !== null ? "144" : "145")
+    : aTrans_("143_3") + aTrans_(pass !== null ? "144" : "145")
   stateTail.textContent = conf_.lock !== null && !isSaving && same
-    ? pTrans_("147", [pTrans_(conf_.lock !== Frames.Status.enabled ? "144" : "145")])
-    : conf_.lock !== null ? pTrans_("148") : ""
+    ? aTrans_("147", [aTrans_(conf_.lock !== Frames.Status.enabled ? "144" : "145")])
+    : conf_.lock !== null ? aTrans_("148") : ""
   const mismatches = toCheck.some(vnode => !!(vnode.changed_ & kExclusionChange.mismatches)
       && (vnode.rule_.pattern !== vnode.savedRule_.pattern || vnode.rule_.passKeys !== vnode.savedRule_.passKeys))
   saveBtn2.disabled = same && !mismatches
-  saveBtn2.firstChild.data = pTrans_(isSaving ? "115_3" : same && !mismatches ? "115" : "115_2")
+  saveBtn2.firstChild.data = aTrans_(isSaving ? "115_3" : same && !mismatches ? "115" : "115_2")
 }
 
 const saveOptions = (): void | Promise<void> => {
@@ -152,7 +160,7 @@ const saveOptions = (): void | Promise<void> => {
   inited = 3
   updateBottomLeft()
   updateState(true)
-  saveBtn2.firstChild.data = pTrans_("115_3")
+  saveBtn2.firstChild.data = aTrans_("115_3")
   if (OnFirefox) {
     saveBtn2.blur()
   }
@@ -167,7 +175,7 @@ const collectPass = (pass: string): string => {
   isReversed && (pass = pass.slice(1).trimLeft())
   const dict = Object.create<1>(null)
   for (let i of pass.split(" ")) {
-    dict[i] = 1
+    dict[i === "*" ? aTrans_("asterisk") : i] = 1
   }
   return (isReversed ? "^ " : "") + Object.keys(dict).sort().join(" ")
 }
@@ -178,7 +186,7 @@ const _forceState = (cmd: string): Promise<void> => {
 }
 
 const forceState = (act: "Reset" | "Enable" | "Disable", event?: EventToPrevent): void => {
-  event && event.preventDefault()
+  event && prevent_(event)
   const notClose = event && ((event as Event as MouseEvent).ctrlKey || (event as Event as MouseEvent).metaKey)
   void _forceState(`${conf_.tabId}/${act}`).then((): void => {
     notClose ? (updateBottomLeft(), updateState(false)) : window.close()
@@ -188,7 +196,7 @@ const forceState = (act: "Reset" | "Enable" | "Disable", event?: EventToPrevent)
 const doesMatchCur_ = (rule: ValidUrlMatchers | false): boolean => {
   if (!rule) { return false }
   return rule.t === kMatchUrl.StringPrefix ? url.startsWith(rule.v) || (!!topUrl && topUrl.startsWith(rule.v))
-      : rule.t === kMatchUrl.Pattern ? rule.v.test(url) || (!!topUrl && rule.v.test(topUrl))
+      : rule.t === kMatchUrl.Pattern ? rule.v.p.test(url) || (!!topUrl && rule.v.p.test(topUrl))
       : rule.v.test(url) || (!!topUrl && rule.v.test(topUrl))
 }
 
@@ -205,7 +213,13 @@ const parseMatcher = (vnode: ExclusionVisibleVirtualNode): Promise<CachedMatcher
 
 const deserializeMatcher = (serialized: BaseUrlMatcher): ValidUrlMatchers => {
   return serialized.t === kMatchUrl.StringPrefix ? { t: serialized.t, v: serialized.v as string }
-      : serialized.t === kMatchUrl.Pattern ? { t: serialized.t, v: new URLPattern!(serialized.v as URLPatternDict) }
+      : serialized.t === kMatchUrl.Pattern ? { t: serialized.t, v: {
+        p: OnChrome && Build.MinCVer < BrowserVer.MinURLPatternWith$ignoreCase
+          && CurCVer_ < BrowserVer.MinURLPatternWith$ignoreCase
+          ? new URLPattern!(serialized.v as string)
+          : new URLPattern!(serialized.v as string, "http://localhost", { ignoreCase: true }),
+        s: serialized.v as string
+      } }
       : { t: serialized.t, v: new RegExp(serialized.v as string, "") }
 }
 
@@ -222,7 +236,7 @@ const getExcluded_ = (inIframe: boolean, vnodes: ExclusionVisibleVirtualNode[]):
   for (const node of vnodes) {
     const rule = node.matcher_! as Exclude<ExclusionBaseVirtualNode["matcher_"], null | Promise<any>>
     if (rule && (rule.t === kMatchUrl.StringPrefix ? url.startsWith(rule.v)
-          : rule.t === kMatchUrl.Pattern ? rule.v.test(url) : rule.v.test(url))) {
+          : rule.t === kMatchUrl.Pattern ? rule.v.p.test(url) : rule.v.test(url))) {
       const str = node.rule_.passKeys
       if (str.length === 0 || _onlyFirstMatch || str[0] === "^" && str.length > 2) { return str }
       matchedKeys += str
@@ -240,8 +254,8 @@ const updateBottomLeft = (): void => {
   toggleAction = conf_.status !== Frames.Status.disabled ? "Disable" : "Enable"
   let el0 = $<EnsuredMountedHTMLElement>("#toggleOnce"), el1 = el0.nextElementSibling
   nextTick_((): void => {
-    el0.firstElementChild.textContent = (pTrans_(toggleAction) || toggleAction)
-        + (conf_.lock !== null ? "" : pTrans_("Once"))
+    el0.firstElementChild.textContent = (aTrans_(toggleAction) || toggleAction)
+        + (conf_.lock !== null ? "" : aTrans_("Once"))
     el0.onclick = forceState.bind(null, toggleAction)
     stateValue.id = "state-value"
     el1.classList.toggle("hidden", conf_.lock === null)
@@ -263,7 +277,7 @@ const initOptionsLink = (_url: string): void => {
       element.href = optionsUrl
     })
     element.onclick = (event: EventToPrevent): void => {
-      event.preventDefault()
+      prevent_(event)
       void post_(kPgReq.focusOrLaunch, { u: optionsUrl, p: true }).then((): void => {
         window.close()
       })
@@ -272,13 +286,15 @@ const initOptionsLink = (_url: string): void => {
 }
 
 const initExclusionRulesTable = (): void => {
-  !(Build.OS & (1 << kOS.mac)) || Build.OS & ~(1 << kOS.mac) && OnChrome && conf_.os ||
+  !(Build.OS & kBOS.MAC) || Build.OS !== kBOS.MAC as number && OnChrome && PageOs_ ||
   window.addEventListener("keydown", function (event): void {
-    if (event.altKey
+    if (event.keyCode === kKeyCode.enter && event.metaKey) {
+      onEnterKeyUp(event)
+    } else if (event.altKey
         && (event.keyCode === kKeyCode.X || conf_.lock !== null && event.keyCode === kKeyCode.Z)
         && !(event.ctrlKey || event.metaKey || hasShift_(event))
         ) {
-      event.preventDefault()
+      prevent_(event)
       event.stopImmediatePropagation()
       forceState(event.keyCode === kKeyCode.X ? toggleAction : "Reset")
     }
@@ -301,22 +317,23 @@ const initExclusionRulesTable = (): void => {
   }
 }
 
-void post_(kPgReq.popupInit).then((_resolved): void => {
+void post_(kPgReq.actionInit).then((_resolved): void => {
   conf_ = _resolved
+  setupPageOs_(conf_.os)
   const _url = conf_.url
   let blockedMsg = $("#blocked-msg")
-  enableNextTick_(kReadyInfo.popup)
+  enableNextTick_(kReadyInfo.action)
   if (!conf_.runnable) {
     onNotRunnable(blockedMsg)
     initOptionsLink(_url)
-    nextTick_(showI18n)
+    nextTick_(showI18n_)
     nextTick_(didShow)
     return
   }
   nextTick_((versionEl): void => {
     blockedMsg.remove()
     blockedMsg = null as never
-    toggleReduceMotion(conf_.reduceMotion)
+    toggleReduceMotion_(conf_.reduceMotion)
     versionEl.textContent = conf_.ver
   }, $("#version"))
 
@@ -330,28 +347,30 @@ void post_(kPgReq.popupInit).then((_resolved): void => {
   conf_.exclusions = null
 
   saveBtn2.onclick = saveOptions
-  document.addEventListener("keyup", function (event): void {
-    if (event.keyCode === kKeyCode.enter) {
-      const el = event.target as Element
-      if (el instanceof HTMLAnchorElement) {
-        el.hasAttribute("href") || setTimeout(function (el1) {
-          el1.click()
-          el1.blur()
-        }, 0, el);
-      } else if (event.ctrlKey || event.metaKey) {
-        const q = !saved && saveOptions()
-        q && q.then((): void => { setTimeout(window.close, 300) })
-      }
-    }
-  })
+  document.addEventListener("keyup", onEnterKeyUp)
 
   initOptionsLink(_url)
   updateBottomLeft()
   initExclusionRulesTable()
-  nextTick_(showI18n)
+  nextTick_(showI18n_)
   setupBorderWidth_ && nextTick_(setupBorderWidth_)
   nextTick_(didShow)
 })
+
+const onEnterKeyUp = (event: KeyboardEventToPrevent): void => {
+  if (event.keyCode === kKeyCode.enter) {
+    const el = event.target as Element
+    if (el instanceof HTMLAnchorElement) {
+      el.hasAttribute("href") || setTimeout(function (el1) {
+        el1.click()
+        el1.blur()
+      }, 0, el);
+    } else if (event.ctrlKey || event.metaKey) {
+      const q = !saved && saveOptions()
+      q && q.then((): void => { setTimeout(window.close, 300) })
+    }
+  }
+}
 
 const didShow = (): void => {
   const docEl = document.documentElement as HTMLHtmlElement
@@ -398,7 +417,7 @@ const onNotRunnable = (blockedMsg: HTMLElement): void => {
   if (!retryInjectElement) { return }
   if (!OnFirefox && (<RegExpOne> /^(file|ftps?|https?):/).test(_url) && conf_.tabId >= 0) {
     retryInjectElement.onclick = (event): void => {
-      event.preventDefault()
+      prevent_(event)
       void post_(kPgReq.runFgOn, conf_.tabId).then((): void => {
         window.close()
       })

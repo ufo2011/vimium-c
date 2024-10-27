@@ -23,6 +23,7 @@ type Parameters<F extends Function> = F extends (...args: infer A) => any ? A : 
 type ConstructorParameters<T extends new (...args: any[]) => any> = T extends new (...args: infer P) => any ? P : never;
 type ReturnType<T> = T extends (...args: any[]) => infer R ? R : never;
 type InstanceType<T extends new (...args: any[]) => any> = T extends new (...args: any[]) => infer R ? R : any;
+type PromiseOr<T> = T | Promise<T>
 type Unpacked<T> =
     T extends (infer U)[] ? U :
     T extends (...args: any[]) => infer U ? U :
@@ -30,7 +31,7 @@ type Unpacked<T> =
     T;
 
 // not write `{ [k extends Exclude<...>]: ... }` to avoid losing property tracking
-type Omit<T, K extends keyof T> = Pick<T, Exclude<keyof T, K>>
+type Omit<T, K extends keyof T> = T extends object ? Pick<T, Exclude<keyof T, K>> : never
 
 type TypeToAssert<Parent, Child extends Parent, Key extends keyof Child, Others extends keyof Parent = never> =
     { readonly [P in Others]: unknown; } & { readonly [key in Key]?: Child[key]; };
@@ -88,10 +89,13 @@ type Lowercase<S extends string> = intrinsic;
 type Uppercase<S extends string> = intrinsic;
 interface String {
   replace <Self extends string, S extends string, T extends string> (
-     this: Self, searchValue: RegExpG & { source: S }, replaceValue: T): ReplaceStrAll<Self, S , T>
+      this: Self, searchValue: RegExpG & { source: S }, replaceValue: T): ReplaceStrAll<Self, S , T>
   replace <Self extends string, S extends string, T extends string> (
-     this: Self, searchValue: S, replaceValue: T
-     ): T extends `${"" | "$&"}${number}` ? string : string extends T ? string | symbol : ReplaceStrOnce<Self, S , T>
+      this: Self, searchValue: S, replaceValue: T
+    ): T extends `${"" | "$&"}${number}` ? string : string extends T ? string | symbol : ReplaceStrOnce<Self, S , T>
+  replace(searchValue: RegExpSearchable<5>, replacer: (this: void, substring: string,
+      a: string, b: string, c: string, d: string, e: string, index: number, source: string
+    ) => string): string
   toLowerCase <Self extends string> (this: Self): string extends Self ? string : `${Lowercase<Self>}`
   toUpperCase <Self extends string> (this: Self): string extends Self ? string : `${Uppercase<Self>}`
 }

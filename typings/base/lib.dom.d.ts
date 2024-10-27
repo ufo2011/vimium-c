@@ -123,7 +123,7 @@ interface ExceptionInformation {
 }
 
 interface FocusEventInit extends UIEventInit {
-    relatedTarget?: EventTarget;
+    relatedTarget?: EventTarget | null;
 }
 
 interface HashChangeEventInit extends EventInit {
@@ -171,8 +171,8 @@ interface MouseEventInit extends EventModifierInit {
     screenY?: number;
     clientX?: number;
     clientY?: number;
-    /** 0: main-pressed; 2: second pressed */ button?: 0 | 2;
-    /** 0: not-mousedown; 1: primary; 2: second */ buttons?: 0 | 1 | 2;
+    /** 0: main-pressed; 2: second pressed */ button?: 0 | 2 | 1;
+    /** 0: not-mousedown; 1: primary; 2: second */ buttons?: 0 | 1 | 2 | 4;
     relatedTarget?: EventTarget | null;
 }
 
@@ -3283,7 +3283,7 @@ interface HTMLFormElement extends HTMLElement {
     submit(): void;
     addEventListener<K extends keyof HTMLElementEventMap>(type: K, listener: (this: HTMLFormElement, ev: HTMLElementEventMap[K]) => any, useCapture?: boolean): void;
     addEventListener(type: string, listener: EventListenerOrEventListenerObject, useCapture?: boolean): void;
-    [name: string]: any;
+    // [name: string]: any; // not use it
 }
 
 declare var HTMLFormElement: {
@@ -3368,6 +3368,15 @@ interface HTMLFrameElement extends SafeHTMLElement, GetSVGDocument {
 declare var HTMLFrameElement: {
     prototype: HTMLFrameElement;
     new(): HTMLFrameElement;
+}
+
+interface HTMLFencedFrameElement extends SafeHTMLElement {
+    config: object | null
+}
+
+declare var HTMLFencedFrameElement: {
+    prototype: HTMLFencedFrameElement;
+    new(): HTMLFencedFrameElement;
 }
 
 interface HTMLFrameSetElementEventMap extends HTMLElementEventMap {
@@ -4639,7 +4648,6 @@ interface HTMLSelectElement extends SafeHTMLElement {
     setCustomValidity(error: string): void;
     addEventListener<K extends keyof HTMLElementEventMap>(type: K, listener: (this: HTMLSelectElement, ev: HTMLElementEventMap[K]) => any, useCapture?: boolean): void;
     addEventListener(type: string, listener: EventListenerOrEventListenerObject, useCapture?: boolean): void;
-    [name: string]: any;
 }
 
 declare var HTMLSelectElement: {
@@ -5291,7 +5299,7 @@ interface InputEvent extends UIEvent {
 
 declare var InputEvent: {
     prototype: InputEvent;
-    new(typeArg: string): InputEvent;
+    new(typeArg: string, init: EventInit & { inputType?: string, data?: string }): InputEvent;
 } | undefined;
 
 interface KeyboardEvent extends UIEvent {
@@ -9092,6 +9100,7 @@ interface HTMLElementTagNameMap {
     "form": HTMLFormElement;
     "frame": HTMLFrameElement;
     "frameset": HTMLFrameSetElement;
+    "fencedframe": HTMLFencedFrameElement;
     "h1": HTMLHeadingElement;
     "h2": HTMLHeadingElement;
     "h3": HTMLHeadingElement;
@@ -9712,7 +9721,6 @@ declare var Request: {
   new (_invalidArg: "should never call this"): Request
   prototype: Request;
 }
-declare function queueMicrotask(callback: (this: void) => void): void;
 declare function clearInterval(handle: number): void;
 declare function clearTimeout(handle: number): void;
 declare function atob(encodedString: string): string;
@@ -9740,8 +9748,6 @@ type KeyFormat = string;
 type KeyType = string;
 type KeyUsage = string;
 type payloadtype = number;
-// Note: although "instant" was removed from CSSOM in Dec, 2013,
-// it's still used by Chrome 73 and Firefox 65
 type ScrollBehavior = "auto" | "instant" | "smooth";
 type ScrollLogicalPosition = "start" | "center" | "end" | "nearest";
 type IDBValidKey = number | string | Date | IDBArrayKey;

@@ -20,14 +20,15 @@ globalThis.__filename = null
   }
   const modules: Dict<ModuleTy | LoadingPromise> = {}
   const getName = (name: string): string => name.slice(name.lastIndexOf("/") + 1).replace(".js", "")
+  const kInSW = !!Build.MV3 && Build.BTypes !== BrowserType.Firefox as number
   const myDefine: DefineTy = (depNames, factory): void => {
     // @ts-ignore
     const name = getName(__filename || ((document as HTMLDocument).currentScript as HTMLScriptElement).src)
     let exports = modules[name]
-    if (!(Build.NDEBUG || !exports || !exports.__esModule || exports instanceof Promise)) {
+    if (!(Build.NDEBUG || !exports || !exports.__esModule || !kInSW && exports instanceof Promise)) {
       throw new Error(`module filenames must be unique: duplicated "${name}"`)
     }
-    if (exports && exports instanceof Promise) {
+    if (!kInSW && exports && exports instanceof Promise) {
       const promise: LoadingPromise = exports.then((): void => {
         modules[name] = exports
         _innerDefine(name, depNames, factory, exports as {})
@@ -35,11 +36,12 @@ globalThis.__filename = null
       exports = promise.__esModule = exports.__esModule || {}
       modules[name] = promise
     } else {
-      _innerDefine(name, depNames, factory, exports || (modules[name] = {}))
+      _innerDefine(name, depNames, factory, exports as Exclude<typeof exports, Promise<any>> || (modules[name] = {}))
     }
   }
   const _innerDefine = (name: string, depNames: string[], factory: FactoryTy, exports: ModuleTy): void => {
-    const obj = factory.bind(null, doImport, exports).apply(null, depNames.slice(2).map(myRequire))
+    const obj = factory.bind(null, kInSW ? null as never : doImport, exports
+        ).apply(null, depNames.slice(2).map(myRequire))
     if (!(Build.NDEBUG || !obj)) {
       throw new Error("Unexpected return-style module")
     }
@@ -49,7 +51,8 @@ globalThis.__filename = null
     name = getName(name)
     let exports = modules[name]
     exports = !exports ? modules[name] = {}
-        : exports instanceof Promise ? exports.__esModule || (exports.__esModule = {}) : exports
+        : !kInSW && exports instanceof Promise ? exports.__esModule || (exports.__esModule = {})
+        : exports as Exclude<typeof exports, Promise<any>>
     return exports
   }
   const doImport: AsyncRequireTy = ([path], callback): void => {
@@ -74,9 +77,9 @@ globalThis.__filename = null
     }))
     exports instanceof Promise ? void exports.then(() => { doImport([path], callback) }) : callback(exports)
   }
-  if (Build.MV3) { globalThis.__moduleMap = modules }
+  if (kInSW) { globalThis.__moduleMap = modules }
+  if (!Build.NDEBUG) { (globalThis as any).__importStar = (obj: {}): {} => obj }
   globalThis.define = myDefine;
-  (globalThis as any).__importStar = (obj: {}): {} => obj
 })()
 
 if (Build.BTypes & BrowserType.Chrome && Build.MinCVer < BrowserVer.MinEnsuredES$Object$$values$and$$entries
@@ -134,7 +137,12 @@ Build.BTypes & BrowserType.Chrome && Build.MinCVer < BrowserVer.MinEnsuredES$Arr
       endsWith: { enumerable: false, value: function endsWith(this: string, s: string): boolean {
         const i = this.length - s.length
         return i >= 0 && this.indexOf(s, i) === i
-      } }
+      } },
+      repeat: { enumerable: false, value: function repeat(this: string, num: number): string {
+        let res = "", slice = this
+        for (let i = 0; i < num; i++) { res += slice }
+        return res
+      } },
     })
     } else if (Build.MinCVer <= BrowserVer.Maybe$Promise$onlyHas$$resolved) {
       Promise.resolve || (Promise.resolve = Promise.resolved!)
@@ -149,9 +157,9 @@ Build.BTypes & BrowserType.Chrome && Build.MinCVer < BrowserVer.MinEnsuredES$Arr
     const ver = navigator.userAgent!.match(<RegExpOne> /\bChrom(?:e|ium)\/(\d+)/)
     if (ver && +ver[1] < BrowserVer.MinEnsuredES6$ForOf$Map$SetAnd$Symbol) {
       const proto = {
-        add (k: string): any { const old = k in this.map_; this.map_[k] = 1; old || this.size++ },
+        add (k: string): any { const old = k in this.map_; old || (this.map_[k] = 1, this.size++); return this },
         clear (): void { this.map_ = Object.create(null); this.size = 0 },
-        delete (k: string): boolean { const old = k in this.map_; delete this.map_[k]; old && this.size--; return old },
+        delete (k: string): boolean { const o = k in this.map_; o && (delete this.map_[k], this.size--); return o },
         forEach (cb): any {
           const isSet = this.isSet_, map = this.map_
           for (let key in map) {
@@ -160,21 +168,28 @@ Build.BTypes & BrowserType.Chrome && Build.MinCVer < BrowserVer.MinEnsuredES$Arr
         },
         get (k: string): any { return this.map_[k] },
         has (k: string): boolean { return k in this.map_ },
-        set (k: string, v: any): any { const old = k in this.map_; this.map_[k] = v; old || this.size++ }
+        set (k: string, v: any): any { const old = k in this.map_; this.map_[k] = v; old || this.size++; return this }
       } as Writable<SimulatedMap>
-      const setProto = Build.MinCVer < BrowserVer.Min$Object$$setPrototypeOf && Build.BTypes & BrowserType.Chrome
-          && !Object.setPrototypeOf ? (obj: SimulatedMap): void => { (obj as any).__proto__ = proto }
-          : (opt: SimulatedMap): void => { Object.setPrototypeOf(opt, proto as any as null) };
-      globalThis.Set = function (this: SimulatedMap): any {
-        setProto(this)
-        this.map_ = Object.create(null)
+      const setProto = (Build.MinCVer < BrowserVer.Min$Object$$setPrototypeOf && Build.BTypes & BrowserType.Chrome
+          ? Object.setPrototypeOf || ((obj: SimulatedMap): void => { (obj as any).__proto__ = proto })
+          : Object.setPrototypeOf) as (obj: SimulatedMap, newProto: any) => void
+      type SimulatedMapCtor = (this: SimulatedMap, arr?: any[]) => any;
+      globalThis.Set = function (arr?: string[]) {
+        ; (Map as any as SimulatedMapCtor).call(this)
         this.isSet_ = 1
-      } as any;
-      globalThis.Map = function (this: SimulatedMap): any {
-        setProto(this)
+        for (let i = 0, end = arr ? arr.length : 0; i < end; i++) {
+          this.add(arr![i])
+        }
+      } satisfies SimulatedMapCtor as any;
+      globalThis.Map = function (arr?: [string, any][]): any {
+        setProto(this, proto)
         this.map_ = Object.create(null)
+        ; (this.size satisfies number) = 0
         this.isSet_ = 0
-      } as any
+        for (let i = 0, end = arr ? arr.length : 0; i < end; i++) {
+          this.set(arr![i][0], arr![i][1])
+        }
+      } satisfies SimulatedMapCtor as any
     }
 })()
 

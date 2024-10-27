@@ -1,14 +1,11 @@
 import {
-  fgCache, isEnabled_, VTr, isAlive_, timeout_, clearTimeout_, interval_, clearInterval_, isLocked_, OnChrome, getTime,
-  esc
+  fgCache, isEnabled_, VTr, isAlive_, timeout_, clearTimeout_, interval_, isLocked_, OnChrome, getTime, esc, doc
 } from "../lib/utils"
 import { handler_stack } from "../lib/keyboard_utils"
-import {
-  isHTML_, createElement_, setClassName_s, appendNode_s, setVisibility_s, docHasFocus_, toggleClass_s
-} from "../lib/dom_utils"
+import { isHTML_, createElement_, setClassName_s, appendNode_s, setVisibility_s, toggleClass_s } from "../lib/dom_utils"
 import { ui_box, ensureBorder, addUIElement, adjustUI, getBoxTagName_old_cr } from "./dom_ui"
 import { allHints, isHintsActive, hintManager, setMode as setHintMode, hintMode_ } from "./link_hints"
-import { insert_global_, passAsNormal } from "./insert"
+import { insert_global_, passAsNormal, raw_insert_lock, readonlyFocused_, set_readonlyFocused_ } from "./insert"
 import { visual_mode_name } from "./visual"
 import { find_box } from "./mode_find"
 import { wdZoom_ } from "../lib/rect"
@@ -26,14 +23,16 @@ export { box as hud_box, text as hud_text, opacity_ as hud_opacity, timer as hud
 export const hudTip = (tid: kTip | HintMode, duration?: 0 | 0.0001 | 1 | 2, args?: Array<string | number> | string
     , embed?: 1): void => {
   hudShow(tid, args, embed)
-  text && (timer = timeout_(hudHide, ((duration || 1.5) * 1000) | 0))
+  text && (timer = timeout_(hudHide
+      , ((duration || (tid === kTip.copiedIs && (find_box || visual_mode_name) ? 0.5 : 1.5)) * 1000) | 0))
 }
 export const hudShow = (tid: kTip | HintMode, args?: Array<string | number> | string
     , embed?: boolean | BOOL | TimerType.fake | void): void => {
   if (!isHTML_()) { return; }
   text = VTr(tid, args);
   opacity_ = 1;
-  if (timer) { clearTimeout_(timer); timer = TimerID.None; }
+  clearTimeout_(timer)
+  timer = TimerID.None
   embed || tweenId || (tweenId = interval_(tween, 40), tweenStart = getTime())
   if (box) {
     toggleClass_s(box, "HL", 0)
@@ -59,7 +58,7 @@ const tween = (fake?: TimerType.fake): void => { // safe-interval
     toggleOpacity(OnChrome && Build.MinCVer < BrowserVer.MinNo$TimerType$$Fake && fake || fgCache.m ? 1 : 0.25)
     fake && (tweenId = 0)
     return adjustUI();
-  } else if (!fgCache.m && docHasFocus_() && getTime() - tweenStart < 996) {
+  } else if (!fgCache.m && !doc.hidden && getTime() - tweenStart < 996) {
     // in "efficiency mode" of MS Edge 98, step of interval or following timeout may be increased into 1 second
     opacity += opacity < opacity_ ? 0.25 : -0.25;
   } else {
@@ -71,15 +70,14 @@ const tween = (fake?: TimerType.fake): void => { // safe-interval
     hudHide(TimerType.noTimer)
   }
   if (opacity !== opacity_) { return }
-  clearInterval_(tweenId);
+  clearTimeout_(tweenId)
   tweenId = 0;
 }
 
 export const hudHide = (info?: TimerType.fake | TimerType.noTimer | void): void => {
   const n = handler_stack.length
-  if (timer) {
-    clearTimeout_(timer); timer = TimerID.None
-  }
+  clearTimeout_(timer)
+  timer = TimerID.None
   opacity_ = 0; text = ""
   if (n && handler_stack[n - 1] === kHandler.onTopNormal) {
       hudShow(kTip.onTopNormal, currentKeys)
@@ -91,6 +89,8 @@ export const hudHide = (info?: TimerType.fake | TimerType.noTimer | void): void 
       hudShow(kTip.raw, insert_global_.h)
   } else if (passAsNormal) {
       esc!(HandlerResult.RefreshPassAsNormal)
+  } else if (readonlyFocused_ > 0 && set_readonlyFocused_(raw_insert_lock ? 1 : 0) && !fgCache.h) {
+    hudShow(kTip.readOnly)
   }
   else if (!box) { /* empty */ }
   else if ((OnChrome && Build.MinCVer < BrowserVer.MinNo$TimerType$$Fake ? info === TimerType.noTimer : info)
@@ -98,7 +98,7 @@ export const hudHide = (info?: TimerType.fake | TimerType.noTimer | void): void 
     toggleOpacity(0)
     $text.data = "";
     toggleClass_s(box, "HL", 0)
-    isEnabled_ && isLocked_ < 3 || adjustUI(2)
+    isEnabled_ && isLocked_ < Frames.Flags.lockedAndDisabled || adjustUI(2)
   }
   else if (!tweenId && isAlive_) {
     tweenId = interval_(tween, 40);

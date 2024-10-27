@@ -1,4 +1,4 @@
-interface ContentOptions extends HintsNS.Options, SafeObject {}
+interface ContentOptions extends HintsNS.Options, SafeObject { $s?: 1 }
 type LinkEl = Hint[0]
 export interface MarkerElement extends SafeHTMLElement {
   readonly localName: "span"
@@ -41,7 +41,7 @@ interface HintStatus extends HintsNS.BaseHintStatus {
 interface BaseHintWorker extends HintsNS.BaseHintWorker {
   /** get stat */ $ (): Readonly<HintStatus>
   /** clear */ c: typeof clear
-  /** dialogMode */ d: BOOL
+  /** dialogMode */ d: BOOL | 3
   /** executeHint */ e: typeof executeHintInOfficer
   /** getPreciseChildRect */ g: typeof getPreciseChildRect
   /** has just started: neg means a fresh command; pos means a reinited one */ h: number
@@ -81,33 +81,35 @@ interface FrameHintsInfo {
     s: HintManager | HintOfficer
 }
 /** return whether the element's VHints is not accessible */
-export type AddChildDirectly = (officer: BaseHintWorker, el: KnownIFrameElement, rect: Rect | null) => boolean
+export type AddChildDirectly = (officer: BaseHintWorker, el: AccessableIFrameElement, rect: Rect | null) => boolean
 
 import {
   VTr, isAlive_, isEnabled_, setupEventListener, keydownEvents_, set_keydownEvents_, timeout_, max_, min_, abs_, OnEdge,
   clearTimeout_, fgCache, doc, readyState_, chromeVer_, vApi, deref_, getTime, unwrap_ff, OnFirefox, OnChrome,
-  WithDialog, Lower, safeCall, locHref, os_, firefoxVer_, weakRef_not_ff, weakRef_ff, isTY
+  WithDialog, Lower, safeCall, os_, firefoxVer_, weakRef_not_ff, weakRef_ff, isTY, isIFrameInAbout_, findOptByHost
 } from "../lib/utils"
 import {
-  querySelector_unsafe_, isHTML_, scrollingEl_, docEl_unsafe_, IsInDOM_, GetParent_unsafe_, hasInCSSFilter_,derefInDoc_,
-  getComputedStyle_, isStyleVisible_, htmlTag_, fullscreenEl_unsafe_, removeEl_s, UNL, toggleClass_s, doesSupportDialog,
-  getSelectionFocusEdge_, SafeEl_not_ff_, compareDocumentPosition, deepActiveEl_unsafe_, frameElement_, getSelection_
+  querySelector_unsafe_, isHTML_, scrollingEl_, docEl_unsafe_, IsAInB_, GetParent_unsafe_, hasInCSSFilter_,derefInDoc_,
+  getComputedStyle_, isStyleVisible_, htmlTag_, fullscreenEl_unsafe_, removeEl_s, PGH, toggleClass_s, doesSupportDialog,
+  getSelectionFocusEdge_, SafeEl_not_ff_, compareDocumentPosition, deepActiveEl_unsafe_, frameElement_, getSelection_,
 } from "../lib/dom_utils"
 import {
   ViewBox, getViewBox_, prepareCrop_, wndSize_, bZoom_, wdZoom_, dScale_, boundingRect_,
-  docZoom_, bScale_, dimSize_, isSelARange, view_, isNotInViewport, VisibilityType,
+  docZoom_, bScale_, dimSize_, isSelARange, view_, isNotInViewport, kInvisibility,
 } from "../lib/rect"
 import {
   replaceOrSuppressMost_, removeHandler_, getMappedKey, keybody_, isEscape_, getKeyStat_, keyNames_, suppressTail_,
-  BSP, ENTER, SPC,
+  BSP, ENTER, SPC, isRepeated_,
 } from "../lib/keyboard_utils"
 import {
   style_ui, addElementList, ensureBorder, adjustUI, flash_, getParentVApi, getWndVApi_ff, checkHidden, removeModal,
-  getSelected, getSelectionBoundingBox_
+  getSelected, getSelectionBoundingBox_, hasPopover_
 } from "./dom_ui"
 import { scrollTick, beginScroll, currentScrolling } from "./scroller"
 import { hudTip, hudShow, hudHide, hud_tipTimer } from "./hud"
-import { set_onWndBlur2, insert_Lock_, set_grabBackFocus, insertInit, raw_insert_lock, insert_last_ } from "./insert"
+import {
+  set_onWndBlur2, insert_Lock_, set_grabBackFocus, insertInit, raw_insert_lock, insert_last_, insert_last2_
+} from "./insert"
 import {
   getVisibleElements, localLinkClear, frameNested_, checkNestedFrame, set_frameNested_, filterOutNonReachable, traverse,
   ClickType, initTestRegExps, excludeHints
@@ -158,12 +160,11 @@ export {
 }
 export function set_kSafeAllSelector (_newKSafeAll: string): void { kSafeAllSelector = _newKSafeAll as any }
 export function set_isClickListened_ (_newIsClickListened: boolean): void { isClickListened_ = _newIsClickListened }
-export function set_addChildFrame_<T extends typeof addChildFrame_> (_newACF: T): void { addChildFrame_ = _newACF }
 
 export const activate = (options: ContentOptions, count: number, force?: 2 | TimerType.fake): void => {
     const oldTimer = _timer, xy = options.xy as HintsNS.StdXY | undefined
     _timer = _reinitTime = coreHints.h = 0
-    oldTimer && clearTimeout_(oldTimer)
+    clearTimeout_(oldTimer)
     if (isActive && force !== 2 || !isEnabled_) { return; }
     if (checkHidden(kFgCmd.linkHints, options, count)) {
       return clear(1)
@@ -175,19 +176,20 @@ export const activate = (options: ContentOptions, count: number, force?: 2 | Tim
         return replaceOrSuppressMost_(kHandler.linkHints)
       }
     }
-    OnFirefox || oldTimer && isClickListened_ && vApi.e && vApi.e(kContentCmd.ReportKnownAtOnce_not_ff)
+    OnFirefox || isClickListened_ && vApi.e
+        && vApi.e(oldTimer ? kContentCmd.ManuallyReportKnownAtOnce : kContentCmd.AutoReportKnownAtOnce_not_ff)
     if (xy && !xy.n) { xy.n = count, count = 1 }
     if (options.direct) { return activateDirectly(options, count) }
     const parApi = !fullscreenEl_unsafe_() && getParentVApi()
     if (parApi) {
       parApi.l(style_ui)
-      // recursively go up and use the topest frame in a same origin
+      // recursively go up and use the topmost frame in a same origin
       return parApi.f(kFgCmd.linkHints, options, count, 2, frameElement_())
     }
     const useFilter0 = options.useFilter, useFilter = useFilter0 != null ? !!useFilter0 : fgCache.f,
     topFrameInfo: FrameHintsInfo = {h: [], v: null as never, s: coreHints},
-    toCleanArray: HintOfficer[] = [],
-    s0 = options.c, chars: string = s0 ? s0 : useFilter ? fgCache.n : fgCache.c
+    toCleanArray: HintOfficer[] = [], wantTop = options.onTop,
+    chars: string = options.c ? options.c : useFilter ? fgCache.n : fgCache.c
     frameArray = [topFrameInfo]
     isHC_ = matchMedia(VTr(
         OnChrome && Build.MinCVer < BrowserVer.MinForcedColorsMode && chromeVer_ < BrowserVer.MinForcedColorsMode
@@ -199,14 +201,13 @@ export const activate = (options: ContentOptions, count: number, force?: 2 | Tim
               && Build.MinCVer < BrowserVer.MinShadowDOMV0 && chromeVer_ < BrowserVer.MinShadowDOMV0) {
         removeModal()
       }
-      coreHints.d = <BOOL> +(
-        (OnChrome && Build.MinCVer >= BrowserVer.MinEnsuredHTMLDialogElement || doesSupportDialog())
-        && (wantDialogMode_ != null ? wantDialogMode_ : hasInCSSFilter_() || !!querySelector_unsafe_("dialog[open]"))
-        )
+      coreHints.d = !(OnChrome && Build.MinCVer >= BrowserVer.MinEnsuredHTMLDialogElement || doesSupportDialog()) ? 0
+        : hasPopover_ > 1 || querySelector_unsafe_("dialog[open]") ? 3
+        : <BOOL> +!!(wantDialogMode_ != null ? wantDialogMode_
+            : isTY(wantTop) ? findOptByHost(wantTop, 0) : wantTop != null ? wantTop : hasInCSSFilter_())
     }
     let allHints: readonly HintItem[], child: ChildFrame | undefined, insertPos = 0
       , frameInfo: FrameHintsInfo, total: number
-    {
       const childFrames: ChildFrame[] = [],
       addChild: AddChildDirectly = (officer, el, rect): boolean => {
         const childApi = detectUsableChild(el),
@@ -220,6 +221,7 @@ export const activate = (options: ContentOptions, count: number, force?: 2 | Tim
         }
         return !childOfficer
       };
+    {
       coreHints.o(options, count, chars, useFilter, null, null, topFrameInfo, addChild)
       allHints = topFrameInfo.h
       while (child = childFrames.pop()) {
@@ -236,14 +238,14 @@ export const activate = (options: ContentOptions, count: number, force?: 2 | Tim
       for (const i of toCleanArray) { i.p = null; i.c() }
       total = allHints.length;
       if (!total || total > GlobalConsts.MaxCountToHint) {
-        hudTip(total ? kTip.tooManyLinks : mode_ < HintMode.min_job && !options.match ? kTip.noLinks : kTip.noTargets)
+        runFallbackKey(options
+            , total ? kTip.tooManyLinks : mode_ < HintMode.min_job && !options.match ? kTip.noLinks : kTip.noTargets)
         return clear()
       }
       hints_ = keyStatus_.c = allHints
       if (!Build.NDEBUG) { coreHints.hints_ = allHints }
     }
-    noHUD_ = !(useFilter || topFrameInfo.v[3] > 40 && topFrameInfo.v[2] > 320) || !!(options.hideHUD || options.hideHud)
-        ? 1 : 0
+    noHUD_ = !(useFilter || topFrameInfo.v[3] > 40 && topFrameInfo.v[2] > 320) || options.hideHUD ? 1 : 0
     useFilter ? /*#__NOINLINE__*/ initFilterEngine(allHints as readonly FilteredHintItem[])
         : initAlphabetEngine(allHints)
     renderMarkers(allHints)
@@ -271,7 +273,7 @@ const collectFrameHints = (options: ContentOptions, count: number
     if (!isHTML_()) {
       return;
     }
-    const view: ViewBox = getViewBox_(OnEdge ? 1 : ((manager || coreHints).d + 1) as 1 | 2)
+    const view: ViewBox = getViewBox_(WithDialog ? (((manager || coreHints).d satisfies 0 | 1 | 3) | 1) as 1 | 3 : 1)
     prepareCrop_(1, outerView);
     if (tooHigh_ !== null) {
       const scrolling = !options.longPage && scrollingEl_(1)
@@ -292,10 +294,10 @@ const collectFrameHints = (options: ContentOptions, count: number
     frameInfo.v = view;
 }
 
-const render: BaseHintWorker["r"] = (hints, arr, raw_apis): void => {
+const render: BaseHintWorker["r"] = (hints, arr: FrameHintsInfo["v"], raw_apis): void => {
     const managerOrA = manager_ || coreHints;
     let body = doc.body
-    if (manager_ && (body && htmlTag_(body) && body.isContentEditable || locHref().startsWith("about"))) {
+    if (manager_ && (body && htmlTag_(body) && body.isContentEditable || isIFrameInAbout_)) {
       hookOnWnd(HookAction.Install)
     }
     removeBox()
@@ -304,7 +306,7 @@ const render: BaseHintWorker["r"] = (hints, arr, raw_apis): void => {
     manager_ || setMode(mode_)
     if (hints.length) {
       if (WithDialog) {
-        box_ = addElementList(hints, arr, managerOrA.d || coreHints.d)
+        box_ = addElementList(hints, arr, ((managerOrA.d satisfies 0 | 1 | 3) | coreHints.d) as typeof managerOrA.d)
       } else {
         box_ = addElementList(hints, arr);
       }
@@ -314,7 +316,7 @@ const render: BaseHintWorker["r"] = (hints, arr, raw_apis): void => {
     set_keydownEvents_((OnFirefox ? api_ : raw_apis).a())
     set_onWndBlur2(managerOrA.s)
     replaceOrSuppressMost_(kHandler.linkHints, coreHints.n)
-    manager_ && setupEventListener(0, UNL, clear);
+    manager_ && setupEventListener(0, PGH, clear) // "unload" is deprecated
     isActive = 1;
     options_.suppressInput && insertInit(true)
 }
@@ -328,13 +330,13 @@ export const setMode = (mode: HintMode, silent?: BOOL): void => {
     let key: string | undefined
     let msg = onTailEnter && !onWaitingKey ? VTr(kTip.waitForEnter) : VTr(mode_)
         + (useFilter_ || isHC_ ? ` [${key = isHC_ ? keyStatus_.k + keyStatus_.t : keyStatus_.t}]` : "")
-        + (WithDialog && !((useFilter_ || isHC_) && key) && (manager_ || coreHints).d ? VTr(kTip.modalHints) : "")
+        + (WithDialog && !((useFilter_ || isHC_) && key) && coreHints.d ? VTr(kTip.modalHints) : "")
     hudShow(kTip.raw, msg, true)
 }
 
 const getPreciseChildRect = (frameEl: KnownIFrameElement, view: Rect): Rect | null => {
     const V = "visible", brect = boundingRect_(frameEl), // not check <iframe>s referred by <slot>s
-    docEl = docEl_unsafe_(), body = doc.body, inBody = !!body && IsInDOM_(frameEl as SafeHTMLElement, body),
+    docEl = docEl_unsafe_(), body = doc.body, inBody = !!body && IsAInB_(frameEl as SafeHTMLElement, body),
     zoom = (OnChrome ? docZoom_ * (inBody ? bZoom_ : 1) : 1) / dScale_ / (inBody ? bScale_ : 1);
     let x0 = min_(view.l, brect.l), y0 = min_(view.t, brect.t), l = x0, t = y0, r = view.r, b = view.b
     for (let el: Element | null = frameEl; el = GetParent_unsafe_(el, PNType.RevealSlotAndGotoParent); ) {
@@ -360,13 +362,12 @@ const getPreciseChildRect = (frameEl: KnownIFrameElement, view: Rect): Rect | nu
 
 export const tryNestedFrame = (
       cmd: Exclude<FgCmdAcrossFrames, kFgCmd.linkHints>, options: SafeObject, count: number): boolean => {
-    let childApi: VApiTy | null
     if (frameNested_ !== null) {
       prepareCrop_();
       checkNestedFrame();
     }
     if (!frameNested_) { return false; }
-    childApi = detectUsableChild(frameNested_);
+    const childApi = detectUsableChild(frameNested_)
     if (childApi) {
       childApi.f(cmd, options, count)
       if (readyState_ > "i") { set_frameNested_(false) }
@@ -375,7 +376,7 @@ export const tryNestedFrame = (
       // * Cross-site: it's in an abnormal situation, so we needn't focus the child;
       set_frameNested_(null)
     }
-    return !!childApi;
+    return !!childApi
 }
 
 const onKeydown = (event: HandlerNS.Event): HandlerResult => {
@@ -386,8 +387,9 @@ const onKeydown = (event: HandlerNS.Event): HandlerResult => {
       ret = manager_.n(event)
     } else if (onWaitingKey && !isEscape_(getMappedKey(event, kModeId.Link))) {
       onWaitingKey()
-    } else if (event.e.repeat || !isActive) {
-      isActive || isEscape_(getMappedKey(event, kModeId.Link)) && clear()
+    } else if (!isActive) {
+      isEscape_(getMappedKey(event, kModeId.Link)) && clear()
+    } else if (isRepeated_(event)) {
       // NOTE: should always prevent repeated keys.
     } else if (i === kKeyCode.ime) {
       hudTip(kTip.exitForIME)
@@ -413,7 +415,7 @@ const onKeydown = (event: HandlerNS.Event): HandlerResult => {
       else if (i = 1, key.includes("-s")) { // <a-s-f2>, <c-s-f2>
         fgCache.e = !fgCache.e;
       } else if (key < "b") { // <a-f2> or <a-c-f2>
-        WithDialog ? wantDialogMode_ = !wantDialogMode_ : i = 0
+        WithDialog ? wantDialogMode_ = !coreHints.d : i = 0
       } else if (key < "d" && key[0] === "m") { // <c-f2> or <m-f2>
         options_.useFilter = fgCache.f = !useFilter_;
       } else if (key !== keybody) { // <s-f2>
@@ -422,26 +424,24 @@ const onKeydown = (event: HandlerNS.Event): HandlerResult => {
         i = 0
       } else { // plain <f2>
         isClickListened_ = true;
-        OnFirefox || vApi.e(kContentCmd.ManuallyFindAllOnClick)
       }
       resetMode(i as BOOL | undefined)
       i && timeout_(reinit, 0)
     } else if (keybody === kChar.tab && !useFilter_ && !keyStatus_.k) {
       tooHigh_ = null;
       resetMode();
-      if (!OnFirefox && isClickListened_ && coreHints.h && vApi.e
-          && abs_(getTime() - abs_(coreHints.h)) < 1000) {
-        vApi.e(kContentCmd.ManuallyFindAllOnClick)
-      }
       timeout_(reinit, 0)
     } else if (coreHints.h = 0, i < kKeyCode.maxAcsKeys + 1 && i > kKeyCode.minAcsKeys - 1
-          || Build.OS & (1 << kOS.mac) && !os_ && (i > kKeyCode.maxNotMetaKey && i < kKeyCode.minNotMetaKeyOrMenu
-              || OnFirefox && i === kKeyCode.os_ff_mac)
+          || Build.OS & kBOS.MAC && (Build.OS === kBOS.MAC as number || !os_)
+            && (i > kKeyCode.maxNotMetaKey && i < kKeyCode.minNotMetaKeyOrMenu || OnFirefox && i === kKeyCode.os_ff_mac)
         ) {
       OnFirefox && (doesAllowModifierEvents_ff = 1)
       key && keybody !== kChar.Modifier || toggleModesOnModifierKey(event, i)
     } else if (keybody === "alt") {
       toggleModesOnModifierKey(event, kKeyCode.altKey)
+    } else if (key[0] === (Build.OS & kBOS.MAC && (Build.OS === kBOS.MAC as number || !os_) ? "m" : "c")
+        && "0-=".includes(key[2]) && !chars_.includes(key[2])) {
+      ret = HandlerResult.PassKey
     } else if (i = keyNames_.indexOf(keybody), i > 0) {
       i > 2 && raw_insert_lock || beginScroll(event, key, keybody);
       resetMode();
@@ -502,9 +502,8 @@ const callExecuteHint = (hint: ExecutableHintItem, event?: HandlerNS.Event): voi
   const p = selectedHintWorker.e(hint, event)
   p && (onWaitingKey = getTime /** after {@link resetHints} */,
       void p.then((result): void => {
-    (<RegExpOne> /a?/).test("")
     isActive = 0
-    runFallbackKey(options_, false)
+    runFallbackKey(options_, mode_ > HintMode.min_job - 1 && 0)
       removeFlash && removeFlash()
       set_removeFlash(null)
       if (!(mode_ & HintMode.queue)) {
@@ -523,7 +522,7 @@ const callExecuteHint = (hint: ExecutableHintItem, event?: HandlerNS.Event): voi
 }
 
 export const findAnElement_ = (options: OptionsToFindElement, count: number, alsoBody?: 1
-    ): [element: SafeElement | null | undefined, wholeDoc: boolean, indByCount: boolean, sel: boolean | undefined ] => {
+    ): [element: SafeElement | null | undefined, wholeDoc: boolean, indByCount: boolean, sel?: boolean | BOOL ] => {
   const exOpts = options.directOptions || {},
   elIndex = exOpts.index, indByCount = elIndex === "count" || count < 0,
   offset = exOpts.offset || "", wholeDoc = ("" + exOpts.search).startsWith("doc"),
@@ -540,17 +539,18 @@ export const findAnElement_ = (options: OptionsToFindElement, count: number, als
       compareDocumentPosition(midEl, cur as Element) & kNode.DOCUMENT_POSITION_FOLLOWING // midEl < cur
       ? low = mid + 1 : high = mid - 1
     }
-    return low < -matchIndex ? end : low + matchIndex
+    return exOpts.loop ? (low + matchIndex) % end : low < -matchIndex ? end : low + matchIndex
   }
-  let isSel: boolean | undefined
+  let isSel: boolean | BOOL | undefined
   let matches: (Hint | Hint0)[] | undefined, oneMatch: Hint | Hint0 | undefined, matchIndex: number
-  let el: SafeElement | null | false | undefined
+  let el: SafeElement | null | false | 0 | undefined
   let d = options.direct! as string | true, defaultMatch = options.match
   defaultMatch = isTY(defaultMatch) && defaultMatch || null
-  d = isTY(d) ? d : "em,sel,f,h"
+  d = isTY(d) && d ? d : defaultMatch && d === !0 ? "em" : "em,sel,f,h"
   prepareCrop_()
   for (let i of d.split(d.includes(";") ? ";" : ",")) {
-    const _key = i.split("=")[0], testD = "".includes.bind(Lower(_key)), j = i.slice(_key.length + 1).trim()
+    const key = Lower(i.split("=")[0]), testD = "".includes.bind(key), j = i.slice(key.length + 1).trim()
+    isSel = 0
     el = testD("em") ? (options.match = <"css-selector" | ""> j || defaultMatch) // element
       && (matches = traverse(kSafeAllSelector, options, matchEl, 1, wholeDoc, 1),
           matchIndex = indByCount ? count < 0 ? count : count - 1 : +elIndex! || 0,
@@ -559,16 +559,26 @@ export const findAnElement_ = (options: OptionsToFindElement, count: number, als
       : testD("el") // selected
         ? isSelARange(getSelection_()) && (el = getSelectionFocusEdge_(getSelected()), isSel = !!el, el)
       : testD("sc") || testD("ac") ? derefInDoc_(currentScrolling) // currentScrollable / DOMActivate
-      : testD("la") || testD("ec") ? /* last-focused / recently-focused */ derefInDoc_(insert_last_)
+      : testD("la") || testD("ec")
+        ? /* last-focused / recently-focused */ derefInDoc_(insert_last_) || derefInDoc_(insert_last2_)
       : testD("f") ? /* focused */ insert_Lock_() || (OnFirefox ? <SafeElement | null> deepActiveEl_unsafe_(alsoBody)
             : SafeEl_not_ff_!(deepActiveEl_unsafe_(alsoBody)))
       : (testD("h") || testD("cl")) ? derefInDoc_(lastHovered_) // hovered | clicked
       : testD("b") ? /* body */ OnFirefox ? <SafeElement | null> (doc.body || docEl_unsafe_())
           : SafeEl_not_ff_!(doc.body || docEl_unsafe_())
       : null
-    if (el = testD("em") || el && isNotInViewport(el) < (wholeDoc
-          ? VisibilityType.OutOfView + 1 : VisibilityType.Visible + 1)
-        && excludeHints([[el as SafeElementForMouse]], options, 1).length > 0 ? el : null) { break }
+    if (!testD("em")) {
+      if (el && j) {
+        const el2 = OnFirefox ? safeCall(querySelector_unsafe_, j, el) as (SafeElement | null | undefined)
+            : SafeEl_not_ff_!(safeCall(querySelector_unsafe_, j, el))
+        el = el2 === null && !(OnChrome && Build.MinCVer < BrowserVer.Min$Element$$closest
+            && chromeVer_ < BrowserVer.Min$Element$$closest) ? OnFirefox ? el.closest!(j) as SafeElement | null
+            : SafeEl_not_ff_!(el.closest!(j)) : el2
+      }
+      el = el && isNotInViewport(el) < (wholeDoc ? kInvisibility.OutOfView + 1 : kInvisibility.Visible + 1)
+        && excludeHints([[el as SafeElementForMouse]], options, 1).length > 0 ? el : null
+    }
+    if (el) { break }
   }
   return [el as SafeElement | null | undefined, wholeDoc, indByCount, isSel]
 }
@@ -577,17 +587,17 @@ const activateDirectly = (options: ContentOptions, count: number): void => {
   const mode = options.m,
   next = (): void => {
     if (count < 1) { clear(); return }
-    count = IsInDOM_(el!) ? (coreHints.e({d: el as LinkEl, r: null, m: null}, 0
+    count = IsAInB_(el!) ? (coreHints.e({d: el as LinkEl, r: null, m: null}, 0
         , res[3] && getSelectionBoundingBox_()), count - 1) : 0
-    count || runFallbackKey(options_, false)
+    count || runFallbackKey(options_, mode > HintMode.min_job - 1 && 0)
     timeout_(next, count > 99 ? 1 : count && 17)
   },
   res = findAnElement_(options, count), rawEl = res[0],
   el = mode < HintMode.min_job || rawEl && htmlTag_(rawEl) ? rawEl : null
-  if (!el || !IsInDOM_(el)) {
+  clear()
+  if (!el || !IsAInB_(el)) {
     runFallbackKey(options, kTip.noTargets)
   } else {
-    clear()
     count = mode < HintMode.min_job && !res[2] ? count : 1
     api_ = vApi
     options_ = options
@@ -618,9 +628,9 @@ export const resetMode = (silent?: BOOL): void => {
     if (lastMode_ !== mode_ && mode_ < HintMode.min_disable_queue) {
       let d = keydownEvents_;
       if (d[kKeyCode.ctrlKey] || d[kKeyCode.metaKey /** aka .osLeft */] || d[kKeyCode.shiftKey] || d[kKeyCode.altKey]
-          || Build.OS & (1 << kOS.mac) && !OnFirefox && d[kKeyCode.osRight_mac /** aka .menuKey */]
-          || Build.OS & ~(1 << kOS.mac) && (OnChrome || OnEdge) && d[kKeyCode.osRight_not_mac]
-          || OnFirefox && Build.OS & (1 << kOS.mac) && d[kKeyCode.os_ff_mac]) {
+          || Build.OS & kBOS.MAC && !OnFirefox && d[kKeyCode.osRight_mac /** aka .menuKey */]
+          || Build.OS !== kBOS.MAC as number && (OnChrome || OnEdge) && d[kKeyCode.osRight_not_mac]
+          || OnFirefox && Build.OS & kBOS.MAC && d[kKeyCode.os_ff_mac]) {
         setMode(lastMode_, silent);
       }
     }
@@ -682,7 +692,6 @@ export const reinitLinkHintsIn = ((timeout: number, officer?: BaseHintWorker | n
     , el?: WeakRef<LinkEl>, r?: Rect | null, start?: number): void => {
   const now = getTime()
   _reinitTime = max_(now, (start || now) + timeout, _reinitTime)
-  timeout = _reinitTime - now
   clearTimeout_(_timer)
   _timer = timeout_(isTY(officer, kTY.func) ? officer : (): void => {
     _timer = _reinitTime = TimerID.None
@@ -692,7 +701,7 @@ export const reinitLinkHintsIn = ((timeout: number, officer?: BaseHintWorker | n
           isActive && coreHints.h && hints_ && hints_.length < (frameArray.length > 1 ? 200 : 99))
     } catch {}
     doesReinit && reinit(1)
-  }, timeout)
+  }, OnChrome ? Math.max(_reinitTime - now, GlobalConsts.MinCancelableInBackupTimer) : _reinitTime - now)
 }) as {
   (timeout: 380 | 255
     , officer: BaseHintWorker | null | undefined, el: WeakRef<LinkEl>, r: Rect | null, startTimestamp?: number): void
@@ -751,7 +760,7 @@ export const clear = (onlySelfOrEvent?: 0 | 1 | Event, suppressTimeout?: number)
       }
     }
     const manager = coreHints.p as HintManager | null, oldMode = isActive ? mode1_ : HintMode.max_mouse_events + 1
-    _timer && clearTimeout_(_timer)
+    clearTimeout_(_timer)
     isActive = _timer = _reinitTime = 0
     OnFirefox && (doesAllowModifierEvents_ff = 0)
     manager_ = coreHints.p = null;
@@ -763,7 +772,7 @@ export const clear = (onlySelfOrEvent?: 0 | 1 | Event, suppressTimeout?: number)
       hasManager && frame.c(0, suppressTimeout)
     }))
     coreHints.y = frameArray = [];
-    setupEventListener(0, UNL, clear, 1);
+    manager && setupEventListener(0, PGH, clear, 1)
     coreHints.v()
     removeHandler_(kHandler.linkHints)
     suppressTimeout != null && suppressTail_(suppressTimeout);
@@ -817,12 +826,12 @@ const onFrameUnload = (officer: HintOfficer): void => {
     }
 }
 
-export const detectUsableChild = (el: KnownIFrameElement): VApiTy | null => {
-  let err: boolean | null = true, childEvents: VApiTy | null | void | undefined
+export const detectUsableChild = (el: AccessableIFrameElement): VApiTy | null => {
+  let err: boolean | null = true, childApi: VApiTy | null | void | undefined
   try {
     err = !el.contentDocument
-      || !(childEvents = OnFirefox ? getWndVApi_ff!(el.contentWindow) : el.contentWindow.VApi)
-      || childEvents.a(keydownEvents_);
+      || !(childApi = OnFirefox ? getWndVApi_ff!(el.contentWindow) : el.contentWindow.VApi)
+      || childApi.a(keydownEvents_);
   } catch (e) {
     if (!Build.NDEBUG) {
       let notDocError = true;
@@ -836,7 +845,7 @@ export const detectUsableChild = (el: KnownIFrameElement): VApiTy | null => {
       }
     }
   }
-  return err ? null : childEvents || null;
+  return err ? null : childApi || null;
 }
 
 export const doesWantToReloadLinkHints = (reason: NonNullable<ContentOptions["autoReload"]>): boolean => {

@@ -1,52 +1,105 @@
 import {
   cPort, cRepeat, get_cOptions, set_cPort, set_cOptions, set_cRepeat, framesForTab_, findCSS_, cKey, reqH_, runOnTee_,
   curTabId_, settingsCache_, OnChrome, visualWordsRe_, CurCVer_, OnEdge, OnFirefox, substitute_, CONST_, set_runOnTee_,
-  helpDialogData_, set_helpDialogData_, curWndId_, vomnibarPage_f, vomnibarBgOptions_, setTeeTask_, blank_,
-  curIncognito_, OnOther_, keyToCommandMap_, Origin2_
+  curWndId_, vomnibarPage_f, vomnibarBgOptions_, replaceTeeTask_, blank_, offscreenPort_, teeTask_,
+  curIncognito_, OnOther_, keyToCommandMap_, Origin2_, CurFFVer_
 } from "./store"
 import * as BgUtils_ from "./utils"
 import {
-  Tabs_, downloadFile, getTabUrl, runtimeError_, selectTab, R_, Q_, browser_, import2, getCurWnd, makeWindow, Windows_,
+  Tabs_, downloadFile, getTabUrl, runtimeError_, selectTab, R_, Q_, browser_, getCurWnd, makeWindow, Windows_,
   executeScript_, getFindCSS_cr_
 } from "./browser"
 import { convertToUrl_, createSearchUrl_, normalizeSVG_ } from "./normalize_urls"
 import {
-  showHUD, complainLimits, ensureInnerCSS, getParentFrame, getPortUrl_, safePost, getCurFrames_, getFrames_
+  showHUD, complainLimits, ensureInnerCSS, getParentFrame, getPortUrl_, safePost, getCurFrames_, getFrames_,
+  waitForPorts_, postTeeTask_, resetOffscreenPort_
 } from "./ports"
-import { getI18nJson, trans_ } from "./i18n"
+import { createSimpleUrlMatcher_, matchSimply_ } from "./exclusions"
+import { trans_ } from "./i18n"
 import { keyMappingErrors_, normalizedOptions_, visualGranularities_, visualKeys_ } from "./key_mappings"
 import {
-  wrapFallbackOptions, copyCmdOptions, parseFallbackOptions, portSendFgCmd, sendFgCmd, replaceCmdOptions,
-  overrideOption, runNextCmd, hasFallbackOptions, getRunNextCmdBy, kRunOn, overrideCmdOptions
+  wrapFallbackOptions, copyCmdOptions, parseFallbackOptions, portSendFgCmd, sendFgCmd, replaceCmdOptions, runNextCmdBy,
+  overrideOption, runNextCmd, hasFallbackOptions, getRunNextCmdBy, kRunOn, overrideCmdOptions, initHelpDialog
 } from "./run_commands"
 import { parseReuse, newTabIndex, openUrlWithActions } from "./open_urls"
 import { FindModeHistory_ } from "./tools"
 import C = kBgCmd
 
+const DEBUG_OFFSCREEN: BOOL | boolean = false
+let _lastOffscreenWndId = 0
+let _offscreenFailed = false
+let _offscreenLoading = false
+
 set_runOnTee_(((task, serializable, data): Promise<boolean | string> => {
-  const frames = framesForTab_.get(curTabId_) || cPort && getCurFrames_()
-  const port = frames ? frames.cur_ : cPort as typeof cPort | null
-  if (Build.MV3 && task === kTeeTask.Paste && OnChrome && !serializable) {
+  if (Build.MV3 && task === kTeeTask.Paste && OnChrome && serializable >= 0) {
     return navigator.permissions!.query({ name: "clipboard-read" }).catch(blank_)
-        .then((res) => !!res && res.state !== "denied" && runOnTee_(kTeeTask.Paste, true, null))
+        .then((res) => !!res && res.state !== "denied" && runOnTee_(kTeeTask.Paste, -1 - <number> serializable, null))
+  }
+  const useOffscreen = !!Build.MV3 && !_offscreenFailed && OnChrome && (Build.MinCVer >= BrowserVer.MinOffscreenAPIs
+        || CurCVer_ > BrowserVer.MinOffscreenAPIs - 1)
+      && (task !== kTeeTask.CopyImage && task !== kTeeTask.DrawAndCopy)
+  const frames = useOffscreen ? null : framesForTab_.get(curTabId_) || cPort && getCurFrames_()
+  let port = useOffscreen ? null : frames ? frames.cur_ : cPort as typeof cPort | null
+  if (frames && frames.top_ && port !== frames.top_ && !(frames.top_.s.flags_ & Frames.Flags.ResReleased)
+      // here can not check `!port!.s.url_.startsWith(location.protocol)` - such an ext iframe is limited by default
+      && (!BgUtils_.protocolRe_.test(frames.top_.s.url_) || port!.s.flags_ & Frames.Flags.ResReleased
+          || !port!.s.url_.startsWith((BgUtils_.safeParseURL_(frames.top_.s.url_)?.origin || "") + "/"))) {
+    port = frames.top_
   }
   const id = setTimeout((): void => {
-      const latest = setTeeTask_(id, null)
+    const latest = replaceTeeTask_(id, null)
     latest && latest.r && latest.r(false)
   }, 40_000)
   const deferred = BgUtils_.deferPromise_<boolean | string>()
-    setTeeTask_(null, { i: id, t: task, s: serializable, d: Build.MV3 ? null : data, r: deferred.resolve_ })
+  replaceTeeTask_(null, { i: id, t: task, s: serializable, d: Build.MV3 ? null : data, r: deferred.resolve_ })
+  if (useOffscreen) {
+    if (offscreenPort_) {
+      try {
+        if (!Build.NDEBUG && DEBUG_OFFSCREEN) {
+          Windows_.update(_lastOffscreenWndId, { focused: true }, (): void => {
+            postTeeTask_(offscreenPort_!, teeTask_!)
+          })
+        } else {
+          postTeeTask_(offscreenPort_, teeTask_!)
+        }
+      } catch {
+        resetOffscreenPort_()
+      }
+    }
+    if (offscreenPort_) { /* empty */ }
+    else if (!Build.NDEBUG && DEBUG_OFFSCREEN) {
+      Windows_.create({ url: CONST_.OffscreenFrame_ }, (wnd): void => { _lastOffscreenWndId = wnd.id })
+    } else if (!_offscreenLoading) {
+      const all_reasons = browser_.offscreen.Reason
+      const reasons: chrome.offscreen.kReason[] = [all_reasons.BLOBS, all_reasons.CLIPBOARD, all_reasons.MATCH_MEDIA
+          ].filter(<T> (i: T | undefined): i is T => !!i)
+      _offscreenLoading = true
+      browser_.offscreen.createDocument({
+        reasons: reasons.length > 0 ? reasons : ["CLIPBOARD"], url: CONST_.OffscreenFrame_,
+        justification: "read and write system clipboard",
+      }, (): void => {
+        const err = runtimeError_()
+        _offscreenLoading = false
+        if (err) {
+          _offscreenFailed = true
+          resetOffscreenPort_()
+          return err
+        }
+      })
+    }
+  } else if (port) {
     const allow = task === kTeeTask.CopyImage || task === kTeeTask.Copy || task === kTeeTask.DrawAndCopy
         || Build.MV3 && task === kTeeTask.Paste ? "clipboard-write; clipboard-read" : ""
-  if (port) {
-    portSendFgCmd(port, kFgCmd.callTee, 1, { u: CONST_.TeeFrame_, c: "R TEE UI", a: allow, t: 3000 }, 1)
+    portSendFgCmd(port, kFgCmd.callTee, 1, { u: CONST_.TeeFrame_, c: "R TEE UI", a: allow, t: 3000,
+        i: frames && port !== frames.cur_ && !(frames.cur_.s.flags_ & Frames.Flags.ResReleased)
+            ? frames.cur_.s.frameId_ : 0 }, 1)
   } else {
     let promise = deferred.promise_
     getCurWnd(false, (curWnd): void => {
       const lastWndId = curWnd ? curWnd.id : curWndId_
       makeWindow({ type: "popup", url: CONST_.TeeFrame_, focused: true, incognito: false
           , left: 0, top: 0, width: 100, height: 32  }, "", (wnd): void => {
-        const teeTask = wnd ? null : setTeeTask_(null, null)
+        const teeTask = wnd ? null : replaceTeeTask_(null, null)
         if (wnd) {
           const newWndId = wnd.id
           void promise.then((): void => {
@@ -95,7 +148,8 @@ export const performFind = (): void | kBgCmd.performFind => {
   const sender = cPort.s, absRepeat = cRepeat < 0 ? -cRepeat : cRepeat, rawIndex = get_cOptions<C.performFind>().index,
   nth = rawIndex ? rawIndex === "other" ? absRepeat + 1 : rawIndex === "count" ? absRepeat
             : rawIndex >= 0 ? -1 - (0 | <number> <number | string> rawIndex) : 0 : 0,
-  highlight = get_cOptions<C.performFind>().highlight,
+  highlight = get_cOptions<C.performFind>().highlight, extend = get_cOptions<C.performFind>().extend,
+  direction = extend === "before" || get_cOptions<C.performFind>().direction === "before" ? -1 : 1,
   leave = !!nth || !get_cOptions<C.performFind>().active
   let sentFindCSS: CmdOptions[kFgCmd.findMode]["f"] = null
   if (!(sender.flags_ & Frames.Flags.hasFindCSS)) {
@@ -104,13 +158,16 @@ export const performFind = (): void | kBgCmd.performFind => {
   }
   sendFgCmd(kFgCmd.findMode, true, wrapFallbackOptions<kFgCmd.findMode, C.performFind>({
     c: nth > 0 ? cRepeat / absRepeat : cRepeat, l: leave ? 1 : 0, f: sentFindCSS,
+    d: direction,
     m: typeof highlight === "number" ? highlight >= 1 ? Math.min(highlight | 0, 200) : 0
         : highlight ? leave ? 100 : 20 : 0,
     n: !!get_cOptions<C.performFind>().normalize,
     r: get_cOptions<C.performFind>().returnToViewport === true,
     s: !nth && absRepeat < 2 && !!get_cOptions<C.performFind>().selected,
+    t: extend ? direction > 0 ? 2 : 1 : 0,
     p: !!get_cOptions<C.performFind>().postOnEsc,
     e: !!get_cOptions<C.performFind>().restart,
+    u: OnChrome ? !!get_cOptions<C.performFind>().scroll && get_cOptions<C.performFind>().scroll !== "auto" : 0,
     q: get_cOptions<C.performFind>().query ? get_cOptions<C.performFind>().query + ""
       : leave || get_cOptions<C.performFind>().last
       ? FindModeHistory_.query_(sender.incognito_, "", nth < 0 ? -nth : nth) : ""
@@ -118,21 +175,14 @@ export const performFind = (): void | kBgCmd.performFind => {
 }
 
 export const initHelp = (request: FgReq[kFgReq.initHelp], port: Port): Promise<void> => {
-  const curHData = helpDialogData_ || []
-  return Promise.all([
-    import2<typeof import("./help_dialog")>(CONST_.HelpDialogJS),
-    curHData[0] != null ? null : BgUtils_.fetchFile_("help_dialog.html"),
-    curHData[1] != null ? null : getI18nJson("help_dialog")
-  ]).then(([helpDialog, temp1, temp2]): void => {
+  return initHelpDialog().then((helpDialog): void => {
+    if (!helpDialog) { return }
     const port2 = request.w && getFrames_(port)?.top_ || port,
     isOptionsPage = port2.s.url_.startsWith(CONST_.OptionsPage_)
     let options = request.a || {};
     // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
     (port2.s as Frames.Sender).flags_ |= Frames.Flags.hadHelpDialog
     set_cPort(port2)
-    const newHData = helpDialogData_ || set_helpDialogData_([null, null])
-    temp1 && (newHData[0] = temp1)
-    temp2 && (newHData[1] = temp2)
     if (request.f) {
       let cmdRegistry = keyToCommandMap_.get("?")
       let matched = cmdRegistry && cmdRegistry.alias_ === kBgCmd.showHelp && cmdRegistry.background_ ? "?" : ""
@@ -149,9 +199,6 @@ export const initHelp = (request: FgReq[kFgReq.initHelp], port: Port): Promise<v
       e: !!options.exitOnClick,
       c: isOptionsPage && !!keyMappingErrors_ || settingsCache_.showAdvancedCommands
     })
-  }, Build.NDEBUG ? OnChrome && Build.MinCVer < BrowserVer.Min$Promise$$Then$Accepts$null
-      ? undefined : null as never : (args): void => {
-    console.error("Promises for initHelp failed: %o ; %o", args[0], args[1])
   })
 }
 
@@ -171,7 +218,7 @@ export const showVomnibar = (forceInner?: boolean): void => {
   let defaultUrl: string | null = null
   if (optUrl != null && get_cOptions<C.showVomnibar>().urlSedKeys) {
     const res = typeof optUrl === "string" ? optUrl : typeof get_cOptions<C.showVomnibar>().u === "string"
-        ? get_cOptions<C.showVomnibar>().u as string : getPortUrl_()
+        ? get_cOptions<C.showVomnibar, true>().u! : getPortUrl_()
     if (res && res instanceof Promise) {
       void res.then((url): void => {
         overrideCmdOptions<C.showVomnibar>({ u: url || "" }, true)
@@ -179,7 +226,9 @@ export const showVomnibar = (forceInner?: boolean): void => {
       })
       return
     }
-    defaultUrl = substitute_(res, SedContext.NONE, { r: null, k: get_cOptions<C.showVomnibar, true>().urlSedKeys! })
+    const exOut: InfoOnSed = {}
+    defaultUrl = substitute_(res, SedContext.NONE, {r: null, k: get_cOptions<C.showVomnibar,true>().urlSedKeys!}, exOut)
+    exOut.keyword_ != null && overrideCmdOptions<C.openUrl>({ keyword: exOut.keyword_ })
   }
   if (get_cOptions<C.showVomnibar>().mode === "bookmark") { overrideOption<C.showVomnibar, "mode">("mode", "bookm") }
   const page = vomnibarPage_f, { url_: url } = port.s,
@@ -208,14 +257,58 @@ export const showVomnibar = (forceInner?: boolean): void => {
     e: !!(get_cOptions<C.showVomnibar>()).exitOnClick,
     u: defaultUrl,
     url: typeof optUrl === "string" ? defaultUrl || optUrl : optUrl,
-    k: BgUtils_.getOmniSecret_(true)
+    k: BgUtils_.getOmniSecret_(true),
+    h: vomnibarBgOptions_.maxBoxHeight_,
   }), get_cOptions<C.showVomnibar, true>()) as CmdOptions[kFgCmd.vomnibar] & SafeObject
   if (options.icase == null) {
     if (vomnibarBgOptions_.actions.includes("icase")) { options.icase = true }
   }
+  if ((OnFirefox && Build.MinFFVer < FirefoxBrowserVer.MinCssMinMax && CurFFVer_ < FirefoxBrowserVer.MinCssMinMax
+        || OnEdge || OnChrome && Build.MinCVer < BrowserVer.MinCssMinMax && CurCVer_ < BrowserVer.MinCssMinMax)) {
+    options.m = vomnibarBgOptions_.maxWidthInPixel_![0]
+    options.x = vomnibarBgOptions_.maxWidthInPixel_![1]
+  }
   portSendFgCmd(port, kFgCmd.vomnibar, true, options, cRepeat)
   options.k = "omni"
   set_cOptions(options) // safe on renaming
+}
+
+export const findContentPort_ = (port: Port, type: KnownOptions<kBgCmd.marksActivate>["type"], local: boolean
+    ): PromiseOr<Port> => {
+  const rawId = port.s.tabId_, tabId = rawId >= 0 ? rawId : curTabId_
+  const ref = port.s.frameId_ || rawId < 0 ? framesForTab_.get(tabId) : null
+  if (ref) {
+    if (rawId < 0 && (port.s.flags_ & Frames.Flags.aboutIframe || port.s.url_.startsWith("about:"))) { port = ref.cur_ }
+    if (type === "tab" || !type && !local && rawId < 0) {
+      (ref.top_ || rawId < 0) && (port = ref.top_ || ref.cur_)
+    }
+    if (port.s.flags_ & Frames.Flags.aboutIframe || port.s.url_.startsWith("blob:")) {
+      return getParentFrame(tabId, port.s.frameId_, 1).then((port2): Port => {
+        return port2 || ref.top_ || ref.cur_
+      })
+    }
+  }
+  return port
+}
+
+export const marksActivate_ = (): void | kBgCmd.marksActivate => {
+  let mode = get_cOptions<C.marksActivate>().mode, count = cRepeat < 2 || cRepeat > 10 ? 1 : cRepeat
+  const action = mode && (mode + "").toLowerCase() === "create" ? kMarkAction.create : kMarkAction.goto
+  const key = get_cOptions<C.marksActivate>().key
+  const options: CmdOptions[kFgCmd.marks] = {
+    a: action, n: !get_cOptions<C.marksActivate>().storeCount, s: get_cOptions<C.marksActivate>().swap !== true,
+    t: "", o: get_cOptions<C.marksActivate, true>() as OpenPageUrlOptions & Req.FallbackOptions
+  }
+  if (typeof key === "string" && key.trim().length === 1) {
+    options.a = kMarkAction.goto
+    reqH_[kFgReq.marks]({ H: kFgReq.marks, c: options, k: cKey, n: key.trim(), s: 0, u: ""
+        , l: !!get_cOptions<C.marksActivate>().local } satisfies Req.fg<kFgReq.marks> as FgReq[kFgReq.marks], cPort)
+    return
+  }
+  void Promise.resolve(trans_(action === kMarkAction.create ? "mBeginCreate" : "mBeginGoto")).then((title): void => {
+    options.t = title
+    portSendFgCmd(cPort, kFgCmd.marks, true, options, count)
+  })
 }
 
 export const enterVisualMode = (): void | kBgCmd.visualMode => {
@@ -232,6 +325,7 @@ export const enterVisualMode = (): void | kBgCmd.visualMode => {
   let granularities: CmdOptions[kFgCmd.visualMode]["g"] = null
   if (~sender.flags_ & Frames.Flags.hadVisualMode) {
     if (OnFirefox && !Build.NativeWordMoveOnFirefox
+            && Build.MinFFVer < FirefoxBrowserVer.MinEnsuredUnicodePropertyEscapesInRegExp
         || OnChrome && Build.MinCVer < BrowserVer.MinEnsuredUnicodePropertyEscapesInRegExp
             && Build.MinCVer < BrowserVer.MinSelExtendForwardOnlySkipWhitespaces) {
       words = visualWordsRe_
@@ -255,18 +349,20 @@ export const enterVisualMode = (): void | kBgCmd.visualMode => {
   sendFgCmd(kFgCmd.visualMode, true, opts2)
 }
 
-let _tempBlob: [number, string] | null | undefined
+let _tempBlob_mv2: [number, string] | null | undefined
+
+const revokeBlobUrl_mv2 = Build.MV3 ? 0 as never : (url: string): void => { try { URL.revokeObjectURL(url) } catch {} }
 
 export const handleImageUrl = (url: `data:${string}` | "", buffer: Blob | null
     , actions: kTeeTask.CopyImage | kTeeTask.ShowImage | kTeeTask.Download | kTeeTask.DrawAndCopy
     , resolve: (ok: BOOL | boolean) => void
     , title: string, text: string, doShow?: ((url: string) => void) | null, inGroup?: boolean): void => {
   if (!actions) { resolve(1); return }
-  const copyFromBlobUrl = !!(actions & kTeeTask.CopyImage)
+  const copyFromBlobUrl_mv2 = !Build.MV3 && !!(actions & kTeeTask.CopyImage)
       && curIncognito_ !== IncognitoType.true && (!cPort || !cPort.s.incognito_)
       && (!OnFirefox || actions === kTeeTask.DrawAndCopy && !inGroup)
-  const needBlob = actions & kTeeTask.Download || copyFromBlobUrl
-  if (needBlob && !buffer) {
+  const needBlob_mv2 = !Build.MV3 && (actions & kTeeTask.Download || copyFromBlobUrl_mv2)
+  if (!Build.MV3 && needBlob_mv2 && !buffer) {
     const p = BgUtils_.fetchFile_(url as "data:", "blob")
     Build.NDEBUG || p.catch((err: any | Event): void => { console.log("handleImageUrl can't request `data:` :", err) })
     void p.then((buffer2): void => {
@@ -274,21 +370,21 @@ export const handleImageUrl = (url: `data:${string}` | "", buffer: Blob | null
     })
     return
   }
-  if (_tempBlob) {
-    clearTimeout(_tempBlob[0]), BgUtils_.revokeBlobUrl_(_tempBlob[1])
-    _tempBlob = null
+  if (!Build.MV3 && _tempBlob_mv2) {
+    clearTimeout(_tempBlob_mv2[0]), revokeBlobUrl_mv2(_tempBlob_mv2[1])
+    _tempBlob_mv2 = null
   }
-  const blobRef = needBlob ? URL.createObjectURL(buffer) : ""
-  if (blobRef) {
-    _tempBlob = [setTimeout((): void => {
-      _tempBlob && BgUtils_.revokeBlobUrl_(_tempBlob[1]); _tempBlob = null
-    }, actions & kTeeTask.Download ? 30000 : 5000), blobRef]
+  const blobRef_mv2 = !Build.MV3 && needBlob_mv2 ? URL.createObjectURL(buffer) : ""
+  if (!Build.MV3 && blobRef_mv2) {
+    _tempBlob_mv2 = [setTimeout((): void => {
+      _tempBlob_mv2 && revokeBlobUrl_mv2(_tempBlob_mv2[1]); _tempBlob_mv2 = null
+    }, actions & kTeeTask.Download ? 30000 : 5000), blobRef_mv2]
     const outResolve = resolve
     resolve = ! [kTeeTask.CopyImage, kTeeTask.Download, kTeeTask.DrawAndCopy].includes(actions) ? outResolve
         : (ok: BOOL | boolean) => {
       outResolve(ok)
-      _tempBlob && BgUtils_.revokeBlobUrl_(blobRef)
-      _tempBlob && _tempBlob[1] === blobRef && (clearTimeout(_tempBlob[0]), _tempBlob = null)
+      _tempBlob_mv2 && revokeBlobUrl_mv2(blobRef_mv2)
+      _tempBlob_mv2 && _tempBlob_mv2[1] === blobRef_mv2 && (clearTimeout(_tempBlob_mv2[0]), _tempBlob_mv2 = null)
     }
   }
   if (actions & kTeeTask.CopyImage) {
@@ -301,16 +397,16 @@ export const handleImageUrl = (url: `data:${string}` | "", buffer: Blob | null
         }, (err): void => { console.log("Error when copying image: " + err); resolve(0) })
       })
     } else {
-      // on Chrome 103, a tee.html in a incognito tab can not access `blob:` URLs
+      // on Chrome 103, a tee.html in an incognito tab can not access `blob:` URLs
       type Result = BOOL | boolean | string;
       void (OnEdge || OnChrome
           && Build.MinCVer < BrowserVer.MinEnsured$Clipboard$$write$and$ClipboardItem
           && CurCVer_ < BrowserVer.MinEnsured$Clipboard$$write$and$ClipboardItem ? Promise.resolve(false)
-      : (url || copyFromBlobUrl ? Promise.resolve()
+      : (url || !Build.MV3 && copyFromBlobUrl_mv2 ? Promise.resolve()
           : BgUtils_.convertToDataURL_(buffer!).then((u2): void => { url = u2 }))
       .then((): Promise<Result> => {
-        return runOnTee_(actions === kTeeTask.DrawAndCopy ? actions : kTeeTask.CopyImage, {
-          u: copyFromBlobUrl ? blobRef : url, t: text,
+        return runOnTee_(actions === kTeeTask.DrawAndCopy ? kTeeTask.DrawAndCopy : kTeeTask.CopyImage, {
+          u: !Build.MV3 && copyFromBlobUrl_mv2 ? blobRef_mv2 : url, t: text,
           b: Build.BTypes && !(Build.BTypes & (Build.BTypes - 1)) ? Build.BTypes as number : OnOther_
         }, buffer!)
       }))
@@ -336,7 +432,7 @@ export const handleImageUrl = (url: `data:${string}` | "", buffer: Blob | null
     }
   }
   if (actions & kTeeTask.ShowImage) {
-    doShow!(url || blobRef)
+    doShow!(Build.MV3 ? url : url || blobRef_mv2)
     actions & kTeeTask.CopyImage || resolve(1)
     return
   }
@@ -344,22 +440,20 @@ export const handleImageUrl = (url: `data:${string}` | "", buffer: Blob | null
     const port = getCurFrames_()?.top_ || cPort
     const p2 = BgUtils_.deferPromise_<unknown>()
     if (actions & kTeeTask.CopyImage && !(OnFirefox && actions !== kTeeTask.DrawAndCopy)) {
-      setTimeout(p2.resolve_, 300)
+      setTimeout(p2.resolve_, 800)
     } else {
       p2.resolve_(0)
     }
-    p2.promise_.then((): void => {
-    downloadFile(blobRef, title, port ? port.s.url_ : null, (succeed): void => {
+    p2.promise_.then(() => downloadFile(blobRef_mv2, title, port ? port.s.url_ : null)).then((succeed): void => {
       const clickAnchor_cr = (): void => {
         const a = (globalThis as MaybeWithWindow).document!.createElement("a")
-        a.href = blobRef
+        a.href = blobRef_mv2
         a.download = title
         a.target = "_blank"
         a.click()
       }
-      succeed ? 0 : Build.MV3 || OnFirefox ? doShow!(url || blobRef) : clickAnchor_cr()
+      succeed ? 0 : Build.MV3 || OnFirefox ? doShow!(Build.MV3 ? url : url || blobRef_mv2) : clickAnchor_cr()
       actions === kTeeTask.Download && resolve(true)
-    })
     })
   }
 }
@@ -422,17 +516,14 @@ export const openImgReq = (req: FgReq[kFgReq.openImage], port?: Port): void => {
     return
   }
   let prefix = CONST_.ShowPage_ + "#!image "
-  if (req.f) {
-    prefix += "download=" + BgUtils_.encodeAsciiComponent_(req.f) + "&"
-  }
-  if (req.a !== false) {
-    prefix += "auto=once&"
-  }
+  if (req.f) { prefix += "download=" + BgUtils_.encodeAsciiComponent_(req.f) + "&" }
+  if (req.r) { prefix += "src=" + BgUtils_.encodeAsciiComponent_(req.r) + "&" }
+  if (req.a !== false) { prefix += "auto=once&" }
   req.t && (prefix += req.t)
   const opts2: ParsedOpenPageUrlOptions = req.o || BgUtils_.safeObj_() as {}
-  const keyword = OnFirefox && req.m === HintMode.DOWNLOAD_MEDIA ? "" : opts2.k
+  const exOut: InfoOnSed = {}, urlAfterSed = opts2.s ? substitute_(url, SedContext.paste, opts2.s, exOut) : url
+  const keyword = exOut.keyword_ ?? (OnFirefox && req.m === HintMode.DOWNLOAD_MEDIA ? "" : opts2.k)
   const testUrl = opts2.t ?? !keyword
-  const urlAfterSed = opts2.s ? substitute_(url, SedContext.paste, opts2.s) : url
   const hasSed = urlAfterSed !== url
   const reuse = opts2.r != null ? opts2.r : req.m & HintMode.queue ? ReuseType.newBg : ReuseType.newFg
   url = urlAfterSed
@@ -489,9 +580,9 @@ export const framesGoBack = (req: FgReq[kFgReq.framesGoBack], port: Port | null,
         framesGoBack({ s: count, o: opts }, null, tab)
       }
       const newTabIdx = tab.index--
-      const wantedIdx = position === "end" ? 3e4 : newTabIndex(tab, position, false, true)
+      const wantedIdx = position === "end" ? -1 : newTabIndex(tab, position, false, true)
       if (wantedIdx != null && wantedIdx !== newTabIdx) {
-        Tabs_.move(tab.id, { index: wantedIdx }, runtimeError_)
+        Tabs_.move(tab.id, { index: wantedIdx === 3e4 ? -1 : wantedIdx }, runtimeError_)
       }
     })
   } else {
@@ -602,4 +693,41 @@ export const focusFrame = (port: Port, css: boolean, mask: FrameMaskType, noFall
   port.postMessage({ N: kBgReq.focusFrame, H: css ? ensureInnerCSS(port.s) : null, m: mask, k: cKey, c: 0,
     f: !noFallback && get_cOptions<C.nextFrame>() && parseFallbackOptions(get_cOptions<C.nextFrame, true>()) || {}
   })
+}
+
+export const getBlurOption_ = (): MoveTabOptions["blur"] | null | undefined =>
+    get_cOptions<C.goToTab, true>().blur ?? get_cOptions<C.goToTab, true>().grabFocus
+
+export const blurInsertOnTabChange = (tab: Tab | undefined): void => {
+  let fallback = parseFallbackOptions(get_cOptions<C.goToTab, true>())
+  if (fallback && fallback.$then) {
+    fallback.$else = fallback.$then
+  } else {
+    fallback = null
+  }
+  let blur = getBlurOption_()
+  if (typeof blur === "string") {
+    const parsed = createSimpleUrlMatcher_(blur) || false
+    overrideOption<C.goToTab>(blur === get_cOptions<C.goToTab>().blur ? "blur" : "grabFocus", parsed)
+    blur = parsed
+  }
+  const frames = tab ? framesForTab_.get(tab.id) : null
+  if (runtimeError_() || !frames
+      || blur && blur !== true && !matchSimply_(blur, frames.cur_.s.frameId_ ? frames.cur_.s.url_ : tab!.url)) {
+    // use `.url_` directly: faster is better
+    fallback && runNextCmdBy(1, fallback)
+    return runtimeError_()
+  }
+  setTimeout((): void => {
+    waitForPorts_(framesForTab_.get(curTabId_), true).then((): void => {
+      const frames = framesForTab_.get(curTabId_)
+      if (frames && !(frames.flags_ & Frames.Flags.ResReleased)) {
+        const options = BgUtils_.safer_({ esc: true } as CmdOptions[kFgCmd.dispatchEventCmd])
+        fallback && copyCmdOptions(options, BgUtils_.safer_(fallback))
+        portSendFgCmd(frames.cur_, kFgCmd.dispatchEventCmd, false, options, -1)
+      } else {
+        fallback && runNextCmdBy(1, fallback)
+      }
+    })
+  }, 17)
 }

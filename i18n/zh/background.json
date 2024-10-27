@@ -1,6 +1,7 @@
 {
   "All": "所有",
   "allLocal": "各个网站下的",
+  "bookmarksRevoked": "未能读取收藏列表，需要授予“收藏夹”权限",
   "cannotDelSug": "不可删除此条搜索建议",
   "changeItsCS": "改变此网页的功能权限",
   "clickForMore": "点击阅读详细信息。",
@@ -9,9 +10,11 @@
   "copiedWndInfo": "（标签页信息）",
   "csCleared": "对各网站 $1 功能权限的修改已重置",
   "delSug": "成功删除所选$1",
+  "disabledUrlToOpen": "Firefox 不允许扩展打开此网址",
   "discardFail": "无法丢弃此网页",
   "downloadFail": "无法下载此对象",
   "downloadTimeout": "对象下载超时",
+  "downloadBarClosed": "下载栏已隐藏",
   "dupTab": "复制这个标签页",
   "failCopyingImg": "无法复制图片到剪贴板",
   "fhCleared": "页内查找历史已经清空",
@@ -30,9 +33,10 @@
   "indexOOR": "标签页序号超出了范围",
   "invalidImg": "所选网址不是一个有效的图片",
   "jsFail": "抱歉，无法在当前网页上执行 JS 脚本",
-  "Local": "当前网站下的",
+  "Local": "当前网页下的",
+  "mBeginCreate": "将要创建标记……",
+  "mBeginGoto": "将要跳转到……",
   "mCreate": "创建了",
-  "mCreateLastMark": "已记录当前位置",
   "mJumpTo": "跳转到",
   "mLastMark": "默认",
   "mLocalMarkTask": "$1 #$2 位置记录",
@@ -70,6 +74,7 @@
   "openIncog": "在无痕模式下打开此网页",
   "Other": "其他",
   "quoteA": "“$1”",
+  "readClipboard": "读取剪贴板文字",
   "setFileCS": "在 Chromium $1+ 设置本地文件网页的功能权限",
   "setFolderCS": "设置本地文件夹网页的功能权限",
   "setFTPCS": "设置 FTP 网页的功能权限",
@@ -85,5 +90,5 @@
   "turnOff": "已临时停用 $1",
   "Upgrade": "已更新",
   "upgradeMsg": "您的 Vimium C 已经更新至 $1 版。\n",
-  "upgradeMsg2": "设计了新的键盘布局处理规则；新增支持复制图片到剪贴板"
+  "upgradeMsg2": "升级到浏览器的第 3 版扩展接口。"
 }

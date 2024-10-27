@@ -41,12 +41,13 @@ exports.formatPath = function (path, base) {
 }
 
 exports.cleanByPath = function (path, dest) {
+  var rimraf
   path = exports.formatPath(path, dest);
   return gulp.src(path, {
       base: ".", read: false, dot: true, allowEmpty: true, nodir: true
   }).pipe(exports.gulpMap(file => {
-    var rimraf = require("rimraf")
-    rimraf.sync(file.path, { disableGlob: true });
+    rimraf = rimraf || require("rimraf")
+    rimraf.sync(file.path, { glob: false })
   }));
 }
 
@@ -54,7 +55,9 @@ exports.minifyJson = function (toJs, file) {
   var contents = exports.ToString(file)
   contents = contents.replace(/\r\n?/g, "\n").trim()
   var oldLen = contents.length
-  contents = JSON.stringify(JSON.parse(contents));
+  const obj = JSON.parse(contents), obj2 = {}
+  for (const i of Object.keys(obj).sort()) { obj2[i] = obj[i] }
+  contents = JSON.stringify(obj2)
   if (contents.length < oldLen) {
     contents = toJs ? "export default" + (contents[0] === "{" ? "" : " ") + contents : contents
     exports.ToBuffer(file, contents)
@@ -583,9 +586,6 @@ exports.checkJSAndMinifyAll = function (taskOrder, maps, key, exArgs, cb
       tasks.push(name);
       gulp.task(name, function() {
           const newExArgs = {...exArgs, rollup};
-          if (exArgs.aggressiveMangle) {
-            exArgs.aggressiveMangle = false;
-          }
           return exports.minifyJSFiles(map[0], map[1], newExArgs)
       });
     }
@@ -666,9 +666,6 @@ exports.minifyJSFiles = function (path, output, exArgs) {
     if (exArgs.format) { config = { ...config, format: { ...(config.format || {}), ...exArgs.format} } }
     stream = stream.pipe(exports.getGulpTerser(!!(exArgs.aggressiveMangle && config.mangle)
         , minifyDistPasses, gNoComments)(config))
-    if (exArgs.aggressiveMangle) {
-      exArgs.aggressiveMangle = false;
-    }
   }
   if (!isJson) {
     stream = stream.pipe(exports.gulpMap(function (file) {
@@ -721,10 +718,6 @@ exports.kAllBuildEnv = Object.entries(process.env)
 
 exports.parseBuildEnv = function (key, literalVal) {
   var newVal = process.env["BUILD_" + key];
-  if (!newVal) {
-    let env_key = key.replace(/[A-Z]+[a-z\d]*/g, word => "_" + word.toUpperCase()).replace(/^_/, "");
-    newVal = process.env["BUILD_" + env_key];
-  }
   if (newVal) {
     let newVal2 = exports.safeJSONParse(newVal, null, key === "Commit" ? String : null);
     if (newVal2 == null && key === "Commit") { newVal2 = newVal }
@@ -750,12 +743,10 @@ var randMap, _randSeed;
 
 exports.getRandMap = function () { return randMap }
 
-exports.getRandom = function (id, locally, getSeed) {
+exports.getRandom = function (id, _locally, getSeed) {
   var rand = randMap ? randMap[id] : 0;
   if (rand) {
-    if ((typeof rand === "string") === locally) {
-      return rand;
-    }
+    return rand;
   }
   if (!randMap) {
     randMap = {};
@@ -763,33 +754,17 @@ exports.getRandom = function (id, locally, getSeed) {
     const name = _randSeed.split("?").slice(-1)[0]
     name && print("Get random seed:", name)
     var rng;
-    if (!locally) {
       try {
         rng = require("seedrandom");
       } catch (e) {}
-    }
     if (rng) {
       _randSeed = rng(_randSeed + "/" + id)
     }
   }
-  if (!locally) {
     while (!rand || Object.values(randMap).includes(rand)) {
       /** {@see #GlobalConsts.SecretRange} */
       rand = 1e6 + (0 | ((typeof _randSeed === "function" ? _randSeed() : Math.random()) * 9e6));
     }
-  } else {
-    var hash = _randSeed + id;
-    hash = compute_hash(hash);
-    hash = hash.slice(0, 7);
-    rand = hash;
-  }
   randMap[id] = rand;
   return rand;
-}
-
-function compute_hash(str) {
-  var crypto = require("crypto")
-  var md5 = crypto.createHash('sha1')
-  md5.update(str)
-  return md5.digest('hex')
 }

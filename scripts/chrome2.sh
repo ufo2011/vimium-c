@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-
 VER=
 FLAGS=
 PAGE_FLAGS=
@@ -13,16 +12,20 @@ IS_EDGE=0
 EDGE_VER=
 CHROME_ROOT=
 EXE=
+RUN=
+WAIT=0
 WORKING_DIR=${WORKING_DIR:-/r/working}
 VC_ROOT=
 DIST=0
 ALSO_VC=0
 UBO=0
 HOME_PAGE=
+EXE_NAME=${EXE_NAME:-chrome.exe}
 default_vc_root=/e/Git/weidu+vim/vimium-c
-default_chrome_root="/d/Program Files/Google"
+default_chrome_root=${default_chrome_root:-/d/Program Files/Google}
 version_archives=/f/Application/Browser/chrome
 export WSLENV=PATH/l
+shopt -s extglob
 
 function wp() {
   local dir=${2}
@@ -91,10 +94,12 @@ case "$1" in
     ;;
   dist|--dist)
     DIST=1
+    VC_ROOT=
     shift
     ;;
   local|--local)
     DIST=0
+    VC_ROOT=
     shift
     ;;
   installed|--installed)
@@ -128,7 +133,7 @@ case "$1" in
     if test $DO_CLEAN -eq 1; then DO_CLEAN=2; fi
     shift
     ;;
-  [3-9][0-9]|[1-3][0-9][0-9]|cur|wo|prev|[1-9a-f][1-9a-f][1-9a-f][1-9a-f][1-9a-f][1-9a-f]*) # ver
+  [3-9][0-9]|[1-9][0-9][0-9]*([0-9])|cur|wo|prev|[1-9a-f][1-9a-f][1-9a-f][1-9a-f][1-9a-f][1-9a-f]*) # ver
     VER=$1
     shift
     ;;
@@ -146,6 +151,10 @@ case "$1" in
     ;;
   nozdsf|no-zdsf)
     OTHER_ARGS=$OTHER_ARGS" --enable-use-zoom-for-dsf=false"
+    shift
+    ;;
+  wait|--wait)
+    WAIT=1
     shift
     ;;
   --*)
@@ -183,6 +192,7 @@ else
   RUN="$(which env.exe) start2.exe"
   REALPATH=/bin/wslpath
 fi
+test $WAIT -eq 1 && RUN=
 
 if test $IS_EDGE -gt 0; then
   case "$IS_EDGE" in
@@ -223,32 +233,35 @@ fi
 
 dir=$(/usr/bin/realpath "${BASH_SOURCE[0]}")
 dir=${dir%/*}
-if test -f "$dir"/Chrome/chrome.exe; then
+if test -f "$dir"/Chrome/${EXE_NAME}; then
   CHROME_ROOT=$dir
   VC_ROOT=${VC_ROOT:-$default_vc_root}
 else
   CHROME_ROOT=${CHROME_ROOT:-$default_chrome_root}
   VC_ROOT=${VC_ROOT:-${dir%/*}}
 fi
-if test -z "$VER" -a $USE_INSTALLED -le 0 -a $IS_EDGE -eq 0 && test -f "$WORKING_DIR"/Chrome-bin/chrome.exe; then
+if test -z "$VER" -a $USE_INSTALLED -le 0 -a $IS_EDGE -eq 0 && test -f "$WORKING_DIR"/Chrome-bin/${EXE_NAME}; then
   VER=wo
 fi
 test "$VER" == cur && VER=
 if test -n "$EXE"; then :
 elif test "$VER" == wo; then
-  EXE=$WORKING_DIR/Chrome-bin/chrome.exe
+  EXE=$WORKING_DIR/Chrome-bin/${EXE_NAME}
 else
-  EXE=$WORKING_DIR/${VER:-cur}/chrome.exe
+  EXE=$WORKING_DIR/${VER:-cur}/${EXE_NAME}
   if test $USE_INSTALLED -ge 1 || ! test -f "$EXE"; then
-    EXE=$CHROME_ROOT/${VER:-Chrome}/chrome.exe
-    if test ! -f "$EXE" -a -n "$VER" \
-        && find "$CHROME_ROOT/Chrome/" -name "${VER}.*" 2>/dev/null | grep . >/dev/null 2>&1; then
-      EXE=$CHROME_ROOT/Chrome/chrome.exe
+    EXE=$CHROME_ROOT/${VER:-Chrome}/${EXE_NAME}
+    if ! test -f "$EXE"; then
+      if test -n "$VER" && find "$CHROME_ROOT/Chrome/" -name "${VER}.*" 2>/dev/null | grep . >/dev/null 2>&1; then
+        EXE=$CHROME_ROOT/Chrome/${EXE_NAME}
+      elif test -f "$CHROME_ROOT/${EXE_NAME}"; then
+        EXE=$CHROME_ROOT/${EXE_NAME}
+      fi
     fi
     if test -n "$VER" && ! test -e "$WORKING_DIR/${VER}"; then
       ARCHIVE="$version_archives/Chrome-${VER}.7z"
       if test -f "$ARCHIVE"; then
-        EXE=$WORKING_DIR/${VER}/chrome.exe
+        EXE=$WORKING_DIR/${VER}/${EXE_NAME}
         wp wo_w "$WORKING_DIR"
         7z x -bd -o"$wo_w" -- "$ARCHIVE"
       fi
@@ -287,6 +300,7 @@ if ! test -f "$EXE"; then
 fi
 if test -n "$VER"; then
   rm -f -v "${EXE%/*}/default_apps/"* "${EXE%/*}/"[0-9]*"/default_apps/"* "${EXE%/*}/"[0-9]*"/Installer/"*
+  rm -f -v "${EXE%/*}/"[0-9]*"/Locales/"[a-df-y]* "${EXE%/*}/"[0-9]*"/Locales/"e[a-mo-z]* >/dev/null
 fi
 
 if test -n "$PAGE_FLAGS"; then

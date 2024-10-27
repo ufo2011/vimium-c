@@ -2,11 +2,11 @@ import {
   doc, isTop, injector, isAsContent, set_esc, esc, setupEventListener, set_isEnabled_, XrayedObject, runtime_ff,
   set_clickable_, clickable_, isAlive_, set_VTr, setupKeydownEvents, onWndFocus, includes_,
   set_readyState_, readyState_, callFunc, recordLog, set_vApi, vApi, locHref, unwrap_ff, raw_unwrap_ff, math, OnFirefox,
-  OnChrome, OnEdge
+  OnChrome, OnEdge, fgCache
 } from "../lib/utils"
 import { suppressTail_, getMappedKey } from "../lib/keyboard_utils"
 import {
-  frameElement_, runJS_, OnDocLoaded_, set_OnDocLoaded_, onReadyState_, set_onReadyState_
+  frameElement_, runJS_, OnDocLoaded_, set_OnDocLoaded_, onReadyState_, set_onReadyState_, isHTML_,
 } from "../lib/dom_utils"
 import { wndSize_ } from "../lib/rect"
 import {
@@ -17,19 +17,20 @@ import {
   ui_box, adjustUI, getParentVApi, set_getParentVApi, set_getWndVApi_ff, learnCSS, ui_root, flash_
 } from "./dom_ui"
 import { grabBackFocus } from "./insert"
-import { currentKeys } from "./key_handler"
+import { currentKeys, inheritKeyMappings, keyFSM, mapKeyTypes, mappedKeys } from "./key_handler"
 import { coreHints } from "./link_hints"
 import { executeScroll, scrollTick, $sc, keyIsDown as scroll_keyIsDown } from "./scroller"
 import { find_box, find_input } from "./mode_find"
 import { filterTextToGoNext, jumpToNextLink } from "./pagination"
 import { set_needToRetryParentClickable, focusAndRun } from "./request_handlers"
 import { RSC } from "./commands"
-import { main_not_ff as extend_click_not_ff } from  "./extend_click"
+import { ec_main_not_ff } from  "./extend_click"
 import { main_ff as extend_click_ff, unblockClick_old_ff } from  "./extend_click_ff"
 import { hudTip } from "./hud"
 
 const docReadyListeners: Array<(this: void) => void> = []
 let completeListeners: Array<(this: void) => void> = []
+let oldHasVC: BOOL = 0
 
 set_OnDocLoaded_((callback, onloaded): ReturnType<typeof OnDocLoaded_> => {
   readyState_ > "l" || readyState_ > "i" && onloaded
@@ -72,7 +73,6 @@ set_safeDestroy(((silent): void => {
 
     if (runtime_port) { try { runtime_port.disconnect(); } catch {} }
     silent || recordLog("Vimium C on %o has been destroyed at %o.")()
-    injector || (<RegExpOne> /a?/).test("");
 }) satisfies typeof safeDestroy)
 
 set_vApi(VApi = {
@@ -84,10 +84,15 @@ set_vApi(VApi = {
       : task < 2 ? set_clickable_(arg as ElementSet)
       : set_VTr(arg as VTransType)
     return arg
-  }, getMappedKey], s: suppressTail_, t: requestHandlers[kBgReq.showHUD],
-  u: locHref, v: runJS_, x: flash_, y: OnFirefox ? () => ( {
-    w: onWndFocus, b: find_box, c: clickable_, k: scroll_keyIsDown, r: ui_root, f: find_input
-  } ) : () => ( {  b: find_box, c: clickable_, k: scroll_keyIsDown, r: ui_root, f: find_input } ), z: null,
+  }, getMappedKey],
+  s: suppressTail_, t: requestHandlers[kBgReq.showHUD],
+  u: locHref, v: runJS_, x: flash_,
+  y: OnFirefox ? () => ( {
+    w: onWndFocus, b: find_box, c: clickable_, k: scroll_keyIsDown, r: ui_root, f: find_input,
+    m: [keyFSM, mappedKeys, mapKeyTypes, fgCache || null ]
+  } ) : () => ( {  b: find_box, c: clickable_, k: scroll_keyIsDown, r: ui_root, f: find_input,
+    m: [keyFSM, mappedKeys, mapKeyTypes, fgCache || null ] } ),
+  z: null,
   $: $sc
 })
 
@@ -103,9 +108,7 @@ if (OnFirefox && isAsContent) {
         trustedRand += (unsafeRand >= 0 && unsafeRand < 1 ? unsafeRand : trustedRand);
         let a = (0x8000 * trustedRand) | 0,
         host = new URL(runtime_ff!.getURL("")).host.replace(<RegExpG> /-/g, "");
-        return ((host + (
-              typeof BuildStr.RandomReq === "number" ? (BuildStr.RandomReq as number | string as number).toString(16)
-              : BuildStr.RandomReq)
+        return ((host + Build.RandomReq.toString(16)
             ).match(<RegExpG> /[\da-f]{1,4}/gi)!
             ).map((i, ind) => parseInt(i, 16) & (ind & 1 ? ~a : a)).join("");
     }
@@ -147,7 +150,9 @@ if (OnFirefox && isAsContent) {
     })
     // on Firefox, such an exposed function can only be called from privileged environments
     try {
-      raw_unwrap_ff(window as XrayedObject<WindowWithGetter>)![name] = getterWrapper
+      const wnd = raw_unwrap_ff(window as XrayedObject<WindowWithGetter>)!
+      grabBackFocus || isHTML_() && wnd[name] && (oldHasVC = 1)
+      wnd[name] = getterWrapper
     } catch { // if window[name] is not configurable
       set_getWndVApi_ff((): void => { /* empty */ })
     }
@@ -173,16 +178,17 @@ if (!(isTop || injector)) {
         }
       }
   } else if (OnFirefox) {
-    /*#__NOINLINE__*/ (function (): void {
+    /*#__NOINLINE__*/ (function (parApi: VApiTy): void {
       try { // `vApi` is still unsafe
-          const state = scoped_parApi.y()
+          const state = parApi.y()
           if ((state.b && ( // @ts-ignore
                 XPCNativeWrapper as <T extends object> (wrapped: T) => XrayedObject<T>
               )(state.b)) === frameElement_()) {
             safeDestroy(1);
-            scoped_parApi.n!()
+            parApi.n!()
           } else {
             set_clickable_(state.c)
+            /*#__INLINE__*/ inheritKeyMappings(state)
           }
           return;
       } catch (e) {
@@ -194,15 +200,17 @@ if (!(isTop || injector)) {
         // here the parent `core` is invalid - maybe from a fake provider
         set_getParentVApi(() => null)
       }
-    })()
+    })(scoped_parApi)
   } else {
+    const state = scoped_parApi.y()
       // if not `vfind`, then a parent may have destroyed for unknown reasons
-      if (scoped_parApi.y().b === frameElement_()) {
+    if (state.b === frameElement_()) {
         safeDestroy(1);
         scoped_parApi.n!()
-      } else {
-        set_clickable_(scoped_parApi.y().c)
-      }
+    } else {
+      set_clickable_(state.c)
+      /*#__INLINE__*/ inheritKeyMappings(state)
+    }
   }
 }
 
@@ -219,9 +227,9 @@ if (isAlive_) {
 
   if (isAsContent) {
     if (OnFirefox) {
-      /*#__INLINE__*/ extend_click_ff()
+      /*#__INLINE__*/ extend_click_ff(oldHasVC)
     } else {
-      /*#__INLINE__*/ extend_click_not_ff()
+      ec_main_not_ff()
     }
   }
   OnFirefox && Build.MinFFVer < FirefoxBrowserVer.MinPopupBlockerPassOrdinaryClicksDuringExtMessages

@@ -1,7 +1,8 @@
 import {
-  framesForTab_, cPort, cRepeat, get_cOptions, set_cOptions, set_cPort, set_cRepeat, set_lastWndId_, set_cEnv,
+  framesForTab_, cPort, cRepeat, get_cOptions, set_cOptions, set_cPort, set_cRepeat, set_cEnv, runOneMapping_,
   lastWndId_, curIncognito_, curTabId_, curWndId_, recencyForTab_, vomnibarBgOptions_, OnFirefox, OnChrome, OnEdge,
-  CurCVer_, IsEdg_, paste_, substitute_, newTabUrls_, os_, CONST_, shownHash_, set_shownHash_, newTabUrl_f
+  CurCVer_, IsEdg_, paste_, substitute_, newTabUrls_, os_, CONST_, shownHash_, set_shownHash_, newTabUrl_f,
+  innerClipboard_, settingsCache_, CurFFVer_
 } from "./store"
 import * as BgUtils_ from "./utils"
 import {
@@ -10,10 +11,10 @@ import {
   Windows_, tabsCreate, openMultiTabs, selectWndIfNeed, makeWindow, browser_, Q_
 } from "./browser"
 import {
-  convertToUrl_, createSearchUrl_, hasUsedKeyword_, lastUrlType_, quotedStringRe_, reformatURL_
+  convertToUrl_, createSearchUrl_, hasUsedKeyword_, lastUrlType_, quotedStringRe_, reformatURL_, resetLastUrlType_
 } from "./normalize_urls"
 import { findUrlEndingWithPunctuation_, findUrlInText_ } from "./parse_urls"
-import { safePost, showHUD, complainLimits, findCPort, isNotVomnibarPage, getCurFrames_ } from "./ports"
+import { safePost, showHUD, complainLimits, findCPort, isNotVomnibarPage, getCurFrames_, showHUDEx } from "./ports"
 import { createSimpleUrlMatcher_, matchSimply_ } from "./exclusions"
 import { trans_ } from "./i18n"
 import { makeCommand_ } from "./key_mappings"
@@ -21,8 +22,9 @@ import {
   copyCmdOptions, runNextCmdBy, parseFallbackOptions, replaceCmdOptions, overrideOption, runNextCmd,
   overrideCmdOptions, runNextOnTabLoaded, executeCommand, fillOptionWithMask, sendFgCmd
 } from "./run_commands"
-import { parseSedOptions_ } from "./clipboard"
 import { Marks_ } from "./tools"
+import { parseSedOptions_ } from "./clipboard"
+import { findLastVisibleWindow_ } from "./filter_tabs"
 import C = kBgCmd
 
 type ShowPageData = [string, typeof shownHash_, number]
@@ -33,7 +35,7 @@ const ReuseValues: {
       K extends keyof typeof ReuseType ? (typeof ReuseType)[K] : never
 } = {
   current: ReuseType.current, reuse: ReuseType.reuse, newwnd: ReuseType.newWnd, frame: ReuseType.frame,
-  newbg: ReuseType.newBg, lastwndfg: ReuseType.lastWndFg, lastwnd: ReuseType.lastWndFg,
+  newtab: ReuseType.newFg, newbg: ReuseType.newBg, lastwndfg: ReuseType.lastWndFg, lastwnd: ReuseType.lastWndFg,
   lastwndbg: ReuseType.lastWndBg, iflastwnd: ReuseType.ifLastWnd, reuseincurwnd: ReuseType.reuseInCurWnd,
   lastwndbgbg: ReuseType.lastWndBgInactive, lastwndbginactive: ReuseType.lastWndBgInactive
 }
@@ -47,21 +49,24 @@ export const newTabIndex = (tab: Readonly<Tab>
     : doesGroup !== false && getGroupId(tab) != null
     // next to the current if no opener - in case of failing in setting group
     ? pos === "start" || pos === "begin" ? tab.index
-      : (pos satisfies "end" | UnknownValue) === "end" ? undefined
-      : OnFirefox && opener ? undefined : tab.index + 1
+      : pos === "end" ? undefined
+      : (pos satisfies UnknownValue, OnFirefox && opener) ? undefined : tab.index + 1
     : pos === "start" || pos === "begin" ? 0
-    : (pos satisfies "end" | UnknownValue) === "end" ? opener ? 3e4 : undefined
+    : pos === "end" ? opener ? 3e4 : undefined
     /** pos is undefined, or "default" */
-    : OnFirefox && opener ? undefined : tab.index + 1
+    : (pos satisfies UnknownValue, OnFirefox && opener) ? undefined : tab.index + 1
 
 export const preferLastWnd = <T extends Pick<Window, "id">> (wnds: T[]): T => {
   return wnds.find(i => i.id === lastWndId_) || wnds[wnds.length - 1]!
 }
 
-export const parseOpenPageUrlOptions = (options: OpenPageUrlOptions): SimpleParsedOpenUrlOptions => ({
-  g: options.group, i: options.incognito, m: options.replace,
-  o: options.opener, r: options.reuse, p: options.position, w: options.window
-})
+type AllowUndefined<T> = { [P in keyof T]: T[P] | undefined }
+export const parseOpenPageUrlOptions = ((opts, decoded?: boolean | null
+    ): AllowUndefined<EnsureExisting<ParsedOpenPageUrlOptions>> => ({
+  d: (decoded = opts.decoded, decoded != null ? decoded : opts.decode),
+  g: opts.group, i: opts.incognito, k: opts.keyword, m: opts.replace,
+  o: opts.opener, p: opts.position, r: opts.reuse, s: parseSedOptions_(opts), t: opts.testUrl, w: opts.window
+})) as (opts: OpenPageUrlOptions & UserSedOptions) => ParsedOpenPageUrlOptions
 
 const normalizeIncognito = (incognito: OpenUrlOptions["incognito"]): boolean | null => {
   return typeof incognito === "boolean" ? incognito
@@ -75,28 +80,9 @@ const normalizeIncognito = (incognito: OpenUrlOptions["incognito"]): boolean | n
 const normalizeWndType = (wndType: string | boolean | null | undefined): "popup" | "normal" | undefined =>
     wndType === "popup" || wndType === "normal" ? wndType : undefined
 
-const findLastVisibleWindow = (wndType: "popup" | "normal" | undefined, alsoCur: boolean
-    , incognito: boolean | null): Promise<Window | null> => {
-  const filter = (wnd: Window): boolean =>
-      (!wndType || wnd.type === wndType) && (incognito == null || wnd.incognito === incognito)
-      && wnd.state !== "minimized"
-  const p = (lastWndId_ < 0 ? Promise.resolve(null) : new Promise<Window | null>(resolve => {
-    Windows_.get(lastWndId_, wnd => {
-      resolve(wnd ? filter(wnd) ? wnd : null : (set_lastWndId_(GlobalConsts.WndIdNone), null))
-      return runtimeError_()
-    })
-  }))
-  return p.then(wnd => wnd || new Promise(resolve => Windows_.getAll((wnds): void => {
-    const last = wnds.filter(i => filter(i) && i.id !== curWndId_)
-    const wnd2 = last.length > 0 ? last.sort((i, j) => j.id - i.id)[0] : null
-    wnd2 && lastWndId_ < 0 && (set_lastWndId_(wnd2.id))
-    resolve(wnd2 || !alsoCur ? wnd2 : wnds.find(w => w.id === curWndId_) || wnds.find(w => w.focused) || null)
-  })))
-}
-
 export const checkHarmfulUrl_ = (url: string, port?: Port | null): boolean => {
   url = url.slice(0, 128).split("?")[0].replace(<RegExpG> /\\/g, "/")
-  let bsod = !!(Build.OS & (1 << kOS.win)) && os_ === kOS.win
+  let bsod = !!(Build.OS & kBOS.WIN) && (Build.OS === kBOS.WIN as number || os_ > kOS.MAX_NOT_WIN)
       && (<RegExpOne> /\/globalroot\/device\/condrv|\bdevice\/condrv\/kernelconnect/).test(url)
   if (bsod) {
     set_cPort(port || cPort)
@@ -107,12 +93,12 @@ export const checkHarmfulUrl_ = (url: string, port?: Port | null): boolean => {
 
 const onEvalUrl_ = (workType: Urls.WorkType, options: KnownOptions<C.openUrl>, tabs: [Tab] | [] | undefined
     , arr: Urls.BaseEvalResult): void => {
+  BgUtils_.resetRe_()
   const applyOptions = (urls: string[] | null): void => {
     replaceCmdOptions<C.openUrl>(options)
     overrideCmdOptions<C.openUrl>({ urls, url: null, url_f: null, copied: null, keyword: null }, true)
   }
-  BgUtils_.resetRe_()
-  switch (arr[1]) {
+  switch (arr[1]) { // on Chrome 109.0.5414.87 and macOS 13.1 (22C65), `switch(BgUtils_.resetRe_(), arr[1])` crashes
   case Urls.kEval.copy:
     showHUD((arr as Urls.CopyEvalResult)[0], kTip.noTextCopied)
     runNextCmdBy(1, options as {})
@@ -131,6 +117,13 @@ const onEvalUrl_ = (workType: Urls.WorkType, options: KnownOptions<C.openUrl>, t
     if (workType >= Urls.WorkType.EvenAffectStatus && arr[0]) {
       runNextCmdBy(1, options as {})
     }
+    break
+  case Urls.kEval.browserSearch:
+    runNextCmdBy(1, options as {})
+    break
+  case Urls.kEval.ERROR:
+    showHUD((arr as Urls.ErrorEvalResult)[0], kTip.raw)
+    runNextCmdBy(0, options as {})
     break
   case Urls.kEval.run:
     const cmd = (arr as Urls.RunEvalResult)[0]
@@ -155,17 +148,21 @@ const onEvalUrl_ = (workType: Urls.WorkType, options: KnownOptions<C.openUrl>, t
       return
     }
     setTimeout((): void => {
-      const frames = framesForTab_.get(curTab)
+      const frames = framesForTab_.get(curTab), port = frames ? frames.cur_ : null
       const opts: KnownOptions<C.runKey> & SafeObject = BgUtils_.safer_({ keys: [cmd[1]] })
       set_cEnv(null)
-      executeCommand(makeCommand_("runKey", opts)!, 1, kKeyCode.None, frames ? frames.cur_ : null, 0, null)
+      if (cmd[0] === "run1") {
+        runOneMapping_(cmd[1], port, { c: options.$f, r: options.$retry, u: 0, w: 0 })
+      } else {
+        executeCommand(makeCommand_("runKey", opts)!, 1, kKeyCode.None, port, 0, null)
+      }
     }, 0)
     break
   }
 }
 
 const runNextIf = (succeed: boolean | Tab | Window | undefined, options: OpenUrlOptions | Req.FallbackOptions
-    , result?: Tab | null | false): void => {
+    , result?: Pick<Tab, "id"> | null | false): void => {
   succeed ? runNextOnTabLoaded(options, result) : runNextCmdBy(0, options as OpenUrlOptions & Req.FallbackOptions)
 }
 
@@ -182,7 +179,9 @@ const safeUpdate = (options: OpenUrlOptions, reuse: ReuseType, url: string
     return
   }
   if (reuse === ReuseType.frame && cPort && cPort.s.frameId_) {
+    const fakeTab: Pick<Tab, "id"> = { id: cPort.s.tabId_ }
     sendFgCmd(kFgCmd.framesGoBack, false, { r: 1, u: url })
+    setTimeout(() => runNextIf(true, options, fakeTab), 100)
     return
   }
   tabs1 ? tabsUpdate(tabs1[0].id, { url }, callback) : tabsUpdate({ url }, callback)
@@ -227,8 +226,10 @@ const openUrlInIncognito = (urls: string[], reuse: ReuseType
 
 export const parseReuse = (reuse: UserReuseType | null | undefined): ReuseType =>
     reuse == null ? ReuseType.Default
-    : typeof reuse !== "string" ? typeof reuse === "boolean" ? reuse ? ReuseType.reuse : ReuseType.newFg
-       : isNaN(+reuse) ? ReuseType.Default : reuse | 0
+    : typeof reuse !== "string" || (<RegExpOne> /^-?\d+$/).test(reuse)
+    ? typeof reuse === "boolean" ? reuse ? ReuseType.reuse : ReuseType.Default
+       : isNaN(reuse = +reuse && (+reuse | 0)) || reuse > ReuseType.MAX || reuse < ReuseType.MIN ? ReuseType.Default
+       : reuse
     : (reuse = reuse.toLowerCase().replace("window", "wnd").replace(<RegExpG & { source: "-" }> /-/g, ""),
       reuse in ReuseValues ? ReuseValues[reuse as keyof typeof ReuseValues] : ReuseType.Default)
 
@@ -251,7 +252,7 @@ const fillUrlMasks = (url: string, tabs: [Tab?] | undefined, url_mask: string | 
       for (const j of matches) { if (ind < j[1] && end >= j[0]) { continue } }
       matches.push([ ind, end, i === 0
           ? (<RegExpOne> /^[%$]S|^\$\{S:/).test(mask) ? tabUrl : BgUtils_.encodeAsciiComponent_(tabUrl)
-          : i === 1 ? new URL(tabUrl).host : i === 2 ? tabUrl && "" + tabs![0]!.id
+          : i === 1 ? BgUtils_.encodeAsciiComponent_(new URL(tabUrl).host) : i === 2 ? tabUrl && "" + tabs![0]!.id
           : i === 3 ? tabUrl && "" + BgUtils_.encodeAsciiComponent_(tabs![0]!.title) : browser_.runtime.id ])
     }
   }
@@ -275,7 +276,7 @@ const openUrlInAnotherWindow = (urls: string[], reuse: Exclude<ReuseType
   let p: Promise<PopWindow | null>
   p = (reuse > ReuseType.OFFSET_LAST_WINDOW ? new Promise<Window | null>(resolve => {
     getCurWnd(false, wnd => (resolve(wnd || null), runtimeError_()))
-  }) : findLastVisibleWindow(normalizeWndType(options.window), true, incognito)).then(wnd => wnd &&
+  }) : findLastVisibleWindow_(normalizeWndType(options.window), true, incognito, curWndId_)).then(wnd => wnd &&
     new Promise(resolve => { Tabs_.query({ active: true, windowId: wnd.id }, tabs => {
       wnd.tabs = tabs; resolve(wnd as PopWindow)
       return runtimeError_()
@@ -380,7 +381,8 @@ const replaceOrOpenInNewTab = <Reuse extends Exclude<ReuseType, ReuseType.curren
   }
   let p: Promise<Pick<Window, "id"> | null>
   if (reuse < ReuseType.OFFSET_LAST_WINDOW + 1 && matcher) {
-    p = findLastVisibleWindow(wndType, reuse === ReuseType.ifLastWnd, incognito)
+    p = findLastVisibleWindow_(wndType, reuse === ReuseType.ifLastWnd, incognito, curWndId_)
+        .then(wnd => wnd && !(wnd instanceof Array) ? wnd : null)
   } else {
     p = Promise.resolve(!allWindows && curWndId_ >= 0 ? {id: curWndId_} : null)
   }
@@ -500,7 +502,8 @@ export const openShowPage = (url: string, reuse: ReuseType, options: KnownOption
     OnFirefox && (options.group = false)
     options.incognito = false
     reuse === ReuseType.reuse || reuse === ReuseType.reuseInCurWnd ? replaceOrOpenInNewTab(url, reuse, options.replace
-        , null, { u: prefix, p: options.prefix, q: parseOpenPageUrlOptions(options), f: parseFallbackOptions(options)
+        , null, { u: prefix, a: options.parent, p: options.prefix
+            , q: parseOpenPageUrlOptions(options), f: parseFallbackOptions(options)
         }, _tab ? [_tab] : void 0)
     : openUrlInNewTab([prefix], reuse, options, _tab ? [_tab] : void 0)
   }
@@ -514,7 +517,7 @@ const updateShownPage = (options: Req.FallbackOptions, tab: Tab): void => {
               || CurCVer_ >= BrowserVer.Min$Extension$$GetView$AcceptsTabId)
           && !tab.url.split("#", 2)[1]
       ? browser_.extension.getViews({ tabId: tab.id }) : []
-    if (!OnEdge && views.length > 0
+    if (!Build.MV3 && !OnEdge && views.length > 0
         && views[0].location.href.startsWith(prefix) && views[0].onhashchange as unknown) {
       (views[0].onhashchange as () => void)()
       selectTab(tab.id)
@@ -534,8 +537,9 @@ const openUrls = (tabs: [Tab] | [] | undefined): void => {
     }
     if (OnFirefox) {
       urls = urls.filter(i => !newTabUrls_.has(i) && !(<RegExpI> /file:\/\//i).test(i))
-      overrideOption<C.openUrl, "urls">("urls", urls)
     }
+    overrideCmdOptions<C.openUrl>({}, true)
+    overrideOption<C.openUrl, "urls">("urls", urls)
     overrideOption<C.openUrl, "$fmt">("$fmt", 2)
   }
   for (const url of urls) {
@@ -554,7 +558,7 @@ export const openUrlWithActions = (url: Urls.Url, workType: Urls.WorkType, sed?:
   if (typeof url !== "string") { /* empty */ }
   else if (url || workType !== Urls.WorkType.FakeType) {
     const fill = fillOptionWithMask<C.openUrl>(url, get_cOptions<C.openUrl>().mask
-        , "value", ["url", "url_mask", "url_mark", "value"], cRepeat)
+        , "value", ["url", "url_mask", "url_mark", "value"], cRepeat), exOut: InfoOnSed = {}
     if (fill.ok) {
       url = fill.result
       if (fill.useCount) { set_cRepeat(1) }
@@ -565,12 +569,12 @@ export const openUrlWithActions = (url: Urls.Url, workType: Urls.WorkType, sed?:
     }
     if (sed) {
       const postSed = parseSedOptions_(get_cOptions<C.openUrl, true>())
-      url = substitute_(url, SedContext.NONE, postSed)
+      url = substitute_(url, SedContext.NONE, postSed, exOut)
     }
     if (workType !== Urls.WorkType.FakeType) {
-      const keyword = (get_cOptions<C.openUrl>().keyword as AllowToString || "") + ""
+      const keyword = exOut.keyword_ ?? (get_cOptions<C.openUrl>().keyword as AllowToString || "") + ""
       const testUrl = get_cOptions<C.openUrl>().testUrl ?? !keyword
-      const isSpecialKW = !!keyword && keyword !== "~"
+      const isSpecialKW = !!exOut.keyword_ || !!exOut.actAnyway_ || !!keyword && keyword !== "~"
       url = testUrl ? convertToUrl_(url, keyword, workType)
           : createSearchUrl_(url.trim().split(BgUtils_.spacesRe_), keyword
               , isSpecialKW ? Urls.WorkType.KeepAll : workType)
@@ -579,28 +583,36 @@ export const openUrlWithActions = (url: Urls.Url, workType: Urls.WorkType, sed?:
     }
     const goNext = get_cOptions<C.openUrl, true>().goNext
     if (goNext && url && typeof url === "string") {
-      url = substitute_(url, SedContext.goNext)
+      const exOut2: InfoOnSed = {}
+      url = substitute_(url, SedContext.goNext, null, exOut2)
       url = goToNextUrl(url, cRepeat, goNext === "absolute")[1]
+      if (exOut.keyword_) {
+        url = createSearchUrl_(url.trim().split(BgUtils_.spacesRe_), exOut.keyword_, Urls.WorkType.EvenAffectStatus)
+      }
     }
     url = typeof url === "string" ? reformatURL_(url) : url
   } else {
     url = newTabUrl_f
   }
   let options = get_cOptions<C.openUrl, true>(), reuse: ReuseType = parseReuse(options.reuse)
+  const incog = reuse === ReuseType.current || reuse === ReuseType.frame ? normalizeIncognito(options.incognito) : null
   set_cOptions(null)
   BgUtils_.resetRe_()
   if (OnFirefox && typeof url === "string" && url.startsWith("about:reader?url=")) {
     reuse = reuse !== ReuseType.newBg ? ReuseType.newFg : reuse
   }
+  if (incog != null && incog !== (curIncognito_ === IncognitoType.true)) { reuse = ReuseType.newFg }
+  OnFirefox && typeof url === "string" && cPort && (<RegExpOne> /^file:|^about:(?!blank)/).test(url)
+      && options.warnFiles !== false && showHUDEx(cPort, "disabledUrlToOpen", 2, [])
   typeof url !== "string"
-      ? url instanceof Promise ? url.then(onEvalUrl_.bind(0, workType, options, tabs))
-        : /*#__NOINLINE__*/ onEvalUrl_(workType, options, tabs, url)
+      ? void Promise.resolve(url).then(onEvalUrl_.bind(0, workType, options, tabs))
       : /*#__NOINLINE__*/ openShowPage(url, reuse, options) ? 0
       : BgUtils_.isJSUrl_(url) ? /*#__NOINLINE__*/ openJSUrl(url, options, null, reuse)
       : checkHarmfulUrl_(url) ? runNextCmdBy(0, options)
       : reuse === ReuseType.reuse || reuse === ReuseType.reuseInCurWnd
         ? replaceOrOpenInNewTab(url, reuse, options.replace, null
-            , { u: url, p: options.prefix, q: parseOpenPageUrlOptions(options), f: parseFallbackOptions(options)}, tabs)
+            , { u: url, a: options.parent, p: options.prefix
+                , q: parseOpenPageUrlOptions(options), f: parseFallbackOptions(options)}, tabs)
       : reuse === ReuseType.current || reuse === ReuseType.frame ? /*#__NOINLINE__*/ safeUpdate(options, reuse, url)
       : options.replace ? replaceOrOpenInNewTab(url, reuse, options.replace, options, null, tabs)
       : tabs ? openUrlInNewTab([url], reuse, options, tabs)
@@ -608,9 +620,10 @@ export const openUrlWithActions = (url: Urls.Url, workType: Urls.WorkType, sed?:
 
 }
 
-const openCopiedUrl = (tabs: [Tab] | [] | undefined, url: string | null): void => {
+const openCopiedUrl = (copied: KnownOptions<C.openUrl>["copied"] | "", exOut: InfoOnSed
+    , tabs: [Tab] | [] | undefined, url: string | null): void => {
   if (url === null) {
-    complainLimits("read clipboard")
+    complainLimits(trans_("readClipboard"))
     runNextCmd<C.openUrl>(0)
     return
   }
@@ -619,11 +632,13 @@ const openCopiedUrl = (tabs: [Tab] | [] | undefined, url: string | null): void =
     runNextCmd<C.openUrl>(0)
     return
   }
+  exOut.keyword_ != null && overrideCmdOptions<C.openUrl>({ keyword: exOut.keyword_ })
+  copied = typeof copied === "string" ? copied : ""
+  const searchLines = copied.includes("any")
   let urls: string[]
-  const copied = get_cOptions<C.openUrl>().copied, searchLines = typeof copied === "string" && copied.includes("any")
-  if ((copied === "urls" || searchLines) && (urls = url.split(<RegExpG> /[\r\n]+/g)).length > 1) {
-    const urls2: string[] = [], keyword = searchLines && get_cOptions<C.openUrl>().keyword
-        ? get_cOptions<C.openUrl>().keyword + "" : null
+  if ((copied.includes("urls") || searchLines) && (urls = url.split(<RegExpG> /[\r\n]+/g)).length > 1) {
+    const urls2: string[] = [], rawKeyword = searchLines && get_cOptions<C.openUrl>().keyword
+    const keyword = rawKeyword ? rawKeyword + "" : null
     let has_err = false
     for (let i of urls) {
       i = i.trim()
@@ -645,7 +660,9 @@ const openCopiedUrl = (tabs: [Tab] | [] | undefined, url: string | null): void =
       tabs && tabs.length > 0 ? openUrls(tabs) : getCurTab(openUrls)
       return
     }
-    if (has_err) {
+    if (has_err && copied.includes("auto")) {
+      url = url.replace(<RegExpG> /[\r\n]+/g, " ")
+    } else if (has_err) {
       if (! runNextCmd<C.openUrl>(0)) {
         showHUD("The copied lines are not URLs")
       }
@@ -676,19 +693,40 @@ const openCopiedUrl = (tabs: [Tab] | [] | undefined, url: string | null): void =
 }
 
 export const goToNextUrl = (url: string, count: number, abs?: boolean): [found: boolean, newUrl: string] => {
+  const normalizeInt = (n: number | "" | undefined, fb: number): number => typeof n === "number" && !isNaN(n) ? n : fb
   let matched = false
-  let re = <RegExpSearchable<4>> /\$(?:\{(\d+)[,\/#@](\d*):(\d*)(:-?\d*)?\}|\$)/g
-  url = url.replace(<RegExpG & RegExpSearchable<4>> re, (s, n, min, end, t): string => {
+  let re=<RegExpSearchable<5>> /\$\{([\da-zA-Z_-]+)(?:[,\/#@](-?\d*)(?::(-?\d*)(:-?\d*)?)?(?:[,\/#@]([^}]+))?)?\}|\$\$/g
+  url = url.replace(<RegExpG & typeof re> re, (s, n, min, end, step, exArgs): string => {
     if (s === "$$") { return "$" }
     matched = true
-    let cur = n && parseInt(n) || 1
-    let mini = min && parseInt(min) || 0
-    let endi = end && parseInt(end) || 0
-    let stepi = t && parseInt(t.slice(1)) || 1
-    stepi < 0 && ([mini, endi] = [endi, mini])
-    count *= stepi
-    cur = !abs ? cur + count : count > 0 ? mini + count - 1 : count < 0 ? endi + count : cur
-    return "" + Math.max(mini || 1, Math.min(cur, endi ? endi - 1 : cur))
+    let radix = 10, min_len = 1, reverse = false, outRadix = 0
+    for (const [key, val] of exArgs ? exArgs.split("&").map(i => i.split("=")) : []) {
+      if (key === "min_len" || key === "len") {
+        min_len = +val || 1
+      } else if (key === "radix") {
+        radix = val as string | number as number | 0
+        radix = radix >= 2 && radix <= 36 ? radix : 10
+      } else if (key.startsWith("out") && key.endsWith("radix")) {
+        outRadix = val as string | number as number | 0
+        outRadix = outRadix >= 2 && outRadix <= 36 ? outRadix : outRadix && 10
+      } else if (key === "reverse") {
+        reverse = val === "1" || val.toLowerCase() === "true"
+      }
+    }
+    let cur = normalizeInt(n && parseInt(n, radix), 1)
+    let stepi = step && parseInt(step.slice(1)) || 0
+    const isNeg = stepi < 0 || !stepi && (step || "0")[0] === "-"
+    let mini = normalizeInt(min && parseInt(min), isNeg ? -1 : 1)
+    let endi = normalizeInt(end && parseInt(end), (isNeg ? -1 : 1) * Infinity)
+    stepi = (endi >= mini ? 1 : -1) * (Math.abs(stepi) || 1)
+    count *= reverse ? -stepi : stepi
+    cur = !abs || !count ? cur + count
+        : stepi > 0 ? count > 0 ? mini + count - 1 : (isFinite(endi) ? endi : 1e4) + count
+        : count < 0 ? mini + count + 1 : (isFinite(endi) ? endi : -1e4) + count
+    cur = endi >= mini ? Math.max(mini, Math.min(cur, endi - 1)) : Math.max(endi + 1, Math.min(cur, mini))
+    let y = cur.toString(outRadix || radix)
+    y = y.length < min_len ? "0".repeat!(min_len - y.length) + y : y
+    return y
   })
   return [matched, url]
 }
@@ -704,15 +742,26 @@ export const openUrl = (tabs?: [Tab] | []): void => {
     return runtimeError_() || <any> void getCurTab(openUrl)
   }
   let rawUrl = get_cOptions<C.openUrl>().url
-  if (rawUrl) {
-    openUrlWithActions(rawUrl as AllowToString + "", Urls.WorkType.EvenAffectStatus, true, tabs)
-  } else if (get_cOptions<C.openUrl>().copied) {
-    const url = paste_(parseSedOptions_(get_cOptions<C.openUrl, true>()))
-    if (url instanceof Promise) {
-      void url.then(/*#__NOINLINE__*/ openCopiedUrl.bind(null, tabs))
+  if (get_cOptions<C.openUrl>().copied) {
+    let copied = get_cOptions<C.openUrl, true>().copied
+    let copiedName = typeof copied !== "string" ? null : copied.includes("<") ? copied.split("<")[1]
+        : copied.includes(">") ? copied.split(">")[0] : null
+    let exOut: InfoOnSed = {}, url: string | null | Promise<string | null>
+    if (copiedName) {
+      copied = ((copied as string).includes("<") ? (copied as string).split("<")[0]
+            : (copied as string).split(">")[1]) as (typeof copied) & string
+      url = innerClipboard_.get(copiedName) || ""
+      url = substitute_(url, SedContext.paste, parseSedOptions_(get_cOptions<C.openUrl, true>()), exOut)
     } else {
-      openCopiedUrl(tabs, url)
+      url = paste_(parseSedOptions_(get_cOptions<C.openUrl, true>()), 0, exOut)
     }
+    if (url instanceof Promise) {
+      void url.then(/*#__NOINLINE__*/ openCopiedUrl.bind(null, copied, exOut, tabs))
+    } else {
+      openCopiedUrl(copied, exOut, tabs, url)
+    }
+  } else if (rawUrl || get_cOptions<C.openUrl>().sed) {
+    openUrlWithActions(rawUrl != null ? rawUrl as AllowToString + "" : "", Urls.WorkType.EvenAffectStatus, true, tabs)
   } else {
     let url_f = get_cOptions<C.openUrl, true>().url_f!
     openUrlWithActions(url_f || "", Urls.WorkType.FakeType, false, tabs)
@@ -723,47 +772,57 @@ export const openUrlReq = (request: FgReq[kFgReq.openUrl], port?: Port | null): 
   BgUtils_.safer_(request)
   let isWeb = port != null && isNotVomnibarPage(port, true)
   set_cPort(isWeb ? port! : findCPort(port) || cPort)
-  let url: Urls.Url | undefined = request.u
+  let url: Urls.Url | undefined = request.u || ""
   // { url_f: string, ... } | { copied: true, ... }
   const opts: KnownOptions<C.openUrl> = request.n && parseFallbackOptions(request.n) || {}
-  const o2: Readonly<Partial<FgReq[kFgReq.openUrl]["o"]>> = request.o || BgUtils_.safeObj_() as {}
-  const keyword = (o2.k || "") + "", testUrl = o2.t ?? !keyword
+  const o2: Readonly<Partial<FgReq[kFgReq.openUrl]["o"]>> = request.o
+      || request.n && parseOpenPageUrlOptions(request.n) || {}
+  const rawKeyword = (o2.k || "") + "", testUrl = o2.t ?? !rawKeyword
   const sed = o2.s
   const hintMode = request.m || HintMode.DEFAULT
   const mode1 = hintMode < HintMode.min_disable_queue ? hintMode & ~HintMode.queue : hintMode
-  const formatted = request.f != null ? request.f : mode1 === HintMode.OPEN_INCOGNITO_LINK
+  const formatted = request.f != null ? request.f : mode1 === HintMode.OPEN_INCOGNITO_LINK || mode1===HintMode.OPEN_LINK
   opts.group = isWeb ? o2.g : true
   opts.incognito = normalizeIncognito(o2.i) != null ? o2.i : mode1 === HintMode.OPEN_INCOGNITO_LINK || null
   opts.replace = o2.m
   opts.position = o2.p
-  opts.reuse = o2.r != null ? o2.r : !hintMode ? request.r
+  const reuse = o2.r != null ? o2.r : !hintMode ? request.r
       : request.t === "window" ? ReuseType.newWnd
       : (hintMode & HintMode.queue ? ReuseType.newBg : ReuseType.newFg)
         + (request.t === "last-window" ? ReuseType.OFFSET_LAST_WINDOW : 0)
+  opts.reuse = reuse
   opts.window = o2.w
-  if (url) {
+  if (url || !isWeb) {
     if (url[0] === ":" && !isWeb && (<RegExpOne> /^:[bhtwWBHdso]\s/).test(url)) {
       url = request.u = url.slice(2).trim()
     }
-    const originalUrl = url
+    const originalUrl = url, exOut: InfoOnSed = {}, context = !isWeb ? testUrl ? SedContext.omni : SedContext.NONE
+        : formatted ? SedContext.pageURL : SedContext.pageText
     url = testUrl ? findUrlEndingWithPunctuation_(url, formatted) : url
-    url = substitute_(url, !isWeb ? /** from input bar */ testUrl ? SedContext.omni : SedContext.NONE
-          : formatted ? SedContext.pageURL : SedContext.pageText, sed)
-    let converted: boolean
-    if (formatted) {
-      url = (converted = url !== originalUrl) ? convertToUrl_(url, null, Urls.WorkType.ConvertKnown) : url
-    } else if (converted = !!testUrl || !isWeb && !keyword) {
-      url = testUrl ? findUrlInText_(url, testUrl) : url
-      url = convertToUrl_(url, keyword, isWeb ? Urls.WorkType.ConvertKnown : Urls.WorkType.EvenAffectStatus)
+    url = substitute_(url, context, sed, exOut)
+    let keyword = exOut.keyword_ ?? rawKeyword
+    let beforeConversion = url.trim()
+    resetLastUrlType_()
+    if (formatted && !keyword) {
+      url = url !== originalUrl ? convertToUrl_(beforeConversion, null, Urls.WorkType.ConvertKnown) : beforeConversion
+    } else if (!!testUrl || !isWeb && !keyword) {
+      beforeConversion = testUrl ? findUrlInText_(beforeConversion, testUrl) : beforeConversion
+      url = convertToUrl_(beforeConversion, keyword,isWeb ? Urls.WorkType.ConvertKnown : Urls.WorkType.EvenAffectStatus)
     } else {
-      url = createSearchUrl_(url.trim().split(BgUtils_.spacesRe_), keyword
+      url = createSearchUrl_(beforeConversion.split(BgUtils_.spacesRe_), keyword
           , keyword && keyword !== "~" ? Urls.WorkType.ConvertKnown : Urls.WorkType.Default)
-      converted = hasUsedKeyword_
-      url = !converted ? url : convertToUrl_(url as string, null, (url as string).startsWith("vimium:")
-                ? Urls.WorkType.EvenAffectStatus : Urls.WorkType.Default)
+      url = !hasUsedKeyword_ ? url : convertToUrl_(beforeConversion = url as string, keyword = ""
+          , (url as string).startsWith("vimium:") ? Urls.WorkType.EvenAffectStatus : Urls.WorkType.Default)
     }
-    if (!converted) { /* empty */ }
-    else if ((lastUrlType_ === Urls.Type.NoScheme || lastUrlType_ === Urls.Type.NoProtocolName) && request.h != null) {
+    if (lastUrlType_ === Urls.Type.Search && !keyword && settingsCache_.preferBrowserSearch
+        && (OnChrome ? Build.MinCVer >= BrowserVer.Min$search$$query || CurCVer_ > BrowserVer.Min$search$$query - 1
+            : OnFirefox ? (Build.MinFFVer >= FirefoxBrowserVer.Min$search$$search
+                || CurFFVer_ > FirefoxBrowserVer.Min$search$$search - 1)
+            : !OnEdge && browser_.search)) {
+      url = `vimium://b-search-at/${reuse}/${beforeConversion}`
+      url = convertToUrl_(url, null, Urls.WorkType.ActAnyway)
+    }
+    if ((lastUrlType_ === Urls.Type.NoScheme || lastUrlType_ === Urls.Type.NoProtocolName) && request.h != null) {
       url = (request.h ? "https" : "http") + (url as string).slice((url as string)[4] === "s" ? 5 : 4)
     } else if (lastUrlType_ === Urls.Type.PlainVimium && (url as string).startsWith("vimium:")
         && !originalUrl.startsWith("vimium://")) {
@@ -773,8 +832,12 @@ export const openUrlReq = (request: FgReq[kFgReq.openUrl], port?: Port | null): 
     opts.opener = isWeb ? o2.o !== false : vomnibarBgOptions_.actions.includes("opener")
     opts.url_f = url
   } else {
-    if (request.c === false) { return }
-    opts.copied = request.c != null ? request.c : true, opts.keyword = keyword, opts.testUrl = o2.t
+    if (!request.c) {
+      set_cPort(port || findCPort(null)!)
+      runNextCmdBy(0, opts) || showHUD("", kTip.noUrlCopied)
+      return
+    }
+    opts.copied = request.c, opts.keyword = rawKeyword, opts.testUrl = o2.t
     opts.sed = sed
   }
   set_cRepeat(1)
@@ -803,8 +866,8 @@ const onMatchedTabs = (tabs: Tab[]): void => {
   const notInCurWnd = curIncognito_ === IncognitoType.true && isRefusingIncognito_(request.u)
   // if `request.s`, then `typeof request` is `MarksNS.MarkToGo`
   if (request.f && runNextCmdBy(0, request.f)) { /* empty */ }
-  else if (curTabs.length <= 0 || opts2.w
-      || curIncognito_ === IncognitoType.true && !curTabs[0].incognito) {
+  else if (curTabs.length <= 0 || opts2.w || OnChrome && Build.MinCVer < BrowserVer.MinNoAbnormalIncognito
+      && curIncognito_ === IncognitoType.true && !curTabs[0].incognito || reuse === ReuseType.newWnd) {
     makeWindow({ url: request.u, type: normalizeWndType(opts2.w),
       incognito: notInCurWnd ? false : curIncognito_ === IncognitoType.true
     }, "", (wnd): void => {
@@ -812,6 +875,14 @@ const onMatchedTabs = (tabs: Tab[]): void => {
     })
   } else if (notInCurWnd) {
     openMultiTabs({ url: request.u, active: true }, 1, null, [null], opts2.g, null, callback)
+  } else if (reuse === ReuseType.current || reuse === ReuseType.frame) {
+    safeUpdate({}, reuse, request.u)
+    if (reuse === ReuseType.frame && port && port.s.frameId_) {
+      sendFgCmd(kFgCmd.framesGoBack, false, { r: 1, u: request.u })
+      callback(curTabs[0])
+    } else {
+      tabsUpdate(curTabs[0].id, { url: request.u }, callback)
+    }
   } else {
     openMultiTabs({
       url: request.u, index: newTabIndex(curTabs[0], opts2.p, false, true),
@@ -824,11 +895,11 @@ const onMatchedTabs = (tabs: Tab[]): void => {
 
 const updateMatchedTab = (tabs2: Tab[]): void => {
   const url = request.u
-  request.p && tabs2.sort((a, b) => a.url.length - b.url.length)
+  const prefix = !!request.p, matchDifferent = prefix ? 1 : request.a ? -1 : 0
+  matchDifferent && tabs2.sort((a, b) => (a.url.length - b.url.length) * matchDifferent)
   let tab: Tab = selectFrom(tabs2)
-  if (tab.url.length > tabs2[0].url.length) { tab = tabs2[0]; }
-  if (OnChrome
-      && url.startsWith(CONST_.OptionsPage_) && !framesForTab_.get(tab.id) && !request.s) {
+  if (matchDifferent && (tab.url.length > tabs2[0].url.length) === prefix) { tab = tabs2[0]; }
+  if (OnChrome && url.startsWith(CONST_.OptionsPage_) && !framesForTab_.get(tab.id) && !request.s) {
     /* safe-for-group */ tabsCreate({ url }, callback)
     Tabs_.remove(tab.id)
   } else if (shownHash_ && tab.url.startsWith(CONST_.ShowPage_)) {
@@ -836,22 +907,24 @@ const updateMatchedTab = (tabs2: Tab[]): void => {
     selectWndIfNeed(tab)
   } else {
     const cur = OnChrome && IsEdg_ ? tab.url.replace(<RegExpOne> /^edge:/, "chrome:") : tab.url
-    const wanted = OnChrome && IsEdg_ ? url.replace(<RegExpOne> /^edge:/, "chrome:") : url
+    const wanted = OnChrome && IsEdg_ ? url.replace(<RegExpOne> /^edge:/i, "chrome:") : url
+    finallyMatched = prefix ? cur.startsWith(wanted) : request.a ? wanted.startsWith(cur) : wanted === cur
     tabsUpdate(tab.id, {
-      url: cur.startsWith(wanted) ? undefined : url, active: true
+      url: finallyMatched ? undefined : url, active: true
     }, callback)
     selectWndIfNeed(tab)
   }
 }
 
-const callback = (tab?: Tab | null): void => {
+const callback = (tab?: Pick<Tab, "id"> | null): void => {
   if (!tab) { request.f && runNextCmdBy(0, request.f); return runtimeError_(); }
   runNextOnTabLoaded(request.f || {}, tab, request.s && ((): void => {
-    Marks_.scrollTab_(request as MarksNS.MarkToGo, tab)
+    Marks_.scrollTab_(request as MarksNS.MarkToGo, tab.id, kKeyCode.None, finallyMatched)
   }))
 }
 
   let curTabs: [Tab] | never[]
+  let finallyMatched = false
   // * do not limit windowId or windowType
   let toTest = reformatURL_(request.u.split("#", 1)[0])
   if (checkHarmfulUrl_(toTest, port)) {
@@ -861,9 +934,10 @@ const callback = (tab?: Tab | null): void => {
   if (opts2.g == null || toTest.startsWith(CONST_.OptionsPage_)) {
     opts2.g = false // disable group detection by default
   }
-  const reuse = opts2.r != null && parseReuse(opts2.r) || ReuseType.reuse
+  const reuse = opts2.r != null ? parseReuse(opts2.r) : ReuseType.reuse
   if (opts2.m) {
-    replaceOrOpenInNewTab(request.u, reuse !== ReuseType.frame ? reuse : ReuseType.reuse, opts2.m, null, request)
+    replaceOrOpenInNewTab(request.u, reuse !== ReuseType.frame && reuse !== ReuseType.current
+        ? reuse : ReuseType.reuse, opts2.m, null, request)
     return
   }
   void Q_(getCurTab).then(async (curTabs1): Promise<void> => {
@@ -872,19 +946,30 @@ const callback = (tab?: Tab | null): void => {
     let toTest2 = toTest, windowType = normalizeWndType(opts2.w) || "normal"
     if (BgUtils_.protocolRe_.test(toTest)) {
       let i = toTest.indexOf("/") + 2, j = toTest.indexOf("/", i + 1), host = toTest.slice(i, j > 0 ? j : void 0)
+      if (request.a) {
+        toTest = toTest.slice(0, j > 0 ? j + 1 : void 0)
+        toTest2 = toTest = toTest.endsWith("/") ? toTest : toTest + "/"
+      }
       if (host && host.includes("@")) { toTest2 = toTest = toTest.slice(0, i) + host.split("@")[1] + toTest.slice(j) }
-      if (OnFirefox && host.includes(":")) { toTest2 = toTest.slice(0, i) + host.split(":")[0] + toTest.slice(j) }
+      if (OnFirefox && host.includes(":") && host[0] !== "[") {
+        toTest2 = toTest.slice(0, i) + host.split(":")[0] + toTest.slice(j)
+      }
     }
-  if ((toTest.startsWith("file:") || toTest.startsWith("ftp")) && !toTest.includes(".", toTest.lastIndexOf("/") + 1)) {
-      allTests.push(toTest2 + (request.p ? "/*" : "/"))
-      OnFirefox && toTest2 !== toTest && allTests.push(toTest + (request.p ? "/*" : "/"))
-  }
-    allTests.push(request.p ? toTest2 + "*" : toTest2)
-    OnFirefox && toTest2 !== toTest && allTests.push(request.p ? toTest + "*" : toTest)
-  // if no .replace, then only search in normal windows by intent
+    const matchDifferent = !!(request.p || request.a)
+    if ((toTest.startsWith("file:") || toTest.startsWith("ftp")) && !toTest.includes(".",toTest.lastIndexOf("/") + 1)) {
+      allTests.push(toTest2 + (matchDifferent ? "/*" : "/"))
+      OnFirefox && toTest2 !== toTest && allTests.push(toTest + (matchDifferent ? "/*" : "/"))
+    }
+    allTests.push(matchDifferent ? toTest2 + "*" : toTest2)
+    OnFirefox && toTest2 !== toTest && allTests.push(matchDifferent ? toTest + "*" : toTest)
+    // if no .replace, then only search in normal windows by intent
     for (let cond of allTests) {
       let matched = await Q_(Tabs_.query, { url: cond, windowType, windowId: wndId })
       if (OnFirefox && matched && matched.length) { matched = matched.filter(i => i.url.startsWith(toTest)) }
+      if (matched && request.a) {
+        OnChrome && IsEdg_ && (toTest = toTest.replace(<RegExpOne> /^chrome:/i, "edge:"))
+        matched = matched.filter(i => toTest.startsWith(i.url.split(<RegExpOne> /[#?]/, 1)[0]))
+      }
       if (matched && matched.length > 0) { return onMatchedTabs(matched) }
     }
     onMatchedTabs([])

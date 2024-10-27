@@ -54,7 +54,7 @@ type NodeToElement = TypeToAssert<Node, Element, "tagName", "nodeType">;
  * But, "nonce" occurred very late (about C61 / FF75).
  */
 type ElementToHTMLOrForeign = TypeToAssert<Element, HTMLElement | NonHTMLButFormattedElement
-    , "tabIndex" | "style", "tagName">;
+    , "tabIndex" | "style" | "focus", "tagName">;
 type ElementToSVG = TypeToAssert<Element, SVGElement, "ownerSVGElement", "tagName">
 /**
  * Document & HTMLElement & SVGStyleElement have string .title;
@@ -119,10 +119,11 @@ declare const enum EditableType {
   Default = NotEditable,
   Embed = 1,
   Select = 2,
-  MaxNotTextModeElement = 2,
-  TextBox = 3,
-  input_ = 4,
-  rich_ = 5,
+  MaxNotEditableElement = 2,
+  ContentEditable = 3,
+  MaxNotTextBox = 3,
+  TextArea = 4,
+  Input = 5,
 }
 
 declare namespace HintsNS {
@@ -168,14 +169,15 @@ declare const enum AdjustType {
 }
 
 declare const enum kDim {
-  viewW = 0, viewH = 1, elClientW = 2, elClientH = 3, scrollW = 4, scrollH = 5, positionX = 6, positionY = 7,
-  /** used in {@see ../content/scroller.ts#shouldScroll_s} */ _posX2 = 8, _posY2 = 9,
+  viewW = 0, viewH = 1, elClientW = 2, elClientH = 3, scrollW = 4, scrollH = 5,
+  scPosX = 6, scPosY = 7, positionX = 8, positionY = 9,
   byX = 0, byY = 1
 }
 
 type ScrollByY = kDim.byX | kDim.byY;
 
-type KnownIFrameElement = HTMLIFrameElement | HTMLFrameElement
+type AccessableIFrameElement = HTMLIFrameElement | HTMLFrameElement
+type KnownIFrameElement = AccessableIFrameElement | HTMLFencedFrameElement
 
 /** ShadowRoot | HTMLDivElement */
 type VUIRoot = ShadowRoot | (HTMLDivElement & { mode?: undefined });
@@ -204,7 +206,7 @@ interface VApiTy extends Frames.BaseVApi {
     (di: ScrollByY, amount: number, flags: kScFlag.scBy | kScFlag.toMin | kScFlag.toMax
       , factor?: undefined | 0, options?: CmdOptions[kFgCmd.scroll], oriCount?: number, force?: 1): void
   }
-  /** execute content commands */ e: ((this: void, cmd: ValidContentCommands) => void) | null
+  /** execute content commands */ e: ((this: void, cmd: ValidContentCommands, el?: SafeHTMLElement) => void) | null
   /** focusAndRun */ f: {
     (this: void): void
     (this: void, cmd: FgCmdAcrossFrames, options: FgOptions, count: number
@@ -245,6 +247,8 @@ interface VApiTy extends Frames.BaseVApi {
     /** @see {../content/scroller.ts#keyIsDown} */ k: number
     /** UI root */ r: VUIRoot | null
     /** find input */ f: SafeHTMLElement | null
+    m: [ keyFSM: KeyFSM, mappedKeys: SafeDict<string> | null, mapKeyTypes: kMapKey,
+         vApi_z: SettingsNS.FrontendSettingCache | null ]
   }
   /** cache */ z: SettingsNS.FrontendSettingCache | null
   /** @see {../content/scroller.ts#$sc} */ $: (element: SafeElement | null, di: ScrollByY, amount: number
@@ -255,19 +259,19 @@ declare var VimiumInjector: VimiumInjectorTy | undefined | null // eslint-disabl
 
 declare const enum kContentCmd {
   _fake = 0,
-  AutoFindAllOnClick = 1,
-  ManuallyFindAllOnClick = 2,
-  ReportKnownAtOnce_not_ff = 3,
+  AutoReportKnownAtOnce_not_ff = 1,
+  ManuallyReportKnownAtOnce = 2,
+  ShowPicker_cr_mv3 = 3,
   _minSuppressClickable = 4,
   // see injected_end.ts for difference between Destroy and SuppressClickable
   SuppressClickable = 5,
   Destroy = 6,
   MaskedBitNumber = 3,
 }
+type ContentCommandsNotSuppress = kContentCmd.AutoReportKnownAtOnce_not_ff | kContentCmd.ManuallyReportKnownAtOnce
+    | kContentCmd.ShowPicker_cr_mv3
 type ValidContentCommands = Exclude<kContentCmd, kContentCmd._fake | kContentCmd._minSuppressClickable
-    | kContentCmd.MaskedBitNumber | kContentCmd.AutoFindAllOnClick> | kContentCmd.ReportKnownAtOnce_not_ff;
-type ContentCommandsNotSuppress = kContentCmd.AutoFindAllOnClick | kContentCmd.ManuallyFindAllOnClick
-    | kContentCmd.ReportKnownAtOnce_not_ff
+    | kContentCmd.MaskedBitNumber> | ContentCommandsNotSuppress
 type SecondLevelContentCmds = ContentCommandsNotSuppress | kContentCmd.Destroy
 
 declare const enum TimerID { None = 0, Valid = 42, Timeout = "43", Interval = "44", __mask = "" }
@@ -290,4 +294,6 @@ interface KnownDataset {
   canonicalSrc: string // used in HintMode.{OPEN_IMAGE,COPY_IMAGE,DOWNLOAD_MEDIA}
 }
 
-declare const enum kElRef { lastHovered = 1, lastEditable, lastClicked, currentScrolling, cachedScrollable }
+declare const enum kElRef {
+  lastHovered = 1, lastEditable, lastEditable2, lastClicked, currentScrolling
+}

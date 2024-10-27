@@ -1,6 +1,6 @@
 import {
   CONST_, os_, CurCVer_, evalVimiumUrl_, historyCache_, IsEdg_, OnChrome, OnFirefox, searchEngines_, newTabUrl_f,
-  Origin2_
+  Origin2_, substitute_, readInnerClipboard_
 } from "./store"
 import {
   isJSUrl_, DecodeURLPart_, resetRe_, isIPHost_, encodeAsciiComponent_, spacesRe_, protocolRe_, isTld_
@@ -10,21 +10,26 @@ export const hostRe_ = <RegExpOne & RegExpSearchable<4>> /^([^:]+(:[^:]+)?@)?([^
 export const customProtocolRe_ = <RegExpOne> /^(?:ext|web)\+[a-z]+:/
 export const quotedStringRe_ = <RegExpOne> /^"[^"]*"$|^'[^']*'$|^\u201c[^\u201d]*\u201d$/
 export const searchWordRe_ = <RegExpG & RegExpSearchable<2>> /\$([sS$])?(?:\{([^}]*)})?/g
-export const searchVariableRe_ = <RegExpG & RegExpSearchable<1>> /\$([+-]?\d+)/g
+export const searchVariableRe_ = <RegExpG & RegExpSearchable<1>> /\$([+-]?\d+|\$)/g
+export const headClipNameRe_ = <RegExpOne> /^[\w\x80-\ufffd]{1,8}!?>/
+export const tailClipNameRe_ = <RegExpOne> /<[\w\x80-\ufffd]{1,8}!?$/
+export const tailSedKeysRe_ = <RegExpOne> /\|([\w\x80-\ufffd]{1,8}|(,|%2[cC])[\w,-]*)$/
 
 const KnownPages_ = ["blank", "newtab", "options", "show"]
 const kOpts = "options.html"
 const RedirectedUrls_: SafeDict<string> = { __proto__: null as never,
   about: "", changelog: "/RELEASE-NOTES.md", help: "/wiki", home: "", license: "/LICENSE.txt",
   option: kOpts, permissions: "/PRIVACY-POLICY.md#permissions-required", policy: "/PRIVACY-POLICY.md",
-  popup: kOpts, preference: kOpts, preferences: kOpts,
+  action: kOpts, popup: kOpts, preference: kOpts, preferences: kOpts,
   privacy: "/PRIVACY-POLICY.md#privacy-policy", profile: kOpts, profiles: kOpts,
   readme: "#readme", release: "/RELEASE-NOTES.md", releases: "/RELEASE-NOTES.md", "release-notes": "/RELEASE-NOTES.md",
   setting: kOpts, settings: kOpts, wiki: "/wiki"
 }
 
-export let lastUrlType_ = Urls.Type.Default
+export let lastUrlType_ = Urls.Type.Full
 export let hasUsedKeyword_ = false
+
+export const resetLastUrlType_ = (): void => { lastUrlType_ = Urls.Type.Full }
 
 export const convertToUrl_ = function (str: string, keyword?: string | null, vimiumUrlWork?: Urls.WorkType
     , _isNested?: number): Urls.Url {
@@ -136,8 +141,7 @@ export const convertToUrl_ = function (str: string, keyword?: string | null, vim
   } else if (str === "localhost" || str.endsWith(".localhost") || isIPHost_(str, 4) || arr[4] && hasPath) {
     type = expected;
   } else if ((index = str.lastIndexOf(".")) < 0
-      || (type = isTld_(str.slice(index + 1))) === Urls.TldType.NotTld) {
-    index < 0 && str === "__proto__" && (str = "." + str);
+      || (type = isTld_(str.slice(index + 1), false, str)) === Urls.TldType.NotTld) {
     index2 = str.length - index - 1;
     // the new gTLDs allow long and notEnglish TLDs
     // https://en.wikipedia.org/wiki/Generic_top-level_domain#New_top-level_domains
@@ -145,7 +149,7 @@ export const convertToUrl_ = function (str: string, keyword?: string | null, vim
         // most of TLDs longer than 14 chars mean some specific business companies (2021-09-13)
           : index2 >= 2 && index2 <= 14) && !(<RegExpOne> /[^a-z]/).test(str.slice(index + 1)))
         || checkInDomain_(str, arr[4]) > 0 ? expected : Urls.Type.Search
-  } else if ((<RegExpOne> /[^.\da-z\-]|xn--|^-/).test(str)) {
+  } else if ((<RegExpOne> /[^.\da-z_\-]|xn--|^-/).test(str)) {
     // non-English domain, maybe with an English but non-CC TLD
     type = (str.startsWith("xn--") || str.includes(".xn--") ? true
         : str.length === index + 3 || type !== Urls.TldType.ENTld ? !expected
@@ -188,7 +192,8 @@ export const convertToUrl_ = function (str: string, keyword?: string | null, vim
 }
 
 const checkInDomain_ = (host: string, port?: string | null): 0 | 1 | 2 => {
-  const domain = port && historyCache_.domains_.get(host + port) || historyCache_.domains_.get(host)
+  const domain = port && historyCache_.domains_.get(host + port) || historyCache_.domains_.get(OnChrome
+      && Build.MinCVer < BrowserVer.MinEnsuredES6$ForOf$Map$SetAnd$Symbol && host === "__proto__" ? "." + host : host)
   return domain ? domain.https_ ? 2 : 1 : 0;
 }
 
@@ -258,7 +263,7 @@ export const formatVimiumUrl_ = (fullPath: string, partly: boolean, vimiumUrlWor
   if (!(<RegExpOne> /\.\w+$/).test(path)) {
     path = path.toLowerCase();
     if ((tempStr = RedirectedUrls_[path]) != null) {
-      (path === "release" || path === "releases") && (tempStr += "#" + CONST_.VerCode_.replace(<RegExpG> /\D/g, ""))
+      (path === "release" || path === "releases") && (tempStr += "#v" + CONST_.VerCode_.replace(<RegExpG> /\D/g, ""))
       tempStr = path = !tempStr || tempStr[0] === "/" || tempStr[0] === "#"
         ? CONST_.HomePage_ + (tempStr.includes(".") ? "/blob/master" + tempStr : tempStr)
         : tempStr;
@@ -297,27 +302,43 @@ export const createSearchUrl_ = function (query: string[], keyword: string, vimi
   (query: string[], keyword?: string | null, vimiumUrlWork?: Urls.WorkType, _isNested?: number): Urls.Url
 }
 
+export const getDelimiter_ = (url: string, limit: number): string => {
+  return url.lastIndexOf("://", 21) < 0 || isJSUrl_(url) || url.startsWith("vimium://run") || url.startsWith("data:")
+      || !(<RegExpOne> /\?|#.*=/).test(url.slice(0, limit)) ? "%20" : "+"
+}
+
 export const createSearch_ = function (query: string[], url: string, blank: string, indexes?: number[]
     ): string | Search.Result {
   let q2: string[] | undefined, delta = 0;
   url = query.length === 0 && blank ? blank : url.replace(searchWordRe_
-      , (full, s1: string | undefined, s2: string | undefined, ind): string => {
+      , (full, s1: string | undefined, s2: string | undefined, ind: number): string => {
     let arr: string[];
-    if (full.endsWith("$")) { return "$" }
+    if (full.endsWith("$") || !s1 && !s2) { return "$" }
     if (!s1) {
       if ((<RegExpOne> /^s:/i).test(s2!)) { s1 = s2![0]; s2 = s2?.slice(2) }
       else { s1 = "s" }
     }
+    let localQuery = query
+    let sed = s2 ? tailSedKeysRe_.exec(s2) : null
+    sed && s2!.charAt(sed.index - 1) !== "\\" ? (s2 = s2!.slice(0, sed.index)) : (sed = null)
+    const clip = s2 ? tailClipNameRe_.exec(s2) || headClipNameRe_.exec(s2) : null
+    if (clip && (clip[0][0] !== "<" || s2!.charAt(clip.index - 1) !== "\\")) {
+      s2 = clip[0][0] === "<" ? s2!.slice(0, clip.index) : s2!.slice(clip[0].length)
+      localQuery = readInnerClipboard_(clip[0][0] === "<" ? clip[0].slice(1) : clip[0].slice(0, -1)).split(" ")
+    }
     if (s1 === "S") {
-      arr = query;
+      arr = localQuery
       s1 = " ";
     } else {
-      arr = (q2 || (q2 = query.map(encodeAsciiComponent_)));
-      s1 = isJSUrl_(url) || url.startsWith("vimium://run") ? "%20" : "+"
+      arr = localQuery === query && q2 ? q2 : localQuery.map(encodeAsciiComponent_)
+      localQuery === query && !q2 && (q2 = arr)
+      s1 = getDelimiter_(url, ind)
     }
-    if (arr.length === 0) { return ""; }
-    if (s2 && s2.includes("$")) {
+    s2 && s2.includes("\\") && (s2 = s2.replace(<RegExpG> /\\([\\<>|])/g, "$1"))
+    if (arr.length === 0) { s2 = "" }
+    else if (s2 && s2.includes("$")) {
       s2 = s2.replace(searchVariableRe_, function (_t: string, s3: string): string {
+        if (s3 === "$") { return "$" }
         let i = parseInt(s3, 10);
         if (!i) {
           return arr.join(s1);
@@ -331,7 +352,8 @@ export const createSearch_ = function (query: string[], url: string, blank: stri
     } else {
       s2 = arr.join(s2 != null ? s2 : s1);
     }
-    if (indexes != null) {
+    sed && (s2 = substitute_(s2, SedContext.NONE, DecodeURLPart_(sed[0].slice(1))))
+    if (indexes != null && s2) {
       ind += delta;
       indexes.push(ind, ind + s2.length);
       delta += s2.length - full.length
@@ -411,7 +433,7 @@ const convertFromFilePath = (path: string): string => {
 }
 
 export const decodeFileURL_ = (url: string, rawUrl?: string): string => {
-  if (Build.OS & (1 << kOS.win) && os_ === kOS.win && url.startsWith("file://")) {
+  if (Build.OS & kBOS.WIN && (Build.OS === kBOS.WIN as number || os_ > kOS.MAX_NOT_WIN) && url.startsWith("file://")) {
     const slash = url.indexOf("/", 7)
     if (slash < 0 || slash === url.length - 1) { return slash < 0 ? url + "/" : url }
     const type = slash === 7 ? url.charAt(9) === ":" ? 3 : url.substr(9, 3).toLowerCase() === "%3a" ? 5 : 0 : 0
@@ -432,7 +454,7 @@ export const decodeFileURL_ = (url: string, rawUrl?: string): string => {
   return url
 }
 
-export const normalizeSVG_ = (svg_outer_html: string): string => {
+const _normalizeSVG_mv2 = (svg_outer_html: string): string => {
   let svg = new DOMParser().parseFromString(svg_outer_html, "image/svg+xml").firstElementChild as SVGSVGElement | null
   for (const el of svg ? ([] as Element[]).slice.call(svg.querySelectorAll("script,use")) : []) { el.remove() }
   if (!svg || !svg.lastElementChild) { return "" }
@@ -455,8 +477,20 @@ export const normalizeSVG_ = (svg_outer_html: string): string => {
     s2.length < s.length &&
     (node.data = !s2 ? " " : (spacesRe_.test(s[0]) ? " " : "") + s2 + (spacesRe_.test(s.slice(-1)) ? " " : ""))
   }
-  let out = svg.outerHTML.replace(<RegExpG> /\xa0/g, " ")
-  // out = '<?xml version="1.0" standalone="no"?>' + out
+  return svg.outerHTML.replace(<RegExpG> /\xa0/g, " ")
+}
+
+export const normalizeSVG_ = (svg_outer_html: string): string => {
+  let out: string
+  if (Build.MV3) {
+    if (!svg_outer_html.slice(0, 100).toLowerCase().includes("xmlns")) {
+      svg_outer_html = svg_outer_html.replace(<RegExpOne> /<svg /i, '$&xmlns="http://www.w3.org/2000/svg"')
+    }
+    out = svg_outer_html.replace(<RegExpG & RegExpSearchable<0>> /<(?!\/)[^>]+>/g,
+        attributes => attributes.replace(<RegExpG> /\b(id|class|aria-[\w-]+)(\="[^"]+")? ?/g, ""))
+  } else {
+    out = _normalizeSVG_mv2(svg_outer_html)
+  }
   out = out.replace(<RegExpG & RegExpSearchable<0>> /<\/?[A-Z:]+(?=\s|>)/g, s => s.toLowerCase())
   out = out.replace(<RegExpG & RegExpSearchable<0>> /(?:[%?#]|[^\S ])+/g, encodeURIComponent)
   return "data:image/svg+xml," + out

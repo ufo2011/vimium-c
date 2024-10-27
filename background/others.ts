@@ -23,7 +23,7 @@ declare const enum OmniboxData {
   PreservedTitle = 16,
 }
 
-const enableShowIcon = updateHooks_.showActionIcon = (value): void => {
+updateHooks_.showActionIcon = (value): void => {
     const api = Build.MV3 ? (browser_ as any).action as never : browser_.browserAction
     if (!api) {
       updateHooks_.showActionIcon = undefined
@@ -38,7 +38,7 @@ const enableShowIcon = updateHooks_.showActionIcon = (value): void => {
 }
 void settings_.ready_.then((): void => {
   if (settingsCache_.showActionIcon) {
-    enableShowIcon(true)
+    updateHooks_.showActionIcon!(true, "showActionIcon")
   } else {
     set_setIcon_(blank_)
   }
@@ -127,7 +127,7 @@ Build.MV3 || setTimeout((): void => {
     matchType = newMatchType;
     matchedSugTypes = newMatchedSugTypes;
     suggestions = [];
-    const urlDict: Set<string> = new Set!()
+    const urlDict = new Set!<string>()
     const showTypeLetter = ` ${omniPayload_.t} `.includes(" type-letter ")
     for (let i = 0, di = autoSelect ? 0 : 1, len = response.length; i < len; i++) {
       const sugItem = response[i], { title, u: rawUrl, e: type } = sugItem
@@ -291,7 +291,7 @@ Build.MV3 || setTimeout((): void => {
     getCurWnd(false, (wnd): void => {
       const width = wnd && wnd.width;
       maxChars = width
-        ? Math.floor((width - OmniboxData.MarginH / devicePixelRatio) / OmniboxData.MeanWidthOfChar)
+        ? Math.floor((width - OmniboxData.MarginH / (Build.MV3 ? 1 : devicePixelRatio)) / OmniboxData.MeanWidthOfChar)
         : OmniboxData.DefaultMaxChars;
     });
     if (!msg_inited) {
@@ -320,7 +320,7 @@ Build.MV3 || setTimeout((): void => {
       console.log("Error: want to delete a suggestion but no related info found (may spend too long before deleting).");
       return;
     }
-    reqH_[kFgReq.removeSug]({ t: type, s: info.sessionId_, u: info.url_ }, null)
+    reqH_[kFgReq.removeSug]({ t: type, s: info.sessionId_, u: info.url_ })
   })
 })()
 
@@ -330,7 +330,7 @@ OnChrome && Build.OnBrowserNativePages && ((): void => {
   ntp = !IsEdg_ ? protocol + "//newtab/" : "", ntp2 = !IsEdg_ ? protocol + "//new-tab-page/" : ""
   const onCommitted = (nav: chrome.webNavigation.WebNavigationTransitionCallbackDetails): void => {
     if (nav.frameId === 0 && nav.url.startsWith(protocol)
-        && status & (nav.url.startsWith(ntp) || nav.url.startsWith(ntp2) ? 2 : 1) && !refreshTimer) {
+        && status & (!IsEdg_ && (nav.url.startsWith(ntp) || nav.url.startsWith(ntp2)) ? 2 : 1) && !refreshTimer) {
       runContentScriptsOn_(nav.tabId)
     }
   }
@@ -393,7 +393,9 @@ installation_ && void Promise.all([installation_, settings_.ready_]).then(([deta
     return
   }
   settings_.postUpdate_("vomnibarPage")
-  if (parseFloat(CONST_.VerCode_) <= parseFloat(oldVer)) { return }
+  if (parseFloat(oldVer) >= parseFloat(CONST_.VerCode_)) {
+    if (oldVer >= "1.99.98" || CONST_.VerCode_ < "1.99.98") { return }
+  }
 
   if (Build.MV3) { /* empty */ }
   else if (updateToLocal_) {

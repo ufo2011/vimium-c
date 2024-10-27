@@ -1,7 +1,7 @@
 import {
   framesForTab_, framesForOmni_, OnChrome, CurCVer_, OnEdge, OnFirefox, os_, curTabId_, bgC_,
   set_visualWordsRe_, bgIniting_, Completion_, CONST_, keyFSM_, reqH_, set_bgIniting_, set_hasGroupPermission_ff_,
-  onInit_, set_onInit_, set_cPort
+  onInit_, set_onInit_, set_cPort, lastKeptTabId_, set_lastKeptTabId_, CurFFVer_
 } from "./store"
 import * as BgUtils_ from "./utils"
 import { runtimeError_, tabsGet, Tabs_, browser_, watchPermissions_ } from "./browser"
@@ -52,13 +52,13 @@ set_onInit_(((): void => {
       }
       if (!keyFSM_) {
         settings_.postUpdate_("keyMappings")
-        if (!OnEdge && Build.OS & (1 << kOS.mac) && os_ === kOS.mac) {
+        if (!OnEdge && Build.OS & kBOS.MAC && (Build.OS === kBOS.MAC as number || !os_)) {
           visualKeys_["m-s-c"] = VisualAction.YankRichText
         }
       }
       settings_.postUpdate_("exclusionListenHash")
       settings_.postUpdate_("vomnibarOptions")
-      if (!Build.MV3) { // media watchers should be setup after vomnibarOptions
+      { // media watchers should be setup after vomnibarOptions
         settings_.postUpdate_("autoDarkMode")
         settings_.postUpdate_("autoReduceMotion")
       }
@@ -171,16 +171,17 @@ OnEdge || void settings_.ready_.then((): void => {
   settings_.postUpdate_("searchUrl", null) // will also update newTabUrl
 })
 
-OnFirefox && Build.MayAndroidOnFirefox && !Tabs_.onReplaced || // Not exist on Thunderbird
+!OnChrome && !Tabs_.onReplaced || // Not exist on Thunderbird
 Tabs_.onReplaced.addListener((addedTabId, removedTabId): void => {
     const frames = framesForTab_.get(removedTabId)
+    if (lastKeptTabId_ === removedTabId) { set_lastKeptTabId_(addedTabId) }
     if (!frames) { return; }
     framesForTab_.delete(removedTabId)
     framesForTab_.set(addedTabId, frames)
     for (const port of frames.ports_) {
       (port.s as Writable<Frames.Sender>).tabId_ = addedTabId;
     }
-    if (Build.MV3 || Build.LessPorts) { (frames.cur_.s as Writable<Frames.Sender>).tabId_ = addedTabId }
+    (frames.cur_.s as Writable<Frames.Sender>).tabId_ = addedTabId
     for (const port of framesForOmni_) {
       port.s.tabId_ === removedTabId && ((port.s as Writable<Frames.Sender>).tabId_ = addedTabId)
     }
@@ -195,10 +196,27 @@ OnFirefox && watchPermissions_([{ permissions: ["cookies"] }], (allowed): void =
 set_bgIniting_(bgIniting_ | BackendHandlersNS.kInitStat.main)
 onInit_!()
 
-  // will run only on <kbd>F5</kbd>, not on runtime.reload
-// @ts-ignore
+if (Build.MV3 && !OnFirefox && (!OnChrome ||
+    (Build.MinCVer < BrowserVer.MinCSAcceptWorldInManifest
+        || !Build.NDEBUG && browser_.runtime.getManifest().content_scripts!.length === 1)
+    && (Build.MinCVer >= BrowserVer.MinRegisterContentScriptsWorldInMV3
+        || CurCVer_ > BrowserVer.MinRegisterContentScriptsWorldInMV3 - 1))) {
+  browser_.scripting.registerContentScripts([{
+    id: "extend_click",
+    js: ["content/extend_click_vc.js"],
+    matches: ["<all_urls>"],
+    allFrames: true,
+    runAt: "document_start",
+    world: "MAIN"
+  }]).catch(err => {
+    const msg = err + ""
+    msg.includes("Duplicate script ID") || console.log("Can not register extend_click:", err)
+  })
+}
+
+// @ts-ignore // will run only on <kbd>F5</kbd>, not on runtime.reload
 Build.MV3 || ((window as Window) // `window.` is necessary on Chrome 32
-.onunload = (): void => {
+.onpagehide = (): void => {
     for (let port of framesForOmni_) {
       port.disconnect()
     }
@@ -210,20 +228,16 @@ Build.MV3 || ((window as Window) // `window.` is necessary on Chrome 32
 })
 
 if (OnFirefox && !Build.NativeWordMoveOnFirefox
+        && Build.MinFFVer < FirefoxBrowserVer.MinEnsuredUnicodePropertyEscapesInRegExp
     || OnChrome && Build.MinCVer < BrowserVer.MinEnsuredUnicodePropertyEscapesInRegExp
       && Build.MinCVer < BrowserVer.MinSelExtendForwardOnlySkipWhitespaces) {
-  ( OnFirefox ? !Build.NativeWordMoveOnFirefox && !BgUtils_.makeRegexp_("\\p{L}", "u", 0)
-    : !OnChrome ? false
-    : Build.MinCVer < BrowserVer.MinSelExtendForwardOnlySkipWhitespaces
-      && Build.MinCVer < BrowserVer.MinMaybeUnicodePropertyEscapesInRegExp
-      && (BrowserVer.MinSelExtendForwardOnlySkipWhitespaces < BrowserVer.MinMaybeUnicodePropertyEscapesInRegExp
-        ? CurCVer_ < (
-          BrowserVer.MinEnsuredUnicodePropertyEscapesInRegExp < BrowserVer.MinSelExtendForwardOnlySkipWhitespaces
-          ? BrowserVer.MinEnsuredUnicodePropertyEscapesInRegExp : BrowserVer.MinSelExtendForwardOnlySkipWhitespaces)
-        : CurCVer_ < BrowserVer.MinMaybeUnicodePropertyEscapesInRegExp
-          || !BgUtils_.makeRegexp_("\\p{L}", "u", 0))
+  (OnFirefox ? CurFFVer_ < FirefoxBrowserVer.MinEnsuredUnicodePropertyEscapesInRegExp
+    : CurCVer_ < BrowserVer.MinSelExtendForwardOnlySkipWhitespaces
+      && (BrowserVer.MinSelExtendForwardOnlySkipWhitespaces <= BrowserVer.MinMaybeUnicodePropertyEscapesInRegExp
+          || CurCVer_ < BrowserVer.MinEnsuredUnicodePropertyEscapesInRegExp
+            && (CurCVer_ < BrowserVer.MinMaybeUnicodePropertyEscapesInRegExp || !BgUtils_.makeRegexp_("\\p{L}", "u",0)))
   ) ? void BgUtils_.fetchFile_("words.txt").then((text): void => {
     set_visualWordsRe_(text.replace(<RegExpG> /[\n\r]/g, "")
-        .replace(<RegExpG & RegExpSearchable<1>> /\\u(\w{4})/g, (_, s1) => String.fromCharCode(+("0x" + s1))))
+        .replace(<RegExpG & RegExpSearchable<1>> /\\u(\w{4})/g, (_, s1) => String.fromCharCode(parseInt(s1, 16))))
   }) : set_visualWordsRe_("")
 }

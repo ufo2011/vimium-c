@@ -13,19 +13,21 @@ interface BgCmdOptions {
     /** ms */ for: CountValueOrRef; wait: CountValueOrRef; block: boolean; isError?: boolean
   } & Req.FallbackOptions
 //#region need cport
+  [kBgCmd.confirm]: { question: string, ask?: string, text?: string, value?: string, minRepeat: number }
+      & Req.FallbackOptions
   [kBgCmd.goNext]: {
     isNext: boolean; noRel: boolean; patterns: string | string[]; rel: string; $fmt: 1; absolute: true; view?: false
     avoidClick?: boolean
   } & UserSedOptions & CSSOptions & Req.FallbackOptions & OpenUrlOptions
   [kBgCmd.insertMode]: {
     key: string
-    hideHUD: boolean | "force" | "always"
+    hideHUD: boolean | "force" | "always" | "auto"
     /** (deprecated) */ hideHud: boolean
     insert: boolean
     passExitKey: boolean
     reset: boolean
     unhover: boolean
-  } & Req.FallbackOptions
+  } & Req.FallbackOptions & Pick<CmdOptions[kFgCmd.insertMode], "bubbles">
   [kBgCmd.nextFrame]: Req.FallbackOptions
   [kBgCmd.parentFrame]: Req.FallbackOptions
   [kBgCmd.performFind]: {
@@ -39,11 +41,26 @@ interface BgCmdOptions {
     restart: boolean
     returnToViewport: true
     selected: boolean
+    extend: boolean | "after" | "" | "before"
+    direction: "after" | "" | "before"
+    scroll: "" | "auto" | "instant" | "manual"
   } & Req.FallbackOptions
   [kBgCmd.toggle]: { key: string; value: any } & Req.FallbackOptions
   [kBgCmd.showHelp]: Omit<ShowHelpDialogOptions, "h">
   [kBgCmd.dispatchEventCmd]: CmdOptions[kFgCmd.dispatchEventCmd]
   [kBgCmd.showVomnibar]: VomnibarNS.GlobalOptions
+  [kBgCmd.marksActivate]: {
+    extUrl: boolean
+    key?: string
+    local?: boolean
+    mode: "create" | /* all others are treated as "goto"  */ "goto" | "goTo"
+    type: null | "tab" | "frame"
+    swap: boolean // swap meanings of shiftKey
+    prefix: true | false
+    parent: boolean
+    storeCount: boolean
+    wait?: boolean | number
+  } & OpenPageUrlOptions & Req.FallbackOptions
   [kBgCmd.visualMode]: {
     mode: "visual" | "Visual" | "caret" | "Caret" | "line" | "Line" | ""
     richText: boolean
@@ -52,7 +69,7 @@ interface BgCmdOptions {
 //#endregion
   [kBgCmd.addBookmark]: {
     folder: string; /** (deprecated) */ path: string; position: null | "before" | "after" | "begin" | "end"
-    all: true | "window"
+    all: true | "window"; id: string
   } & LimitedRangeOptions & TabFilterOptions
   [kBgCmd.autoOpenFallback]: Extract<CmdOptions[kFgCmd.autoOpen], { o?: 1 }>
   [kBgCmd.captureTab]: {
@@ -64,7 +81,8 @@ interface BgCmdOptions {
   } & Pick<OpenPageUrlOptions, "reuse" | "replace" | "position" | "window">
   [kBgCmd.clearCS]: { type: chrome.contentSettings.ValidTypes }
   [kBgCmd.clearFindHistory]: {}
-  [kBgCmd.clearMarks]: { local: boolean; all: boolean }
+  [kBgCmd.clearMarks]: Pick<BgCmdOptions[kBgCmd.marksActivate], "type"> & { local: boolean; all: boolean }
+      & Req.FallbackOptions
   [kBgCmd.copyWindowInfo]: UserSedOptions & LimitedRangeOptions & TabFilterOptions & {
     keyword: string
     type: "" | "frame" | "browser" | "window" | "tab" | "title" | "url" | "host" | "hostname" | "origin"
@@ -75,7 +93,7 @@ interface BgCmdOptions {
   [kBgCmd.discardTab]: TabFilterOptions
   [kBgCmd.duplicateTab]: { active: false }
   [kBgCmd.goBackFallback]: Extract<CmdOptions[kFgCmd.framesGoBack], {r?: null}>
-  [kBgCmd.goToTab]: { absolute: boolean; noPinned: boolean } & TabFilterOptions
+  [kBgCmd.goToTab]: { absolute: boolean; noPinned: boolean } & TabFilterOptions & MoveTabOptions
   [kBgCmd.goUp]: { type: "tab" | "frame"; reloadOnRoot: true | false } & TrailingSlashOptions & UserSedOptions
   [kBgCmd.joinTabs]: {
     sort: "" | /** time */ true | "time" | "create" | "recency" | "id" | "url" | "host" | "title" | "reverse"
@@ -95,13 +113,12 @@ interface BgCmdOptions {
   [kBgCmd.openUrl]: OpenUrlOptions & MasksForOpenUrl & {
     urls: string[]; $fmt: 1 | 2
     url: string; url_f: Urls.Url
-    copied: boolean | "urls" | "any-urls"; /** has pasted once */ $p: 1
-    goNext: boolean | "absolute"; /** for ReuseType.reuse */ prefix: boolean
+    copied: boolean | "auto-urls" | "urls" | "any-urls" | `url<${string}`; /** has pasted once */ $p: 1
+    goNext: boolean | "absolute"; /** for ReuseType.reuse */ prefix: boolean; parent: boolean
     /** value for .mask */ value: string
   } & Ensure<OpenPageUrlOptions, keyof OpenPageUrlOptions>
     & /** for .replace, ReuseType.reuse and JS URLs */ Req.FallbackOptions
-  [kBgCmd.reloadTab]: { hard: true; /** (deprecated) */ bypassCache: true; single: boolean }
-      & LimitedRangeOptions & TabFilterOptions
+  [kBgCmd.reloadTab]: { hard: boolean; single: boolean } & LimitedRangeOptions & TabFilterOptions
   [kBgCmd.removeRightTab]: LimitedRangeOptions & TabFilterOptions & Req.FallbackOptions
   [kBgCmd.removeTab]: LimitedRangeOptions & {
     highlighted: boolean | "no-current"
@@ -112,9 +129,10 @@ interface BgCmdOptions {
     /** (deprecated) */ allow_close: boolean
     keepWindow: "at-least-one" | "always"
     /** only work when close one tab */ filter: TabFilterOptions["filter"]
+    noPinned: boolean | null
   } & Req.FallbackOptions
   [kBgCmd.removeTabsR]: {
-    other: boolean; mayConfirm: true; noPinned: boolean
+    others: boolean; other: boolean; mayConfirm: true; noPinned: boolean | null; acrossWindows: true
   } & TabFilterOptions & Req.FallbackOptions
   [kBgCmd.reopenTab]: Pick<OpenUrlOptions, "group"> & Req.FallbackOptions
   [kBgCmd.restoreTab]: { incognito: "force" | true; one: boolean; active: false; currentWindow?: boolean }
@@ -141,17 +159,23 @@ interface BgCmdOptions {
     /** only return cmd result, but not show */ silent: boolean
   } & Req.FallbackOptions
   [kBgCmd.toggleCS]: { action: "" | "reopen"; incognito: boolean; type: chrome.contentSettings.ValidTypes }
-  [kBgCmd.toggleMuteTab]: { all: boolean; other: boolean; others: boolean; mute: boolean }
+  [kBgCmd.toggleMuteTab]: { all: boolean; currentWindow?: boolean; others: boolean; other: boolean; mute: boolean }
       & TabFilterOptions & Req.FallbackOptions
   [kBgCmd.togglePinTab]: LimitedRangeOptions & TabFilterOptions & Req.FallbackOptions
-  [kBgCmd.toggleTabUrl]: { keyword: string; parsed: string; reader: boolean } & OpenUrlOptions
-  [kBgCmd.toggleVomnibarStyle]: { style: string; current: boolean }
+  [kBgCmd.toggleTabUrl]: { keyword: string; parsed: string; reader: boolean; viewSource: boolean
+      } & OpenUrlOptions & MasksForOpenUrl
+  [kBgCmd.toggleVomnibarStyle]: { style?: string; current: boolean; enable?: boolean | null, forced: boolean
+      } & Req.FallbackOptions
   [kBgCmd.toggleZoom]: { level: number; in?: true; out?: true; reset?: true; min: number; max: number }
-  [kBgCmd.visitPreviousTab]: { acrossWindows: true; onlyActive: true } & TabFilterOptions & Req.FallbackOptions
+  [kBgCmd.visitPreviousTab]: { acrossWindows: true; onlyActive: true } & TabFilterOptions & MoveTabOptions
   [kBgCmd.closeDownloadBar]: { newWindow?: null | true | false; all: 1 }
   [kBgCmd.reset]: { suppress: boolean } & Pick<BgCmdOptions[kBgCmd.insertMode], "unhover"> & Req.FallbackOptions
-  [kBgCmd.openBookmark]: { title: string; path: string; name: string; value: string
+  [kBgCmd.openBookmark]: { title: string; path: string; id: string; name: string; value: string
       $cache: [CompletersNS.Bookmark["id_"], number] | null } & MaskOptions
+  [kBgCmd.toggleWindow]: {
+    target: "current" | "last" | "all" | "others" | "other"
+    states: ("normal" | "minimized" | "maximized" | "fullscreen" | "current" | "keep" | "")[] | string
+  }
 }
 
 interface BgCmdInfoMap {
@@ -181,8 +205,8 @@ type UnknownOptions<K extends keyof BgCmdOptions> = {
 }
 
 interface MasksForOpenUrl extends MaskOptions {
-  url_mask: string
-  /** (deprecated) */ url_mark: string
+  url_mask: string | boolean
+  /** (deprecated) */ url_mark: string | boolean
   host_mask: string; host_mark: string
   tabid_mask: string; tabId_mask: string; tabid_mark: string; tabId_mark: string
   title_mask: string; title_mark: string
@@ -198,6 +222,10 @@ interface MaskOptions { mask: boolean | string | ""; $masked: boolean }
 interface TabFilterOptions {
   filter: "url" | "hash" | "url=..." | "host" | "host=..." | "title" | "title*" | "group" | "url+hash" | "host&title"
 }
+interface MoveTabOptions extends Req.FallbackOptions {
+  blur: boolean | /** host matcher */ string | ValidUrlMatchers
+  grabFocus: boolean | string // alias of .blur
+}
 
 declare namespace CommandsNS {
   interface RawOptions extends SafeDict<any> {
@@ -207,7 +235,7 @@ declare namespace CommandsNS {
       sys?: string
       browser?: BrowserType
       before?: string
-    } | null
+    } | "win" | "!win" | "linux" | "mac" | "chrome" | "chromium" | "edg" | "firefox" | "edge" | "safari" | null
   }
   interface Options extends ReadonlySafeDict<any>, SharedPublicOptions, SharedInnerOptions {}
   interface SharedPublicOptions {
@@ -260,9 +288,10 @@ interface StatefulBgCmdOptions {
   [kBgCmd.createTab]: null
   [kBgCmd.openBookmark]: null
   [kBgCmd.goNext]: "patterns" | "reuse"
-  [kBgCmd.openUrl]: "urls" | "group" | "replace" | "keyword"
+  [kBgCmd.goToTab]: "blur" | "grabFocus"
+  [kBgCmd.openUrl]: "urls" | "group" | "replace"
   [kBgCmd.runKey]: "expect" | "keys"
-  [kBgCmd.togglePinTab]: "limited"
+  [kBgCmd.togglePinTab]: null
   [kBgCmd.restoreTab]: "currentWindow"
 }
 interface SafeStatefulBgCmdOptions {
@@ -316,6 +345,7 @@ interface CmdNameIds {
   "LinkHints.activateModeToOpenIncognito": kFgCmd.linkHints
   "LinkHints.activateModeToOpenInNewForegroundTab": kFgCmd.linkHints
   "LinkHints.activateModeToOpenInNewTab": kFgCmd.linkHints
+  "LinkHints.activateModeToOpenUrl": kFgCmd.linkHints
   "LinkHints.activateModeToOpenVomnibar": kFgCmd.linkHints
   "LinkHints.activateModeToSearchLinkText": kFgCmd.linkHints
   "LinkHints.activateModeToSelect": kFgCmd.linkHints
@@ -325,6 +355,7 @@ interface CmdNameIds {
   "LinkHints.activateOpenIncognito": kFgCmd.linkHints
   "LinkHints.activateOpenInNewForegroundTab": kFgCmd.linkHints
   "LinkHints.activateOpenInNewTab": kFgCmd.linkHints
+  "LinkHints.activateOpenUrl": kFgCmd.linkHints
   "LinkHints.activateOpenVomnibar": kFgCmd.linkHints
   "LinkHints.activateSearchLinkText": kFgCmd.linkHints
   "LinkHints.activateSelect": kFgCmd.linkHints
@@ -332,11 +363,11 @@ interface CmdNameIds {
   "LinkHints.activateWithQueue": kFgCmd.linkHints
   "LinkHints.click": kFgCmd.linkHints
   "LinkHints.unhoverLast": kFgCmd.insertMode
-  "Marks.activate": kFgCmd.marks
-  "Marks.activateCreate": kFgCmd.marks
-  "Marks.activateCreateMode": kFgCmd.marks
-  "Marks.activateGoto": kFgCmd.marks
-  "Marks.activateGotoMode": kFgCmd.marks
+  "Marks.activate": kBgCmd.marksActivate
+  "Marks.activateCreate": kBgCmd.marksActivate
+  "Marks.activateCreateMode": kBgCmd.marksActivate
+  "Marks.activateGoto": kBgCmd.marksActivate
+  "Marks.activateGotoMode": kBgCmd.marksActivate
   "Marks.clearGlobal": kBgCmd.clearMarks
   "Marks.clearLocal": kBgCmd.clearMarks
   "Vomnibar.activate": kBgCmd.showVomnibar
@@ -356,15 +387,16 @@ interface CmdNameIds {
   autoOpen: kFgCmd.autoOpen
   blank: kBgCmd.blank
   captureTab: kBgCmd.captureTab
-  clearCS: kBgCmd.clearCS
   clearContentSetting: kBgCmd.clearCS
   clearContentSettings: kBgCmd.clearCS
+  clearCS: kBgCmd.clearCS
   clearFindHistory: kBgCmd.clearFindHistory
   closeDownloadBar: kBgCmd.closeDownloadBar
   closeOtherTabs: kBgCmd.removeTabsR
   closeSomeOtherTabs: kBgCmd.removeTabsR
   closeTabsOnLeft: kBgCmd.removeTabsR
   closeTabsOnRight: kBgCmd.removeTabsR
+  confirm: kBgCmd.confirm
   copyCurrentTitle: kBgCmd.copyWindowInfo
   copyCurrentUrl: kBgCmd.copyWindowInfo
   copyWindowInfo: kBgCmd.copyWindowInfo
@@ -374,8 +406,8 @@ interface CmdNameIds {
   dispatchEvent: kBgCmd.dispatchEventCmd
   duplicateTab: kBgCmd.duplicateTab
   editText: kFgCmd.editText
-  enableCSTemp: kBgCmd.toggleCS
   enableContentSettingTemp: kBgCmd.toggleCS
+  enableCSTemp: kBgCmd.toggleCS
   enterFindMode: kBgCmd.performFind
   enterInsertMode: kBgCmd.insertMode
   enterVisualLineMode: kBgCmd.visualMode
@@ -443,22 +475,25 @@ interface CmdNameIds {
   searchInAnother: kBgCmd.searchInAnother
   sendToExtension: kBgCmd.sendToExtension
   showHelp: kBgCmd.showHelp
+  showHud: kBgCmd.showHUD
+  showHUD: kBgCmd.showHUD
+  showTip: kBgCmd.showHUD
   simBackspace: kFgCmd.focusInput
   simulateBackspace: kFgCmd.focusInput
   sortTabs: kBgCmd.joinTabs
   switchFocus: kFgCmd.focusInput
-  toggleCS: kBgCmd.toggleCS
   toggleContentSetting: kBgCmd.toggleCS
+  toggleCS: kBgCmd.toggleCS
   toggleLinkHintCharacters: kBgCmd.toggle
   toggleMuteTab: kBgCmd.toggleMuteTab
   togglePinTab: kBgCmd.togglePinTab
   toggleReaderMode: kBgCmd.toggleTabUrl
   toggleStyle: kFgCmd.toggleStyle
   toggleSwitchTemp: kBgCmd.toggle
+  toggleUrl: kBgCmd.toggleTabUrl
   toggleViewSource: kBgCmd.toggleTabUrl
   toggleVomnibarStyle: kBgCmd.toggleVomnibarStyle
-  showHUD: kBgCmd.showHUD
-  showTip: kBgCmd.showHUD
+  toggleWindow: kBgCmd.toggleWindow
   visitPreviousTab: kBgCmd.visitPreviousTab
   wait: kBgCmd.blank
   zoom: kBgCmd.toggleZoom

@@ -41,11 +41,13 @@ import {
   removeHandler_, getMappedKey, keybody_, isEscape_, prevent_, ENTER, suppressTail_, replaceOrSuppressMost_
 } from "../lib/keyboard_utils"
 import {
-  getSelection_, getSelectionFocusEdge_, isHTML_, docEl_unsafe_, notSafe_not_ff_, getEditableType_,
-  GetChildNodes_not_ff, rangeCount_, getAccessibleSelectedNode, scrollingEl_, isNode_,
+  getSelection_, getSelectionFocusEdge_, isHTML_, docEl_unsafe_, isSafeEl_, getEditableType_,
+  getNodeChild_, rangeCount_, getAccessibleSelectedNode, scrollingEl_, isNode_,
   getDirectionOfNormalSelection, selOffset_, modifySel, parentNode_unsafe_s, textOffset_, inputSelRange
 } from "../lib/dom_utils"
-import { prepareCrop_, cropRectToVisible_, getVisibleClientRect_, set_scrollingTop, selRange_ } from "../lib/rect"
+import {
+  prepareCrop_, cropRectToVisible_, getVisibleClientRect_, set_scrollingTop, selRange_, cropRectS_
+} from "../lib/rect"
 import {
   getSelectionBoundingBox_, doesSelectRightInEditableLock,
   checkDocSelectable, getSelected, resetSelectionToDocStart, flash_, collpaseSelection, getSelectionText
@@ -81,18 +83,17 @@ export const activate = (options: CmdOptions[kFgCmd.visualMode], count: number):
     let node: Text | null, str: string | undefined, offset: number
     if (!isHTML_()) { return 0 }
     prepareCrop_()
-    const nodes = doc.createTreeWalker(initialScope.r || doc.body || docEl_unsafe_()!, NodeFilter.SHOW_TEXT)
+    const nodes = doc.createTreeWalker(scope || doc.body || docEl_unsafe_()!, NodeFilter.SHOW_TEXT)
     while (node = nodes.nextNode() as Text | null) {
       if (50 <= (str = node.data).length && 50 < str.trim().length) {
         const element = node.parentElement
-        if (element && (OnFirefox || !notSafe_not_ff_!(element))
-            && getVisibleClientRect_(element as SafeElement) && !getEditableType_(element)) {
+        if (element && isSafeEl_(element) && getVisibleClientRect_(element) && !getEditableType_(element)) {
           break
         }
       }
     }
     if (!node) {
-      if (initialScope.r) {
+      if (scope) {
         curSelection = getSelection_()
         scope = null
         return establishInitialSelectionAnchor()
@@ -127,7 +128,7 @@ export const activate = (options: CmdOptions[kFgCmd.visualMode], count: number):
   const getDirection = function (magic?: string): kDirTy.left | kDirTy.right | kDirTy.unknown {
     if (di_ !== kDirTy.unknown) { return di_ }
     const oldDiType = diType_, sel = curSelection, anchorNode = getAccessibleSelectedNode(sel)
-    let num1 = -1, num2: number
+    let num1 = -2, num2: number
     if (OnFirefox && !anchorNode) {
       diType_ = DiType.Normal
       return di_ = kDirTy.right
@@ -147,17 +148,14 @@ export const activate = (options: CmdOptions[kFgCmd.visualMode], count: number):
       }
     }
     // editable text elements
-    const lock = OnFirefox ? null : insert_Lock_()
-    if (lock && parentNode_unsafe_s(lock) === anchorNode) {
-      if (oldDiType & DiType.Unknown && getEditableType_<0>(lock) > EditableType.MaxNotTextModeElement) {
-        const child = (OnFirefox ? (anchorNode as Element).childNodes as NodeList
-            : GetChildNodes_not_ff!(anchorNode as Element)
-            )[num1 >= 0 ? num1 : selOffset_(sel)] as Node | undefined
-        if (lock === child || /** tend to trust that the selected is a textbox */ !child) {
+    if (!OnFirefox && raw_insert_lock && parentNode_unsafe_s(raw_insert_lock) === anchorNode) {
+      if (oldDiType & DiType.Unknown && getEditableType_<0>(raw_insert_lock) > EditableType.MaxNotEditableElement) {
+        const child = getNodeChild_(anchorNode!, sel, num1 + 2)
+        if (raw_insert_lock === child || /** tend to trust that the selected is a textbox */ !child) {
           if (!OnChrome || Build.MinCVer >= BrowserVer.Min$selectionStart$MayBeNull
               || chromeVer_ > BrowserVer.Min$selectionStart$MayBeNull - 1
-              ? textOffset_(lock as TextElement) != null
-              : safeCall(textOffset_, lock as TextElement) != null) {
+              ? textOffset_(raw_insert_lock as TextElement) != null
+              : safeCall(textOffset_, raw_insert_lock as TextElement) != null) {
             diType_ = DiType.TextBox | (oldDiType & DiType.isUnsafe)
           }
         }
@@ -284,7 +282,7 @@ const getNextRightCharacter = (isMove: BOOL): string => {
           , di_ === kDirTy.right || doesSelectRightInEditableLock())!)
     }
     if (!diType_) {
-      let focusNode = getAccessibleSelectedNode(sel, 1)
+      const focusNode = getAccessibleSelectedNode(sel, 1)
       if (OnFirefox && !focusNode) { return "" }
       if (isNode_(focusNode!, kNode.TEXT_NODE)) {
         const i = selOffset_(sel, 1), str = focusNode.data;
@@ -337,16 +335,16 @@ const runMovements = (direction: ForwardDir, granularity: kG | kVimG.vimWord, co
         fixWord = !Build.NativeWordMoveOnFirefox || shouldSkipSpaceWhenMovingRight
         if (!Build.NativeWordMoveOnFirefox) { count1 -= fixWord as boolean | BOOL as BOOL }
       } else {
-        fixWord = !(Build.OS & (1 << kOS.win)) ? shouldSkipSpaceWhenMovingRight
-            : !(Build.OS & ~(1 << kOS.win)) ? !shouldSkipSpaceWhenMovingRight
+        fixWord = !(Build.OS & kBOS.WIN) ? shouldSkipSpaceWhenMovingRight
+            : Build.OS === kBOS.WIN as number ? !shouldSkipSpaceWhenMovingRight
             : (os_ > kOS.MAX_NOT_WIN) !== shouldSkipSpaceWhenMovingRight
-        OnChrome && !!(Build.OS & (1 << kOS.win)) && (!(Build.OS & ~(1 << kOS.win)) || os_ > kOS.MAX_NOT_WIN)
+        OnChrome && Build.OS & kBOS.WIN && (Build.OS === kBOS.WIN as number || os_ > kOS.MAX_NOT_WIN)
             && (Build.MinCVer >= BrowserVer.MinOnWindows$Selection$$extend$stopWhenWhiteSpaceEnd
                 || chromeVer_ > BrowserVer.MinOnWindows$Selection$$extend$stopWhenWhiteSpaceEnd - 1)
             && (fixDeltaHasOnlySpaces_cr_win = moveRightByWordButNotSkipSpaces!(0))
             && (fixDeltaHasOnlySpaces_cr_win = --count1 ? null : fixDeltaHasOnlySpaces_cr_win)
-        if (Build.OS & (1 << kOS.win)) {
-          count1 -= (Build.OS & ~(1 << kOS.win) ? fixWord > // lgtm [js/implicit-operand-conversion]
+        if (Build.OS & kBOS.WIN) {
+          count1 -= (Build.OS !== kBOS.WIN as number ? fixWord > // lgtm [js/implicit-operand-conversion]
               shouldSkipSpaceWhenMovingRight : fixWord) as unknown as BOOL // lgtm [js/implicit-operand-conversion]
         }
       }
@@ -362,13 +360,13 @@ const runMovements = (direction: ForwardDir, granularity: kG | kVimG.vimWord, co
     }
     granularity - kG.lineBoundary || hudTip(kTip.selectLineBoundary, 2)
     if (!fixWord) {
-      OnChrome && Build.OS & (1 << kOS.win) && fixDeltaHasOnlySpaces_cr_win !== undefined
+      OnChrome && Build.OS & kBOS.WIN && fixDeltaHasOnlySpaces_cr_win !== undefined
           && isMove && /* moveRightByWordButNotSkipSpaces->extend() make diType safe */ collapseToRight(kDirTy.right)
       return
     }
     if (OnFirefox && Build.NativeWordMoveOnFirefox) { /* then shouldSkipSpaceWhenMovingRight is true */ }
     else if (!shouldSkipSpaceWhenMovingRight) { // OnFirefox || OS === Win
-      OnChrome && Build.OS & (1 << kOS.win)
+      OnChrome && Build.OS & kBOS.WIN
           ? moveRightByWordButNotSkipSpaces!(fixDeltaHasOnlySpaces_cr_win)
           : moveRightByWordButNotSkipSpaces!()
       return
@@ -423,7 +421,7 @@ const runMovements = (direction: ForwardDir, granularity: kG | kVimG.vimWord, co
 const moveRightByWordButNotSkipSpaces = OnFirefox && Build.NativeWordMoveOnFirefox ? null
       : ((testOnlySpace_cr_win?: InfoToMoveRightByWord | null | 0): InfoToMoveRightByWord | null | boolean => {
   let newLen: number, changeLen: number, toGoLeft: number
-  if (OnChrome && Build.OS & (1 << kOS.win) && testOnlySpace_cr_win) {
+  if (OnChrome && Build.OS & kBOS.WIN && testOnlySpace_cr_win) {
     newLen = testOnlySpace_cr_win[0], changeLen = testOnlySpace_cr_win[1], toGoLeft = testOnlySpace_cr_win[2]
   } else {
     let oldStr = "" + <SelWithToStr> curSelection, oldLen = oldStr.length
@@ -525,36 +523,56 @@ const selectLine = (count1: number): void => {
   }
 }
 
-const ensureLine = (command1: number): void => {
-  let di = getDirection()
-  if (di && command1 < VisualAction.MinNotWrapSelectionModify
-      && command1 >= VisualAction.MinWrapSelectionModify && !diType_ && selType() === SelType.Caret) {
-    di = (1 & ~command1) as ForwardDir // old Di
+const ensureLine = (command1: number, s0: string): void => {
+  let di = getDirection(), len = 2, noBacked: BOOL | false = 0
+  if (command1 < VisualAction.MinNotWrapSelectionModify && command1 >= VisualAction.MinWrapSelectionModify
+      && !diType_ && (di && selType() === SelType.Caret || (OnFirefox ? (<RegExpOne> /^\r?\n$/).test(
+          "" + <SelWithToStr> curSelection) : "" + <SelWithToStr> curSelection === "\n"))) {
+    selType() === SelType.Range && collpaseSelection(curSelection, 1 - di)
+    di = di_ = (1 & ~command1) as ForwardDir
     modify(di, kG.lineBoundary)
     selType() !== SelType.Range && modify(di, kG.line)
-    di_ = di
-    reverseSelection()
-    let len = ("" + <SelWithToStr> curSelection).length
-    modify(di = di_ = 1 - di, kG.lineBoundary);
-    ("" + <SelWithToStr> curSelection).length - len || modify(di, kG.line)
-    return
+    noBacked = len = 1
   }
-  for (let _iter = 2; 0 < _iter--; ) {
-    reverseSelection()
-    di = di_ = (1 - di) as ForwardDir
-    modify(di, kG.lineBoundary)
+  for (; 0 < len--; ) {
+    if (noBacked !== !1) {
+      reverseSelection()
+      di = di_ = (1 - di) as ForwardDir
+    }
+    let s1 = noBacked ? "" : "" + <SelWithToStr> curSelection, backed: string | 0 = 0
+    if (!(di ? s1.endsWith("\n") : s1.startsWith("\n"))) {
+      const r1 = !diType_ && s1 && getAccessibleSelectedNode(curSelection, 1)
+      const r2 = r1 && selOffset_(curSelection, 1)
+      if (s1 && (len || !(<RegExpOne>/\r|\n/).test(s1.slice(di ? OnFirefox ? -3 : -2 : 0).slice(0, OnFirefox ?3 :2)))) {
+        modify(1 - di, kG.character)
+        backed = "" + <SelWithToStr> curSelection
+        backed + "\n" === s1 ? backed = 0
+        : backed === s1 && (backed = 0, // sel.addRange will reset selection direction on C107, so have to use extend
+            r1 ? curSelection.extend(r1, r2 as number) : modify(di, kG.character))
+      }
+      modify(di, kG.lineBoundary + <BOOL> noBacked); kG.lineBoundary satisfies 3; kG.line satisfies 4
+      const reduced = !len && r1 && di !== (command1 & 1)
+      const s2 = backed || reduced ? "" + <SelWithToStr> curSelection : ""
+      if (backed && s2 === backed) {
+        modify(di, kG.character)
+        modify(di, kG.lineBoundary)
+      } else if (reduced && (s2.length >= s0.length)) {
+        curSelection.extend(r1, r2 as number)
+      }
+    }
+    if (noBacked && !diType_) { len++, noBacked = !1 }
   }
 }
 
-  let mode = mode_
+  let mode = mode_, s0_line: string = ""
   if (command > VisualAction.MaxNotScroll) {
     executeScroll(1, command - VisualAction.ScrollDown ? -count : count, kScFlag.scBy)
     return;
   }
   if (command > VisualAction.MaxNotNewMode) {
-    if (command === VisualAction.EmbeddedFindMode) {
+    if (command > VisualAction.EmbeddedFindMode - 1) {
       hudHide() // it should auto keep HUD showing the mode text
-      post_({ H: kFgReq.findFromVisual });
+      post_({ H: kFgReq.findFromVisual, c: command })
     } else {
       options.m = command - VisualAction.MaxNotNewMode;
       contentCommands_[kFgCmd.visualMode](options as typeof options & SafeObject, 1)
@@ -575,7 +593,8 @@ const ensureLine = (command1: number): void => {
     highlightRange(curSelection)
     return
   }
-  mode === Mode.Caret && collapseToFocus(0)
+  mode === Mode.Caret && (command > VisualAction.MaxNotFind || command < VisualAction.MaxNotYank + 1)
+      && collapseToFocus(0)
   if (command > VisualAction.MaxNotFind) {
     findV(command - VisualAction.PerformFind ? count : -count)
     return;
@@ -584,7 +603,7 @@ const ensureLine = (command1: number): void => {
     command === VisualAction.YankLine && selectLine(count)
     yank(([kYank.Exit, kYank.Exit, kYank.NotExit, ReuseType.current, ReuseType.newFg, kYank.RichTextButNotExit
           ] as const)[command - VisualAction.Yank])
-    if (command !== VisualAction.YankWithoutExit && command !== VisualAction.YankRichText) { return; }
+    return
   } else if (command > VisualAction.MaxNotLexical) {
     const entity = (command - VisualAction.MaxNotLexical) as kG.sentence | kG.word
     mode_ = VisualModeNS.Mode.Visual
@@ -600,6 +619,7 @@ const ensureLine = (command1: number): void => {
   } else if (command === VisualAction.Reverse) {
     reverseSelection()
   } else if (command >= VisualAction.MinWrapSelectionModify) {
+    s0_line += mode === Mode.Line ? <SelWithToStr> curSelection : s0_line
     runMovements((command & 1) as 0 | 1, command >> 1, count)
   }
   if (mode === Mode.Caret) {
@@ -608,10 +628,12 @@ const ensureLine = (command1: number): void => {
       extend(kDirTy.left)
     }
   } else if (mode === Mode.Line) {
-    ensureLine(command)
+    ensureLine(command, s0_line)
   }
   getDirection("")
-  diType_ & DiType.Complicated || scrollIntoView_s(getSelectionFocusEdge_(curSelection, di_))
+  diType_ & DiType.Complicated ||
+  scrollIntoView_s(getSelectionFocusEdge_(curSelection, di_), getSelectionBoundingBox_(curSelection)
+      , command < VisualAction.MinNotWrapSelectionModify ? (command & VisualAction.inc) as 0 | 1 : 2)
 }
 
     const typeIdx = { None: SelType.None, Caret: SelType.Caret, Range: SelType.Range }
@@ -649,8 +671,11 @@ const ensureLine = (command1: number): void => {
           if (BrowserVer.MinSelExtendForwardOnlySkipWhitespaces <= BrowserVer.MinMaybeUnicodePropertyEscapesInRegExp
               && OnChrome) {
             WordsRe_ff_old_cr = tryCreateRegExp(options.w!)!
-          } else {
+          } else if (Build.BTypes === BrowserType.Firefox as number
+              && Build.MinFFVer >= FirefoxBrowserVer.MinEnsuredUnicodePropertyEscapesInRegExp) {
             // note: here thinks the `/^[^]*[~~~]/` has acceptable performance
+            WordsRe_ff_old_cr = <RegExpU> /^[^]*[\p{L}\p{Nd}_]/u
+          } else {
             WordsRe_ff_old_cr = tryCreateRegExp(options.w! || "^[^]*[\\p{L}\\p{Nd}_]", options.w! ? "" : "u" as never)!
           }
       }
@@ -712,8 +737,8 @@ const ensureLine = (command1: number): void => {
     set_scrollingTop(scrollingEl_(1))
     getPixelScaleToScroll()
     curSelection = getSelected(initialScope)
-  let scope = initialScope.r as Exclude<typeof initialScope.r, undefined>, diff: number
-  toggleSelectableStyle(1)
+    let scope = initialScope.r as Exclude<typeof initialScope.r, undefined>, diff: number
+    toggleSelectableStyle(1)
   {
     let type: SelType = selType()
     retainSelection = type === SelType.Range
@@ -721,7 +746,7 @@ const ensureLine = (command1: number): void => {
       if (!insert_Lock_() && /* (type === SelType.Caret || type === SelType.Range) */ type) {
         prepareCrop_();
         const br = getSelectionBoundingBox_(curSelection, 1)
-        if (!br || !cropRectToVisible_(br.l, br.t, br.r, br.b)) {
+        if (!br || !cropRectS_(br)) {
           resetSelectionToDocStart(curSelection)
         } else if (type === SelType.Caret) {
           extend(kDirTy.right)
@@ -734,22 +759,22 @@ const ensureLine = (command1: number): void => {
     modeName = mode_ = diff ? Mode.Caret : mode_
     di_ = type - SelType.Caret ? kDirTy.unknown : kDirTy.right
 
-  if (OnFirefox && raw_insert_lock
-      || /* type === SelType.None */ !type && (options.$else || !establishInitialSelectionAnchor())) {
-      deactivate()
-      runFallbackKey(options, kTip.needSel)
-      return
-  }
-  if (mode_ === Mode.Caret && type > SelType.Range - 1) {
-      // `sel` is not changed by @establish... , since `isRange`
-    getDirection()
-    collapseToRight(options.s != null ? <BOOL> +!options.s : di_
-        && <BOOL> +(("" + <SelWithToStr> curSelection).length > 1))
-  }
+    if (OnFirefox && raw_insert_lock
+        || /* type === SelType.None */ !type && (options.$else || !establishInitialSelectionAnchor())) {
+        deactivate()
+        runFallbackKey(options, kTip.needSel)
+        return
+    }
+    if (mode_ === Mode.Caret && type > SelType.Range - 1) {
+        // `sel` is not changed by @establish... , since `isRange`
+      getDirection()
+      collapseToRight(options.s != null ? <BOOL> +!options.s : di_
+          && <BOOL> +(("" + <SelWithToStr> curSelection).length > 1))
+    }
   }
   replaceOrSuppressMost_(kHandler.visual, (event: HandlerNS.Event): HandlerResult => {
-    const doPass = event.i === kKeyCode.menuKey && (Build.OS & ~(1 << kOS.mac) && Build.OS & (1 << kOS.mac) ? os_
-        : !!(Build.OS & ~(1 << kOS.mac))) || event.i === kKeyCode.ime,
+    const doPass = Build.OS !== kBOS.MAC as number && (!(Build.OS & kBOS.MAC) || os_) && event.i === kKeyCode.menuKey
+        || event.i === kKeyCode.ime,
     key = doPass ? "" : getMappedKey(event, kModeId.Visual), keybody = keybody_(key);
     let count: number
     if (!key || isEscape_(key)) {
@@ -765,9 +790,10 @@ const ensureLine = (command1: number): void => {
       return esc!(HandlerResult.Prevent)
     }
     const childAction = keyMap[currentPrefix + key],
-    newActions = (<RegExpOne> /^v\d/).test(key) ? +key.slice(1) : childAction || keyMap[key]
-    if (!(newActions as VisualAction >= 0)) {
-      // asserts newActions is VisualAction.NextKey | NaN undefined
+    newActions = (<RegExpOne> /^v\d/).test(key) ? +key.slice(1) : key === "0" && currentKeys ? void 0
+        : childAction || keyMap[key]
+    if (!(newActions! >= 0)) {
+      // asserts newActions is VisualAction.NextKey | undefined (NaN)
       currentPrefix = newActions! < 0 ? key : ""
       return keybody < kChar.minNotF_num && keybody > kChar.maxNotF_num ? HandlerResult.Nothing
           : newActions ? HandlerResult.Prevent

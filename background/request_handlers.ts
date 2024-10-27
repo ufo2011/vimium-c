@@ -1,36 +1,37 @@
 import {
   set_cPort, set_cRepeat, set_cOptions, needIcon_, set_cKey, cKey, get_cOptions, set_reqH_, reqH_, restoreSettings_,
   innerCSS_, framesForTab_, cRepeat, curTabId_, Completion_, CurCVer_, OnChrome, OnEdge, OnFirefox, setIcon_, blank_,
-  substitute_, paste_, keyToCommandMap_, CONST_, copy_, set_cEnv, settingsCache_, vomnibarBgOptions_, setTeeTask_,
-  curIncognito_, inlineRunKey_, CurFFVer_, Origin2_
+  substitute_, paste_, keyToCommandMap_, CONST_, copy_, set_cEnv, settingsCache_, vomnibarBgOptions_, replaceTeeTask_,
+  curIncognito_, inlineRunKey_, CurFFVer_, Origin2_, focusAndExecuteOn_, set_focusAndExecuteOn_, curWndId_, bgC_
 } from "./store"
 import * as BgUtils_ from "./utils"
 import {
   tabsUpdate, runtimeError_, selectTab, selectWnd, browserSessions_, browserWebNav_, downloadFile, import2, Q_,
-  getCurTab, getGroupId
+  getCurTab, getGroupId, Tabs_, tabsGet, selectWndIfNeed
 } from "./browser"
+import { convertToUrl_ } from "./normalize_urls"
 import { findUrlEndingWithPunctuation_, parseSearchUrl_, parseUpperUrl_ } from "./parse_urls"
 import * as settings_ from "./settings"
 import {
   findCPort, isNotVomnibarPage, indexFrame, safePost, complainNoSession, showHUD, complainLimits, ensureInnerCSS,
-  getParentFrame, sendResponse, showHUDEx, getFrames_
+  getParentFrame, sendResponse, showHUDEx, getFrames_, requireURL_
 } from "./ports"
 import { exclusionListening_, getExcluded_ } from "./exclusions"
-import { setOmniStyle_ } from "./ui_css"
+import { setMediaState_ } from "./ui_css"
 import { contentI18n_, extTrans_, i18nReadyExt_, loadContentI18n_, transPart_, trans_ } from "./i18n"
-import { keyRe_, parseVal_ } from "./key_mappings"
+import { keyRe_, makeCommand_ } from "./key_mappings"
 import {
-  sendFgCmd, replaceCmdOptions, onConfirmResponse, executeCommand, portSendFgCmd, executeExternalCmd,
-  waitAndRunKeyReq, runNextCmdBy, parseFallbackOptions
+  sendFgCmd, replaceCmdOptions, onConfirmResponse, executeCommand, portSendFgCmd, executeExternalCmd, runNextCmdBy,
+  waitAndRunKeyReq, parseFallbackOptions, onBeforeConfirm, concatOptions, overrideCmdOptions
 } from "./run_commands"
 import { parseEmbeddedOptions, runKeyWithCond } from "./run_keys"
-import { focusOrLaunch_, openJSUrl, openUrlReq } from "./open_urls"
+import { FindModeHistory_, Marks_ } from "./tools"
+import { focusOrLaunch_, openJSUrl, openUrlReq, parseOpenPageUrlOptions } from "./open_urls"
 import {
   initHelp, openImgReq, framesGoBack, enterVisualMode, showVomnibar, parentFrame, nextFrame, performFind, focusFrame,
-  handleImageUrl
+  handleImageUrl, findContentPort_
 } from "./frame_commands"
-import { FindModeHistory_, Marks_ } from "./tools"
-import { convertToUrl_ } from "./normalize_urls"
+import { onSessionRestored_ } from "./tab_commands"
 
 let gTabIdOfExtWithVomnibar: number = GlobalConsts.TabIdNone
 let _pageHandlers: Promise<typeof import("./page_handlers")> | null
@@ -122,9 +123,9 @@ set_reqH_([
       request.n && runNextCmdBy(0, request.n)
       return
     }
-    const o2 = request.o || {}
-    query = request.t.trim() && substitute_(request.t.trim(), SedContext.pageText, o2.s).trim()
-        || (request.c ? paste_(o2.s) : "")
+    let o2 = request.o || parseOpenPageUrlOptions(request.n), exOut: InfoOnSed = {}
+    query = request.t.trim() && substitute_(request.t.trim(), SedContext.pageText, o2.s, exOut).trim()
+        || (request.c ? paste_(o2.s, 0, exOut = {}) : "")
     void Promise.resolve(query).then((query2: string | null): void => {
       let err = query2 === null ? "It's not allowed to read clipboard"
         : (query2 = query2.trim()) ? "" : trans_("noSelOrCopied")
@@ -134,13 +135,13 @@ set_reqH_([
         request.n && runNextCmdBy(0, request.n)
         return
       }
-      o2.k = o2.k == null ? search!.k : o2.k // not change .testUrl, in case a user specifies it
+      o2.k = exOut.keyword_ ?? (o2.k == null ? search!.k : o2.k) // not change .testUrl, in case a user specifies it
       reqH_[kFgReq.openUrl]({ u: query2!, o: o2, r: ReuseType.current, n: parseFallbackOptions(request.n) || {} }, port)
     })
   },
   /** kFgReq.gotoSession: */ (request: FgReq[kFgReq.gotoSession], port?: Port): void => {
-    const id = request.s, active = request.a !== false
-    set_cPort(findCPort(port)!)
+    const id = request.s, active = request.a !== 0, forceInCurWnd = request.a === 2, curWndId = curWndId_
+    set_cPort(findCPort(port)!) // no port if on browser:// tab and called from omnibox
     if (typeof id === "number") {
       selectTab(id, (tab): void => {
         runtimeError_() ? showHUD(trans_("noTabItem")) : selectWnd(tab)
@@ -152,13 +153,21 @@ set_reqH_([
       complainNoSession()
       return
     }
-    browserSessions_().restore(id[1], (): void => {
+    const curTabId = port && port.s.tabId_ >= 0 ? port.s.tabId_ : curTabId_ >= 0 ? curTabId_ : null
+    const activeId = active ? null : curTabId
+    browserSessions_().restore(id[1], (res): void => {
       const err = runtimeError_()
-      err && showHUD(trans_("noSessionItem"))
+      err ? showHUD(trans_("noSessionItem")) : onSessionRestored_(curWndId, res, activeId).then(newTab => {
+        if (forceInCurWnd && curTabId && newTab && newTab.windowId !== curWndId) {
+          tabsGet(curTabId, (tab): void => {
+            Tabs_.move(newTab.id, { windowId: curWndId, index: tab ? tab.index + 1 : -1 }, runtimeError_)
+            tabsUpdate(newTab.id, { active: true })
+          })
+        }
+      })
       return err
     })
-    const tabId = active ? -1 : port!.s.tabId_ >= 0 ? port!.s.tabId_ : curTabId_
-    if (tabId >= 0) { selectTab(tabId) }
+    activeId && selectTab(activeId, runtimeError_)
   },
   /** kFgReq.openUrl: */ _AsReqH<kFgReq.openUrl>(openUrlReq),
   /** kFgReq.onFrameFocused: */ (_0: FgReq[kFgReq.onFrameFocused], port: Port): void => {
@@ -185,15 +194,15 @@ set_reqH_([
     if (!port) {
       port = indexFrame((request as ExclusionsNS.Details).tabId, (request as ExclusionsNS.Details).frameId)
       if (!port) {
-        const ref = Build.MV3 || Build.LessPorts ? framesForTab_.get((request as ExclusionsNS.Details).tabId) : null
+        const ref = framesForTab_.get((request as ExclusionsNS.Details).tabId)
         ref && ref.flags_ & Frames.Flags.ResReleased && (ref.flags_ |= Frames.Flags.UrlUpdated)
         return
       }
     }
     const { s: sender } = port, oldUrl = sender.url_, ref = framesForTab_.get(sender.tabId_)
+    const url = sender.url_ = from_content ? request.u! : (request as ExclusionsNS.Details).url
     if (ref && ref.lock_) { return }
-    const pattern = !exclusionListening_ ? null
-        : getExcluded_(sender.url_ = from_content ? request.u! : (request as ExclusionsNS.Details).url, sender),
+    const pattern = !exclusionListening_ ? null : getExcluded_(url, sender),
     status = pattern === null ? Frames.Status.enabled : pattern ? Frames.Status.partial : Frames.Status.disabled
     if (sender.status_ !== status) {
       sender.status_ = status
@@ -239,20 +248,26 @@ set_reqH_([
       , msgId?: number): FgRes[kFgReq.execInChild] | Port | void => {
     const tabId = port.s.tabId_, ref = getFrames_(port), url = request.u, frameId = request.f
     if (!ref || ref.ports_.length < 2) { return false }
-    let iport: Port | null | undefined
+    const childOrigin = !OnFirefox && url.startsWith("http") ? new URL(url).origin : null
+    let iport: Port | 0 | undefined, iport2: Port | 0 | undefined
     if (OnFirefox && (Build.MinFFVer >= FirefoxBrowserVer.Min$runtime$$getFrameId
         || CurFFVer_ > FirefoxBrowserVer.Min$runtime$$getFrameId - 1)) {
       iport = ref.ports_.find(i => i.s.frameId_ === frameId)
     }
     else for (const i of ref.ports_) {
-      if (i.s.url_ === url && i !== ref.top_) {
-        if (iport) { iport = null; break }
-        iport = i
+      if (i !== ref.top_ && i !== port) {
+        if (i.s.url_ === url) {
+          if (!(iport = iport ? 0 : i)) { break }
+        }
+        if (childOrigin && iport2 !== 0 && i.s.url_.startsWith("http") && new URL(i.s.url_).origin === childOrigin) {
+          iport2 = iport2 ? 0 : i
+        }
       }
     }
+    iport = iport ?? iport2
     if (iport && iport !== port) {
       set_cKey(request.k)
-      focusAndExecute(request, port, iport, 1)
+      focusAndExecute(request, port, iport, 1, 1)
       return true
     } else if (!browserWebNav_()) {
       return false
@@ -268,7 +283,7 @@ set_reqH_([
         const port2 = childId && indexFrame(tabId, childId)
         if (port2) {
           set_cKey(request.k)
-          focusAndExecute(request, port, port2, 1)
+          focusAndExecute(request, port, port2, 1, 1)
         }
         OnChrome || msgId && sendResponse(port, msgId, !!port2)
         // here seems useless if to retry to inject content scripts,
@@ -290,13 +305,14 @@ set_reqH_([
     set_cKey(kKeyCode.None) // it's only from LinkHints' task / Vomnibar reloading, so no Key to suppress
     if (request.u != null) {
       const {m, t} = request, isLinkJob = m >= HintMode.min_link_job && m <= HintMode.max_link_job
-      let url = request.u
+      let url = request.u, exOut: InfoOnSed = {}
       url = isLinkJob ? findUrlEndingWithPunctuation_(url, true) : url
-      url = substitute_(url, isLinkJob ? SedContext.pageURL : SedContext.pageText, request.o && request.o.s)
-      replaceCmdOptions<kBgCmd.showVomnibar>({ url, newtab: t != null ? !!t : !isLinkJob, keyword: request.o.k })
+      url = substitute_(url, isLinkJob ? SedContext.pageURL : SedContext.pageText, request.o && request.o.s, exOut)
+      replaceCmdOptions<kBgCmd.showVomnibar>({ url, newtab: t != null ? !!t : !isLinkJob
+          , keyword: exOut.keyword_ ?? request.o.k })
       replaceForwardedOptions(request.f)
       set_cRepeat(1)
-    } else if (request.r !== true) {
+    } else if (request.r !== 9) {
       return
     } else if (get_cOptions<any>() == null
         || (get_cOptions<kBgCmd.showVomnibar>() as SafeObject as SafeObject & CmdOptions[kFgCmd.vomnibar]
@@ -309,7 +325,7 @@ set_reqH_([
       return
     }
     set_cPort(port)
-    showVomnibar(inner)
+    showVomnibar(!!inner)
   },
   /** kFgReq.omni: */ (request: FgReq[kFgReq.omni], port: Port): void => {
     if (isNotVomnibarPage(port, false)) { return }
@@ -318,11 +334,10 @@ set_reqH_([
           port, (request.i! | 0) as 0 | 1 | 2))
   },
   /** kFgReq.copy: */ (request: FgReq[kFgReq.copy], port: Port): void => {
-    let str: string | string[] | object[] | undefined
     if (request.i != null) {
       const richText = (request.r || "") + "" as Extract<typeof request.r, string>
       const i0 = request.i, title = richText.includes("name") ? request.u : ""
-      void Promise.all<"data:" | "" | [Blob, string] | null | 0, [Tab] | never[] | null | undefined>([
+      void Promise.all<"data:" | "" | [Blob | null, string] | null | 0, [Tab] | never[] | null | undefined>([
         (<RegExpI> /^data:/i).test(i0) ? Promise.resolve(i0) : BgUtils_.fetchOnlineResources_(i0 || request.u),
         OnFirefox && !curIncognito_ ? Q_(getCurTab) : null
       ]).then(([res, curTab]) => {
@@ -334,14 +349,17 @@ set_reqH_([
           res ? showHUD("", kTip.notImg) : showHUD(trans_(res === 0 ? "downloadTimeout" : "downloadFail"))
           return
         }
-        let head = dataUrl.slice(prefixLen, prefixLen + 8)
-        head = contentType.includes("base64") ? BgUtils_.DecodeURLPart_(head, "atob") : head.slice(0, 6)
+        let head = dataUrl.slice(prefixLen, prefixLen + 24)
+        head = contentType.includes("base64") ? BgUtils_.DecodeURLPart_(head, "atob") : head.slice(0, 16)
         const tag = head.startsWith("\x89PNG") ? "PNG" : head.startsWith("\xff\xd8\xff") ? "JPEG"
             : (<RegExpOne> /^GIF8[79]a/).test(head) ? "GIF"
+            : (<RegExpOne> /^ftypavi[fs]/).test(head.slice(4)) ? "AVIF"
+            : (<RegExpOne> /^\xff\xd8\xff(\xdb|\xe0|\xee|\xe1[^][^]Exif\0\0)/).test(head) ? "JPEG"
+            : head.slice(8, 12) === "WEBP" ? "WebP"
             : (mime.split("/")[1] || "").toUpperCase() || mime
         const text = title && (<RegExpI> /^(http|ftp|file)/i).test(title) ? title : ""
         const wantSafe = richText.includes("safe") && tag !== "GIF" || richText.includes("force")
-        handleImageUrl(isStr ? res : "", isStr ? null : res[0]
+        handleImageUrl(Build.MV3 ? dataUrl as "data:" : isStr ? res : "", isStr ? null : res[0]
             , wantSafe && tag !== "PNG" ? kTeeTask.DrawAndCopy : kTeeTask.CopyImage, (ok): void => {
           showHUD(trans_(ok ? "imgCopied" : "failCopyingImg", [ok === 1 ? "HTML" : wantSafe ? "PNG" : tag]))
         }, title, text, null, OnFirefox ? !curTab || !curTab[0] || getGroupId(curTab[0]) !== null : false)
@@ -349,13 +367,39 @@ set_reqH_([
       })
       return
     }
-    str = request.u || request.s || ""
-    const opts2 = request.o || {}
-    const mode1 = request.s != null && request.m || HintMode.DEFAULT
-    const sed = opts2.s, keyword = opts2.k
+    const oriOptions = request.n as CmdOptions[kFgCmd.autoOpen] | undefined
+    const opts2 = request.o || oriOptions && parseOpenPageUrlOptions(oriOptions) || {}
+    const isInOpenAndCopy = !!(oriOptions && oriOptions.copy && oriOptions.o)
+    const rawStr = request.s
+    const mode1 = rawStr != null && request.m || HintMode.DEFAULT
+    const sed = isInOpenAndCopy ? null : opts2.s, keyword = isInOpenAndCopy ? null : opts2.k
     const correctUrl = mode1 >= HintMode.min_link_job && mode1 <= HintMode.max_link_job
-    && (!sed || sed.r !== false)
-    const decode = request.d ? opts2.d !== false : !!opts2.d
+        && (!sed || sed.r !== false)
+    if (!rawStr && oriOptions && !(oriOptions.type === "frame"
+        || request.u && !port.s.frameId_ && "tab-url tab".includes(oriOptions.type || ""))) {
+      const type = oriOptions.type
+      const opts = concatOptions(oriOptions, BgUtils_.safer_({ url: null,
+          type: type === "tab" && oriOptions.url || type === "tab-url" ? null : type === "tab-title" ? "title" : type
+      } satisfies KnownOptions<kBgCmd.copyWindowInfo> & { url: null }))
+      const topPort = getFrames_(port)!.top_
+      port = topPort && !(topPort.s.flags_ & Frames.Flags.ResReleased) ? topPort : port
+      set_cEnv(null)
+      executeCommand(makeCommand_("copyCurrentUrl", opts), 1, cKey, port, 1
+          , oriOptions.$f && {c: oriOptions.$f, r: oriOptions.$retry, u: 0, w: 0 })
+      return
+    }
+    let str: string | string[] | object[] | undefined = request.u || rawStr || ""
+    const decode = !rawStr && (request.d ? opts2.d !== false : !!opts2.d)
+    const rawTrim = request.t ?? oriOptions?.trim
+    if (rawTrim) {
+      const trim: (s: string) => string = rawTrim === "start" || rawTrim === "left" ? i => i.trimLeft()
+          : rawTrim === "end" || rawTrim === "right" ? i => i.trimRight() : i => i.trim()
+      if (typeof str === "string") {
+        str = trim(str)
+      } else {
+        for (let i = str.length; 0 <= --i; ) { str[i] = trim(str[i] as AllowToString + "") }
+      }
+    }
     if (decode) {
       if (typeof str !== "string") {
         for (let i = str.length; 0 <= --i; ) {
@@ -367,16 +411,21 @@ set_reqH_([
         str = BgUtils_.decodeUrlForCopy_(str)
       }
     } else if (typeof str === "string") {
-      if (str.length < 4 && str.trim() && str[0] === " ") {
-        str = ""
-      }
+      str = str.length < 4 && !str.trim() && (str[0] === " " || "\n\n\n".includes(str)) ? "" : str
     }
-    let str2 = str && copy_(str, request.j, sed, keyword)
-    str2 = request.s && typeof request.s === "object" ? `[${request.s.length}] ` + request.s.slice(-1)[0] : str2
-    Promise.resolve(str2).then((str3) => {
+    let hasStr = !!str, str2 = str && copy_(str, request.j, sed, keyword, rawTrim === false)
+    str2 = rawStr && typeof rawStr === "object" ? `[${rawStr.length}] ` + rawStr.slice(-1)[0] : str2
+    Promise.resolve(str2).then((str3): void => {
+      const encodeHex = (s: string): string => {
+        s = JSON.stringify(s).slice(1, -1)
+        return s.trim() ? s : s < "\xff" ? "\\x" + (s.charCodeAt(0) + 0x100).toString(16).slice(1)
+          : BgUtils_.encodeUnicode_(s)
+      }
       set_cPort(port)
+      oriOptions && runNextCmdBy(hasStr ? 1 : 0, oriOptions) ||
       showHUD(decode ? str3.replace(<RegExpG & RegExpSearchable<0>> /%[0-7][\dA-Fa-f]/g, decodeURIComponent)
-          : str3, request.u ? kTip.noUrlCopied : kTip.noTextCopied)
+            : str3.replace(<RegExpG & RegExpSearchable<0>> (str3.trim() ? /[^\S ]/g : /[^]/g), encodeHex)
+          , request.u ? kTip.noUrlCopied : kTip.noTextCopied)
     })
   },
   /** kFgReq.key: */ (request: FgReq[kFgReq.key], port: Port | null): void => {
@@ -410,16 +459,36 @@ set_reqH_([
     }
   },
   /** kFgReq.nextKey: */ _AsReqH<kFgReq.nextKey>(waitAndRunKeyReq),
-  /** kFgReq.marks: */ (request: FgReq[kFgReq.marks], port: Port): void => {
-    set_cPort(port)
-    switch (request.a) {
-    case kMarkAction.create: return Marks_.createMark_(request, port)
-    case kMarkAction.goto: return Marks_.gotoMark_(request, port)
-    case kMarkAction.clear: return Marks_.clear_(request.u)
-    default: return
+  /** kFgReq.marks: */ (request: FgReq[kFgReq.marks], urlPort: Port): void => {
+    if (request.c === kMarkAction.clear) {
+      const removed = Marks_.clear_(request.u)
+      request.f && runNextCmdBy(removed > 0 ? 1 : 0, request.f)
+      return
     }
+    const forced = !!request.f
+    const exOpts: KnownOptions<kBgCmd.marksActivate> = request.c.o satisfies OpenPageUrlOptions | Req.FallbackOptions
+    forced || set_cPort(urlPort)
+    const p = !forced && findContentPort_(urlPort, exOpts.type, request.l) || urlPort
+    void Promise.resolve(p).then((upperPort): void => {
+      if (!forced && (upperPort !== urlPort || !request.u)) {
+        const req2 = request as Req.fg<kFgReq.marks> satisfies Omit<Req.queryUrl<kFgReq.marks>, "U"
+            > as Req.queryUrl<kFgReq.marks>
+        req2.U = ((exOpts.extUrl ? 1 : 0) | (request.c.a ? 2 : 0)) as 0 | 1 | 2 | 3
+        ; (req2 as Extract<FgReq[kFgReq.marks], { c: CmdOptions[kFgCmd.marks] }>).f = true
+        void requireURL_(req2, true, 1, upperPort)
+        return
+      }
+      if (request.c.a === kMarkAction.create) {
+        Marks_.set_(request satisfies MarksNS.FgQuery as MarksNS.FgCreateQuery, urlPort.s.incognito_, urlPort.s.tabId_)
+        showHUDEx(urlPort, "mNormalMarkTask", 1, [ ["mCreate"], [request.l ? "Local" : "Global"], request.n ])
+        runNextCmdBy(1, exOpts)
+      } else {
+        Marks_.goToMark_(exOpts, request as MarksNS.FgGotoQuery, urlPort, request.l && forced ? request.k : 0)
+      }
+    })
   },
   /** kFgReq.focusOrLaunch: */ _AsReqH<kFgReq.focusOrLaunch, false>(focusOrLaunch_),
+  /** kFgReq.beforeCmd: */ _AsReqH<kFgReq.beforeCmd>(onBeforeConfirm),
   /** kFgReq.cmd: */ _AsReqH<kFgReq.cmd>(onConfirmResponse),
   /** kFgReq.removeSug: */ (req: FgReq[kFgReq.removeSug], port?: Port | null): void => {
     if (req.t === "e") {
@@ -431,7 +500,7 @@ set_reqH_([
     const name = type === "tab" ? type : type + " item"
     const cb = (succeed?: boolean | BOOL | void): void => {
       void Promise.resolve(trans_("sugs")).then((sugs): void => {
-        showHUD(trans_(succeed ? "delSug" : "notDelSug", [transPart_(sugs as "t(sugs)", type[0]) || name]))
+        showHUD(trans_(succeed ? "delSug" : "notDelSug", [sugs && transPart_(sugs as "t(sugs)", type[0]) || name]))
       })
     }
     set_cPort(findCPort(port)!)
@@ -463,9 +532,17 @@ set_reqH_([
     // Now that content scripts always auto-reconnect, it's not needed to find a parent frame.
     focusAndExecute(req, port, getFrames_(port)?.top_ || null, req.f)
   },
-  /** kFgReq.setOmniStyle: */ _AsReqH<kFgReq.setOmniStyle>(setOmniStyle_),
-  /** kFgReq.findFromVisual: */ (_: FgReq[kFgReq.findFromVisual], port: Port): void => {
-    replaceCmdOptions<kBgCmd.performFind>({ active: true, returnToViewport: true })
+  /** kFgReq.omniToggleMedia: */ (req: FgReq[kFgReq.omniToggleMedia], omni_port: Port): void => {
+    if (!req.t) {
+      setMediaState_(MediaNS.kName.PrefersColorScheme, req.v, req.b ? 2 : 9, omni_port)
+    } else {
+      overrideCmdOptions<kBgCmd.toggleVomnibarStyle>({ enable: req.v, forced: true }  )
+      bgC_[kBgCmd.toggleVomnibarStyle](null as never, blank_)
+    }
+  },
+  /** kFgReq.findFromVisual: */ (req: FgReq[kFgReq.findFromVisual], port: Port): void => {
+    replaceCmdOptions<kBgCmd.performFind>({ active: true, returnToViewport: true
+        , extend: !!(req.c & 1), direction: req.c >= VisualAction.EmbeddedFindModeToPrev ? "before" : null })
     set_cPort(port), set_cRepeat(1)
     performFind()
   },
@@ -499,16 +576,18 @@ set_reqH_([
     }
   },
   /** kFgReq.downloadLink: */ (req: FgReq[kFgReq.downloadLink], port): void => {
-    const o2 = req.o || {}
-    let url = substitute_(findUrlEndingWithPunctuation_(req.u, true), SedContext.pageURL, o2.s)
-    url = (url !== req.u || o2.k) ? convertToUrl_(url, o2.k, Urls.WorkType.Default) : url
+    const o2 = req.o || {}, exOut: InfoOnSed = {}
+    let url = substitute_(findUrlEndingWithPunctuation_(req.u, true), SedContext.pageURL, o2.s, exOut)
+    const keyword = exOut.keyword_ ?? o2.k
+    url = url !== req.u || keyword ? convertToUrl_(url, keyword, Urls.WorkType.Default) : url
     set_cPort(port)
     showHUD(url, kTip.downloaded)
-    downloadFile(url, req.f, req.r || "", req.m < HintMode.DOWNLOAD_LINK ? (succeed): void => {
+    downloadFile(url, req.f, req.r || "").then(req.m < HintMode.DOWNLOAD_LINK ? (succeed): void => {
       succeed || reqH_[kFgReq.openImage]({ m: HintMode.OPEN_IMAGE, f: req.f, u: url }, port)
-    } : null)
+    } : void 0)
   },
-  /** kFgReq.wait: */ (req: FgReqWithRes[kFgReq.wait], port, msgId): Port => {
+  /** kFgReq.wait: */ (req: FgReqWithRes[kFgReq.wait], port, msgId): Port | TimerType.fake => {
+    if (req === 0) { return TimerType.fake }
     setTimeout(() => { sendResponse(port, msgId, TimerType.fake) }, req)
     return port
   },
@@ -536,25 +615,66 @@ set_reqH_([
   /** kFgReq.omniCopy: */ (req: FgReq[kFgReq.omniCopy], port): void => {
     const title = req.t, url = BgUtils_.decodeUrlForCopy_(req.u)
     let join = title && url ? (vomnibarBgOptions_.actions.find(i => i.startsWith("itemJoin=")) || "").slice(9) : ""
-    join = join ? join.includes("\\") ? parseVal_(join[0] === '"' ? join : `"${join}"`)
-        : BgUtils_.DecodeURLPart_(join) : ": "
+    join = join ? join.includes("\\") ? BgUtils_.tryParse(join[0] === '"' ? join : `"${join}"`)
+        : BgUtils_.DecodeURLPart_(join) : "\n"
     reqH_[kFgReq.copy]({ s: title && url ? title + join + url : url || title
         , d: false, m: HintMode.DEFAULT }, findCPort(port)!)
   },
-  /** kFgReq.didLocalMarkTask: */ (req: FgReq[kFgReq.didLocalMarkTask], port): void => {
-    if (req.i != null) {
-      showHUDEx(port, "mLocalMarkTask", 1, [ [req.m ? "mJumpTo" : "mCreate"], req.i || ["mLastMark"] ])
-    } else {
-      showHUDEx(port, "mCreateLastMark", 1, [])
-    }
+  /** kFgReq.omniCopy: */ (req: FgReq[kFgReq.omniCopied], port): void => {
+    set_cPort(findCPort(port)!)
+    showHUD(req.t, kTip.noTextCopied)
   },
-  /** kFgReq.recheckTee: */ (req: (FgReqWithRes | FgReq)[kFgReq.recheckTee]): boolean | void => {
-    const taskOnce = setTeeTask_(null, null)
+  /** kFgReq.didLocalMarkTask: */ (req: FgReq[kFgReq.didLocalMarkTask], port): void => {
+    showHUDEx(port, "mLocalMarkTask", 1, [ [req.n ? "mCreate" : "mJumpTo"], req.i > 1 ? req.i : ["mLastMark"] ])
+    set_cPort(port)
+    runNextCmdBy(1, req.c.o)
+  },
+  /** kFgReq.recheckTee: */ (): FgRes[kFgReq.recheckTee] => {
+    const taskOnce = replaceTeeTask_(null, null)
     if (taskOnce) {
       clearTimeout(taskOnce.i)
       taskOnce.r && taskOnce.r(false)
     }
-    if (req === 0) { return !taskOnce }
+    return !taskOnce
+  },
+  /** kFgReq.afterTee: */ (req: FgReqWithRes[kFgReq.afterTee], port: Port): FgRes[kFgReq.afterTee] => {
+    const otherPort = req > 0 && indexFrame(port.s.tabId_, req)
+    if (otherPort) {
+      focusFrame(otherPort, false, FrameMaskType.NoMask, 1)
+      return FrameMaskType.NoMask
+    }
+    req <= 0 && reqH_[kFgReq.recheckTee]()
+    return req ? FrameMaskType.NormalNext : FrameMaskType.NoMask
+  },
+  /** kFgReq._deleted1: */ (_req: FgReq[kFgReq._deleted1], _port): void => {
+  },
+  /** kFgReq.syncStatus: */ (req: FgReq[kFgReq.syncStatus], port): void => {
+    const [ locked, isPassKeysReversed, passKeys ] = req.s
+    const newPassKeys = passKeys && (isPassKeysReversed ? "^ " : "") + passKeys.join(" ")
+    const resetMsg: Req.bg<kBgReq.reset> = { N: kBgReq.reset, p: newPassKeys, f: locked }
+    port.postMessage(resetMsg)
+    const ref = getFrames_(port)
+    const status = locked === Frames.Flags.lockedAndDisabled ? Frames.Status.disabled : Frames.Status.enabled
+    if (!ref || ref.lock_ && ref.lock_.status_ === status && ref.lock_.passKeys_ === newPassKeys) { return }
+    ref.lock_ = { status_: status, passKeys_: newPassKeys }
+    needIcon_ && ref.cur_.s.status_ !== status && setIcon_(port.s.tabId_, status)
+    for (const port of ref.ports_) {
+      port.s.status_ = status
+      port.s.flags_ & Frames.Flags.ResReleased || port.postMessage(resetMsg)
+    }
+  },
+  /** kFgReq.focusCurTab: */ (_req: FgReq[kFgReq.focusCurTab], port): void => {
+    let tabId = port.s.tabId_, tick = 0, timer = setInterval(() => {
+      const ref = framesForTab_.get(tabId)
+      if (tabId !== curTabId_ && ref) {
+        clearInterval(timer)
+        if (ref.ports_.includes(port) || port.s.flags_ & Frames.Flags.ResReleased) {
+          selectTab(tabId, selectWndIfNeed)
+        }
+      } else if (++tick >= 12 || !ref) {
+        clearInterval(timer)
+      }
+    }, 17)
   }
 ])
 
@@ -625,24 +745,29 @@ const onCompletions = function (this: Port, favIcon0: 0 | 1 | 2, list: Array<Rea
   BgUtils_.resetRe_()
 }
 
-const focusAndExecute = (req: Omit<FgReq[kFgReq.gotoMainFrame], "f">
-    , port: Port, targetPort: Port | null, focusAndShowFrameBorder: BOOL): void => {
-  if (targetPort && targetPort.s.status_ !== Frames.Status.disabled) {
+set_focusAndExecuteOn_((<T extends FgCmdAcrossFrames> (targetPort: Port, cmd: T, options: CmdOptions[T], count: number
+      , focusAndShowFrameBorder: BOOL): void => {
     targetPort.postMessage({
       N: kBgReq.focusFrame,
-      H: focusAndShowFrameBorder || req.c !== kFgCmd.scroll ? ensureInnerCSS(port.s) : null,
+      H: focusAndShowFrameBorder || cmd !== kFgCmd.scroll ? ensureInnerCSS(targetPort.s) : null,
       m: focusAndShowFrameBorder ? FrameMaskType.ForcedSelf : FrameMaskType.NoMaskAndNoFocus,
       k: focusAndShowFrameBorder ? cKey : kKeyCode.None,
       f: {},
-      c: req.c, n: req.n || 0, a: req.a
+      c: cmd, n: count || 0, a: options as FgOptions
     })
+}) satisfies typeof focusAndExecuteOn_)
+
+const focusAndExecute = (req: Omit<FgReq[kFgReq.gotoMainFrame], "f">
+    , port: Port, targetPort: Port | null, focusAndShowFrameBorder: BOOL, ignoreStatus?: 1): void => {
+  if (targetPort && (ignoreStatus || targetPort.s.status_ !== Frames.Status.disabled)) {
+    focusAndExecuteOn_(targetPort, req.c, req.a as CmdOptions[FgCmdAcrossFrames], req.n, focusAndShowFrameBorder)
   } else {
     req.a.$forced = 1
     portSendFgCmd(port, req.c, false, req.a as Dict<any>, req.n || 0)
   }
 }
 
-const replaceForwardedOptions = (toForward?: object | string | null): void => {
+const replaceForwardedOptions = (toForward?: object | Exclude<HintsNS.Options["then"], object>): void => {
   if (!toForward) { return }
   typeof toForward === "string" && (toForward = parseEmbeddedOptions(toForward))
   toForward && typeof toForward === "object" &&
@@ -652,7 +777,7 @@ const replaceForwardedOptions = (toForward?: object | string | null): void => {
 const onPagesReq = (req: FgReqWithRes[kFgReq.pages]["q"], id: number
     , port: Frames.PagePort | null): Promise<FgRes[kFgReq.pages]> => {
   if (!_pageHandlers) {
-    _pageHandlers = (Build.MV3 ? settings_.ready_ : import("/background/sync.js" as any).then(() => settings_.ready_))
+    _pageHandlers = (Build.MV3 ? settings_.ready_ : import2("/background/sync.js" as any).then(() => settings_.ready_))
         .then(() => import2<typeof import("./page_handlers")>("/background/page_handlers.js"))
   }
   return _pageHandlers.then(module => Promise.all(req.map(i => module.onReq(i, port))))
@@ -664,11 +789,11 @@ Build.MV3 || (( // @ts-ignore
   window as BgExports
 ).onPagesReq = (req): Promise<FgRes[kFgReq.pages]> => {
   if (req.i === GlobalConsts.TeeReqId) {
-    const teeTask = setTeeTask_(null, null)
+    const teeTask = replaceTeeTask_(null, null)
     teeTask && clearTimeout(teeTask.i)
     return teeTask as never
   }
-  const queries = !OnFirefox ? req.q
+  const queries: typeof req.q = !OnFirefox ? req.q
       : Build.MinFFVer >= FirefoxBrowserVer.Min$structuredClone || typeof structuredClone === "function"
       ? structuredClone!(req.q) : JSON.parse(JSON.stringify(req.q))
   return onPagesReq(queries, req.i, null)

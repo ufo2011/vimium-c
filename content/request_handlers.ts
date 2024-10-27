@@ -1,21 +1,23 @@
 import {
   chromeVer_, clickable_, doc, esc, fgCache, injector, isEnabled_, isLocked_, isAlive_, isTop, abs_, includes_,
-  keydownEvents_, set_chromeVer_, set_clickable_, set_fgCache, set_isLocked_, OnChrome, OnFirefox, safeCall,
-  set_isEnabled_, set_onWndFocus, onWndFocus, timeout_, safer, set_os_, safeObj, set_keydownEvents_,
-  interval_, getTime, vApi, clearInterval_, locHref, set_firefoxVer_, firefoxVer_, os_, isAsContent,
+  keydownEvents_, set_chromeVer_, set_clickable_, set_fgCache, set_isLocked_, OnChrome, OnFirefox, safeCall, recordLog,
+  set_isEnabled_, set_onWndFocus, onWndFocus, timeout_, safer, set_os_, safeObj, set_keydownEvents_, setupEventListener,
+  interval_, getTime, vApi, locHref, set_firefoxVer_, firefoxVer_, os_, isAsContent, isIFrameInAbout_,
+  OnEdge, inherited_, clearTimeout_, setupTimerFunc_cr_mv3, set_weakRef_ff, weakRef_ff, deref_, set_confVersion
 } from "../lib/utils"
 import { set_keyIdCorrectionOffset_old_cr_, handler_stack, suppressTail_ } from "../lib/keyboard_utils"
 import {
-  editableTypes_, markFramesetTagUnsafe_old_cr, OnDocLoaded_, BU, docHasFocus_, deepActiveEl_unsafe_,
+  editableTypes_, markFramesetTagUnsafe_old_cr, OnDocLoaded_, BU, docHasFocus_, deepActiveEl_unsafe_, HTMLElementProto,
   hasTag_, querySelector_unsafe_, isHTML_, createElement_, setClassName_s, onReadyState_,
   docEl_unsafe_, scrollIntoView_, CLK, ElementProto_not_ff, isIFrameElement, DAC, removeEl_s, toggleClass_s, getElDesc_
 } from "../lib/dom_utils"
 import {
-  onPortRes_, post_, safePost, set_requestHandlers, requestHandlers, hookOnWnd, set_hookOnWnd,
-  HookAction, contentCommands_, runFallbackKey, runtime_port, runtimeConnect,
+  onPortRes_, post_, safePost, set_requestHandlers, requestHandlers, hookOnWnd, set_hookOnWnd, onFreezePort,
+  HookAction, contentCommands_, runFallbackKey, runtime_port, runtimeConnect, set_port_, setupBackupTimer_cr, send_,
 } from "./port"
 import {
   addUIElement, adjustUI, createStyle, getParentVApi, getBoxTagName_old_cr, setUICSS, ui_box, evalIfOK, checkHidden,
+  onToggle,
 } from "./dom_ui"
 import { hudTip, hud_box } from "./hud"
 import {
@@ -23,7 +25,7 @@ import {
   set_isPassKeysReversed, isPassKeysReversed, set_passKeys, set_mappedKeys, set_mapKeyTypes, keyFSM,
 } from "./key_handler"
 import { HintManager, kSafeAllSelector, set_kSafeAllSelector } from "./link_hints"
-import { createMark, gotoMark } from "./marks"
+import { dispatchMark } from "./marks"
 import {
   set_findCSS, styleInHUD, deactivate as findExit, toggleSelectableStyle, styleSelColorIn, styleSelColorOut
 } from "./mode_find"
@@ -39,12 +41,12 @@ export function set_needToRetryParentClickable (_newNeeded: 1): void { needToRet
 
 set_requestHandlers([
   /* kBgReq.init: */ function (request: BgReq[kBgReq.init]): void {
-    set_fgCache(vApi.z = request.c)
+    set_fgCache(vApi.z = request.c || vApi.z)
     OnChrome && set_chromeVer_(fgCache.v as BrowserVer)
     OnFirefox && set_firefoxVer_(fgCache.v as FirefoxBrowserVer)
     Build.OS & (Build.OS - 1) && set_os_(fgCache.o)
-    if (OnChrome && Build.MinCVer < BrowserVer.MinEnsured$KeyboardEvent$$Key && Build.OS & ~(1 << kOS.mac)) {
-      (Build.OS & (1 << kOS.mac)) && !os_ && set_keyIdCorrectionOffset_old_cr_(300)
+    if (OnChrome && Build.MinCVer < BrowserVer.MinEnsured$KeyboardEvent$$Key) {
+      Build.OS !== kBOS.MAC as number && Build.OS & kBOS.MAC && !os_ && set_keyIdCorrectionOffset_old_cr_(300)
     }
     if (OnChrome && Build.MinCVer < BrowserVer.MinNoKeygenElement && chromeVer_ < BrowserVer.MinNoKeygenElement
         || OnFirefox && Build.MinFFVer < FirefoxBrowserVer.MinNoKeygenElement
@@ -55,12 +57,22 @@ set_requestHandlers([
         && chromeVer_ < BrowserVer.MinFramesetHasNoNamedGetter) {
       set_kSafeAllSelector(kSafeAllSelector + ":not(" + (/*#__INLINE__*/ markFramesetTagUnsafe_old_cr()) + ")");
     }
+    if (OnFirefox && Build.MinFFVer < FirefoxBrowserVer.MinWeakRefReliableForDom
+        && firefoxVer_ < FirefoxBrowserVer.MinWeakRefReliableForDom && weakRef_ff !== deref_) {
+      set_weakRef_ff(/*#__INLINE__*/ _weakRef_old_ff as typeof weakRef_ff)
+    }
     if (request.f) {
       set_grabBackFocus(grabBackFocus && !(request.f & Frames.Flags.userActed))
       set_isLocked_(request.f & Frames.Flags.MASK_LOCK_STATUS)
     }
-    requestHandlers[kBgReq.keyFSM](request);
+    inherited_ ? esc!(HandlerResult.Nothing) : requestHandlers[kBgReq.keyFSM](request);
     (requestHandlers[kBgReq.reset] as (request: BgReq[kBgReq.reset | kBgReq.init], initing?: 1) => void)(request, 1)
+    if (Build.MV3 && OnChrome && !vApi.e && isAsContent) { /*#__ENABLE_SCOPED__*/
+      const t = timeout_, i = interval_, ct = clearTimeout_
+      t((): void => { /*#__INLINE__*/ setupTimerFunc_cr_mv3(t, i, ct) }, 0)
+      /*#__INLINE__*/ setupBackupTimer_cr()
+      send_(kFgReq.wait, 0, () => timeout_ !== t && recordLog(kTip.logNotWorkOnSandboxed)())
+    }
     if (isEnabled_) {
       set_keydownEvents_(safeObj<any>(null))
       insertInit(injector ? injector.$g : fgCache.g && grabBackFocus as boolean, 1)
@@ -68,12 +80,18 @@ set_requestHandlers([
           && chromeVer_ > BrowserVer.Min$Event$$Path$IncludeWindowAndElementsIfListenedOnWindow - 1) {
         hookOnWnd(HookAction.SuppressListenersOnDocument);
       }
+      OnFirefox || isIFrameInAbout_ && !vApi.e && timeout_(hookOnWnd.bind(0, HookAction.Install), 1e3)
+      !Build.MV3 && OnChrome && timeout_ === interval_ && recordLog(kTip.logNotWorkOnSandboxed)()
     } else {
       set_grabBackFocus(false)
       hookOnWnd(HookAction.Suppress);
       vApi.e && vApi.e(kContentCmd.SuppressClickable);
     }
+    if (OnChrome && Build.MinCVer < BrowserVer.MinFreezeEvent && chromeVer_ < BrowserVer.MinFreezeEvent) {
+      setupEventListener(0, "freeze", onFreezePort, 1)
+    }
     requestHandlers[kBgReq.init] = null as never;
+    OnChrome && request.d && set_port_(null) // in case `port.onDisconnect` was not triggered
     OnDocLoaded_(function (): void {
       set_onWndFocus(safePost.bind(0, <Req.fg<kFgReq.onFrameFocused>> { H: kFgReq.onFrameFocused }))
       isTop || docHasFocus_() && onWndFocus()
@@ -118,7 +136,7 @@ set_requestHandlers([
         set_passKeys(new Set!(arr))
       }
     } else {
-      set_passKeys(newPassKeys as Exclude<typeof newPassKeys, string>) // ignore `""`
+      set_passKeys(newPassKeys as Exclude<typeof newPassKeys, string> | "")
     }
     if (initing) {
       return;
@@ -131,22 +149,24 @@ set_requestHandlers([
       set_keydownEvents_(keydownEvents_ || safeObj(null))
       old || insertInit();
       (old && !isLocked_) || hookOnWnd(HookAction.Install);
-      onReadyState_()
       // here should not return even if old - a url change may mean the fullscreen mode is changed
     } else {
       contentCommands_[kFgCmd.insertMode]({r: 1})
     }
+    onReadyState_()
     if (ui_box) { adjustUI(+isEnabled_ ? 1 : 2) }
   },
   /* kBgReq.injectorRun: */ injector! && injector.$m,
-  /* kBgReq.url: */ function<T extends keyof FgReq> (this: void, request: BgReq[kBgReq.url] & Req.fg<T>): void {
-    delete request.N
-    request.u = (request.H === kFgReq.copy ? vApi.u : locHref)()
-    post_<T>(request);
+  /* kBgReq.url: */ (request: BgReq[kBgReq.url]): void => {
+    delete (request as Partial<Req.bg<kBgReq.url>>).N
+    request.u = (request.U & 1 ? vApi.u : locHref)()
+    request.U & 2 && ((request as Extract<Req.queryUrl<kFgReq.marks>, {s: any}>).s = dispatchMark(0
+        , !(request as Extract<Req.queryUrl<kFgReq.marks>, {s: any}>).l))
+    post_<kFgReq.marks>(request as WithEnsured<Req.queryUrl<kFgReq.marks>, "u">)
   },
   /* kBgReq.msg: */ onPortRes_,
   /* kBgReq.eval: */ evalIfOK,
-  /* kBgReq.settingsUpdate: */function ({ d: delta }: BgReq[kBgReq.settingsUpdate]): void {
+  /* kBgReq.settingsUpdate: */ ({ d: delta, v: newConfVersion }: BgReq[kBgReq.settingsUpdate]): void => {
     type Keys = keyof typeof delta;
     safer(delta);
     for (const i in delta) {
@@ -155,6 +175,7 @@ set_requestHandlers([
       (i2 in fgCache) && delete safer(fgCache)[i2]
     }
     delta.d != null && hud_box && toggleClass_s(hud_box, "D", !!delta.d)
+    newConfVersion && set_confVersion(newConfVersion)
   },
   /* kBgReq.focusFrame: */ (req: BgReq[kBgReq.focusFrame]): void => {
     // Note: .c, .S are ensured to exist
@@ -182,6 +203,7 @@ set_requestHandlers([
     set_mapKeyTypes(request.t)
     set_mappedKeys(request.m)
     mappedKeys && safer(mappedKeys)
+    set_confVersion(request.v)
     esc!(HandlerResult.Nothing) // so that passNextKey#normal refreshes nextKeys to the new keyFSM
   },
   /* kBgReq.execute: */ function<O extends keyof CmdOptions> (request: BaseExecute<CmdOptions[O], O>): void {
@@ -199,7 +221,6 @@ set_requestHandlers([
       (contentCommands_ as TypeToCheck as TypeChecked)[request.c](safer(options || {}), request.n)
     }
   } as (req: BaseExecute<object, keyof CmdOptions>) => void,
-  /* kBgReq.createMark: */ createMark,
   /* kBgReq.showHUD: */ <VApiTy["t"]> function (req: BgReq[kBgReq.showHUD]): void {
     if (req.H) {
       setUICSS(req.H);
@@ -220,20 +241,19 @@ set_requestHandlers([
     esc!(HandlerResult.Nothing);
     exitGrab();
     if (request.m) {
+      post_({ H: kFgReq.beforeCmd, i: request.i })
       const now = getTime(), result = safeCall(confirm, request.m)
       count2 = abs_(getTime() - now) > 9 ? result ? 3 : 1 : 2
     }
-    post_({ H: kFgReq.cmd, c: request.c, n, i: request.i, r: count2 });
+    post_({ H: kFgReq.cmd, n, i: request, r: count2 });
   },
   /* kBgReq.queryForRunAs: */ (request: BgReq[kBgReq.queryForRunKey]): void => {
     const lock = insert_Lock_() || deepActiveEl_unsafe_(1)
     post_({ H: kFgReq.respondForRunKey, r: request, e: getElDesc_(lock) })
   },
-  /* kBgReq.goToMark: */ gotoMark,
   /* kBgReq.suppressForAWhile: */ (request: BgReq[kBgReq.suppressForAWhile]): void => { suppressTail_(request.t) },
   /* kBgReq.refreshPort: */ ((req?: BgReq[kBgReq.refreshPort] | 0, updates?: number): void => {
-    if (!(Build.MV3 || Build.LessPorts)) { req = {} }
-    (req = req || updates! & ~PortType.refreshInBatch) && runtime_port && runtime_port.disconnect()
+    (req = req || (updates! & ~PortType.refreshInBatch)) && runtime_port && runtime_port.disconnect()
     !req && runtime_port || runtimeConnect(updates)
   }) satisfies VApiTy["q"]
 ])
@@ -242,7 +262,7 @@ export const showFrameMask = (mask: FrameMaskType): void => {
   if (!isTop && mask === FrameMaskType.NormalNext) {
     let docEl = docEl_unsafe_();
     if (docEl) {
-      OnChrome && Build.MinCVer < BrowserVer.MinScrollIntoViewOptions
+      OnChrome && Build.MinCVer < BrowserVer.MinScrollIntoViewOptions && chromeVer_<BrowserVer.MinScrollIntoViewOptions
       ? ElementProto_not_ff!.scrollIntoViewIfNeeded!.call(docEl) : scrollIntoView_(docEl)
     }
   }
@@ -258,14 +278,14 @@ export const showFrameMask = (mask: FrameMaskType): void => {
     framemask_fmTimer = interval_((): void => { // safe-interval
       if (frame_mask === 2) { frame_mask = 1; return }
       frame_mask = 0 as never
+      clearTimeout_(framemask_fmTimer)
       removeEl_s(framemask_node)
-      clearInterval_(framemask_fmTimer);
     }, isTop ? 200 : 350);
   frame_mask = 1
   addUIElement(framemask_node, AdjustType.DEFAULT);
 }
 
-set_hookOnWnd(((action: HookAction): void => {
+set_hookOnWnd((function (action: HookAction): void {
   let f = action ? removeEventListener : addEventListener, t = true
   if (OnChrome && Build.MinCVer < BrowserVer.Min$Event$$Path$IncludeWindowAndElementsIfListenedOnWindow
         && (action || chromeVer_ < BrowserVer.Min$Event$$Path$IncludeWindowAndElementsIfListenedOnWindow)) {
@@ -273,13 +293,21 @@ set_hookOnWnd(((action: HookAction): void => {
     f.call(doc, DAC, onActivate, t)
     if (action === HookAction.SuppressListenersOnDocument) { return; }
   }
-  f("keydown", onKeydown, t)
-  f("keyup", onKeyup, t)
-  action !== HookAction.Suppress && f("focus", onFocus, t)
   f(BU, onBlur, t)
   OnChrome && f(CLK, anyClickHandler, t)
   f(OnChrome ? DAC: CLK, onActivate, t)
-}))
+  if (action !== HookAction.Suppress) {
+    f("focus", onFocus, t)
+    // https://developer.chrome.com/blog/page-lifecycle-api/
+    OnChrome && f("freeze", onFreezePort, t)
+    if (OnChrome && Build.MinCVer >= BrowserVer.MinEnsuredPopover
+        || !OnEdge && (HTMLElementProto! as Partial<PopoverElement>).showPopover) {
+      f("toggle", onToggle, t)
+    }
+  }
+  f("keydown", onKeydown, t)
+  f("keyup", onKeyup, t)
+}) satisfies typeof hookOnWnd)
 
 export const focusAndRun = (cmd?: FgCmdAcrossFrames, options?: FgOptions, count?: number
     , showBorder?: 0 | 1 | 2, childFrame?: SafeHTMLElement | null | void): void => {
@@ -288,7 +316,7 @@ export const focusAndRun = (cmd?: FgCmdAcrossFrames, options?: FgOptions, count?
   set_onWndFocus((): void => { failed = false })
   if (OnFirefox) {
     const cur = deepActiveEl_unsafe_()
-    cur && isIFrameElement(cur) && cur.blur()
+    cur && isIFrameElement(cur, 1) && cur.blur()
   }
   focus();
   /** Maybe a `doc.open()` has been called
@@ -310,6 +338,10 @@ export const focusAndRun = (cmd?: FgCmdAcrossFrames, options?: FgOptions, count?
     showBorder! & 1 && showFrameMask(FrameMaskType.ForcedSelf);
   }
 }
+
+export const _weakRef_old_ff = !OnFirefox || Build.MinFFVer >= FirefoxBrowserVer.MinWeakRefReliableForDom ? null
+    : <T extends object>(val: T | null | undefined, id: kElRef): WeakRef<T> | null | undefined =>
+          val && ((window as any)["__ref_" + id] = new (WeakRef as WeakRefConstructor)(val))
 
 if (!(Build.NDEBUG || FrameMaskType.NoMaskAndNoFocus === 0)) {
   alert("Assert error: require FrameMaskType.NoMaskAndNoFocus === 0")

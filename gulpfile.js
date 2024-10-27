@@ -41,13 +41,13 @@ var has_polyfill = !!(getBuildItem("BTypes") & BrowserType.Chrome)
     && getBuildItem("MinCVer") < 43 /* MinSafe$String$$StartsWith */;
 const POLYFILL_FILE = "lib/polyfill.ts"
 const LOCALES_EN = "_locales/en/messages.json"
-const JSON_TO_JS = ["i18n/*/options.json", "i18n/*/popup.json"]
+const JSON_TO_JS = ["i18n/*/options.json", "i18n/*/action.json"]
 
 var CompileTasks = {
   background: ["background/*.ts", "background/*.d.ts"],
   content: [["content/*.ts", "lib/*.ts", "!" + POLYFILL_FILE, "!lib/injector.ts", "!lib/simple_eval.ts"]
+              .concat(getBuildItem("MV3") ? [] : ["!*/extend_click_vc.*"])
       , "lib/*.d.ts", {module: "distES6"}],
-  lib: ["lib/*.ts"].concat(has_polyfill ? [] : ["!" + POLYFILL_FILE]),
   front: [["front/*.ts", has_polyfill ? POLYFILL_FILE : "!" + POLYFILL_FILE
             , "lib/injector.ts", "lib/simple_eval.ts"], ["lib/base.omni.d.ts"], { inBatch: false }],
   vomnibar: [["front/vomnibar*.ts", "front/tee.ts"], ["lib/base.omni.d.ts"]],
@@ -72,7 +72,7 @@ var Tasks = {
   "static/json": function() {
     const path = ["_locales/*/messages.json", "settings-template.json", "i18n/**/*.json", "!" + LOCALES_EN]
     if (getBuildItem("BTypes") === BrowserType.Firefox) {
-      path.push("!_locales/*_*/**")
+      path.push("!_locales/zh_CN/**")
     }
     if (!getBuildItem("NDEBUG")) {
       return copyByPath(path);
@@ -95,18 +95,18 @@ var Tasks = {
     const path = ["pages/*.css", "lib/*.css"];
     if (!getBuildItem("NDEBUG")) { return copyByPath(path) }
     return copyByPath(path, file => {
-    const CleanCSS = require("clean-css"), clean_css = new CleanCSS();
+      const CleanCSS = require("clean-css")
+      const clean_css = new CleanCSS({ level: { 1: { variableValueOptimizers: ["color", "urlWhiteSpace"]} } })
       ToBuffer(file, clean_css.minify(file.contents).styles)
     });
   },
   "minify-html": function() {
     const arr = ["front/*.html", "pages/*.html", "!*/vomnibar.html"];
-    getBuildItem("MV3") && arr.push("background/worker.html")
+    if (!getBuildItem("MV3")) { arr.push("!*/offscreen.html") }
     if (!getBuildItem("NDEBUG")) { return copyByPath(arr) }
     return copyByPath(arr, file => { ToBuffer(file, require("html-minifier").minify(ToString(file), {
       collapseWhitespace: true,
       minifyCSS: true,
-      maxLineLength: MaxLineLen2
     })) })
   },
   "static/minify": function(cb) {
@@ -128,9 +128,10 @@ var Tasks = {
       arr.push("manifest.json");
     }
     var btypes = getBuildItem("BTypes");
-    var has_wordsRe = btypes & ~BrowserType.Firefox && getBuildItem("MinCVer") <
-                59 /* min(MinSelExtendForwardOnlySkipWhitespaces, MinEnsuredUnicodePropertyEscapesInRegExp) */
-        || btypes & BrowserType.Firefox && !getBuildItem("NativeWordMoveOnFirefox");
+    const has_wordsRe = btypes & BrowserType.Chrome && getBuildItem("MinCVer") <
+                /* min(MinSelExtendForwardOnlySkipWhitespaces, MinEnsuredUnicodePropertyEscapesInRegExp) */ 59
+        || btypes & BrowserType.Firefox && !getBuildItem("NativeWordMoveOnFirefox")
+            && getBuildItem("MinFFVer") < /* FirefoxBrowserVer.MinEnsuredUnicodePropertyEscapesInRegExp */ 78
     if (!has_wordsRe) {
       arr.push("!front/words.txt");
       cleanByPath("front/words.txt", DEST)
@@ -145,7 +146,7 @@ var Tasks = {
   "build/_clean_diff": function() {
     return cleanByPath([".build/**", "manifest.json", "*/vomnibar.html", "background/*.html", ".*.build"
         , ...JSON_TO_JS, "*/*.html", "*/*.css", "**/*.json", "**/*.js", "!helpers/*/*.js", ".snapshot.sh", LOCALES_EN
-        ], DEST)
+        , "*/offscreen.html"], DEST)
   },
   "build/_all": ["build/scripts", "build/pages"],
   "build/ts": function(cb) {
@@ -217,7 +218,7 @@ var Tasks = {
     if (jsmin_status[1]) {
       return cb();
     }
-    gulpUtils.checkJSAndMinifyAll(1, [ [manifest.background.scripts.concat(["background/*.js"]), "."] ]
+    gulpUtils.checkJSAndMinifyAll(1, [ [(manifest.background.scripts || []).concat(["background/*.js"]), "."] ]
       , "min/bg", { nameCache: {}, format: { max_line_len: MaxLineLen } }, cb, jsmin_status, debugging)
   },
   "min/pages": function(cb) {
@@ -247,17 +248,16 @@ var Tasks = {
   },
   "min/others": ["min/pages", "min/omni", "min/misc"],
   _manifest: function(cb) {
+    const mv3 = !!getBuildItem("MV3")
+    const manifest_v2 = readJSON("./manifest.v2.json")
     var minVer = getBuildItem("MinCVer"), browser = getBuildItem("BTypes");
     minVer = minVer ? (minVer | 0) : 0;
-    {
-      const mv3 = !!getBuildItem("MV3")
-      for (const key of Object.keys(manifest)) {
-        if (key.endsWith(".v3")) {
-          const val = manifest[key]
-          delete manifest[key]
-          if (!mv3) { /* empty */ }
-          else if (key.endsWith("[].v3") && val instanceof Array) {
-            const old = manifest[key.slice(0, -5)]
+      if (mv3 && browser === BrowserType.Firefox) { manifest.background = manifest_v2.background }
+      for (const key of Object.keys(manifest_v2)) {
+          const val = manifest_v2[key]
+          if (mv3) { /* empty */ }
+          else if (key.endsWith("[]") && val instanceof Array) {
+            const old = manifest[key.slice(0, -2)]
             for (const item of val) {
               if (item[0] === "-") {
                 let found = old.indexOf(item.slice(1)); found >= 0 && old.splice(found, 1)
@@ -266,18 +266,32 @@ var Tasks = {
               }
             }
           } else {
-            val != null ? (manifest[key.slice(0, -3)] = val) : delete manifest[key.slice(0, -3)]
-            delete manifest[key]
+            val != null ? (manifest[key] = val) : delete manifest[key]
           }
-        }
       }
-    }
-    if (locally ? browser & ~BrowserType.Chrome : !(browser & BrowserType.Chrome)) {
+      for (const key of ["content_scripts"]) {
+          manifest[key].splice(1, manifest[key].length - 1)
+          if (!mv3) {
+            for (const item of manifest[key]) { delete item.match_origin_as_fallback }
+          } else if (browser === BrowserType.Chrome && minVer >= /* BrowserVer.MinCSAcceptWorldInManifest */ 111) {
+            const cs = structuredClone(manifest[key][0])
+            cs.js = ["content/extend_click_vc.js"]
+            cs.world = "MAIN"
+            manifest[key].push(cs)
+          }
+      }
+    if (!(browser & BrowserType.Chrome)) {
       delete manifest.minimum_chrome_version;
       delete manifest.key;
       delete manifest.update_url;
     } else if (minVer && minVer < 999) {
       manifest.minimum_chrome_version = "" + (minVer | 0);
+    }
+    if ((browser & BrowserType.Firefox
+          || !mv3 && browser & BrowserType.Chrome && minVer < /* BrowserVer.MinZeroAsPrefixInVersionNumber */ 42)
+        && manifest.version.includes(".0")) {
+      browser === BrowserType.Firefox || manifest.version_name || (manifest.version_name = manifest.version)
+      manifest.version = manifest.version.replace(/\.0+/g, ".").replace(/\.+$/, "")
     }
     if (browser & BrowserType.Edge) {
       manifest.name = "Vimium C";
@@ -287,9 +301,18 @@ var Tasks = {
       delete manifest.update_url;
     }
     const permissions = manifest.permissions
+    if (!(browser & BrowserType.Chrome)) {
+      for (const i of "favicon offscreen tabGroups".split(" ")) {
+        permissions.splice((permissions.indexOf(i) + 1 || permissions.length + 1) - 1, 1)
+      }
+      delete manifest.optional_host_permissions
+    }
     let optional = manifest.optional_permissions
     if (browser === BrowserType.Firefox) {
       delete manifest.background.persistent;
+      for (const i of manifest.web_accessible_resources || []) { delete i.use_dynamic_url }
+      for (const i of manifest.content_scripts || []) { delete i.match_origin_as_fallback }
+      mv3 && manifest.action && (manifest.action.default_area = "navbar")
     }
     if (optional && !(browser & BrowserType.Firefox)) {
       optional = optional.filter(i => { return i !== "cookies" })
@@ -303,11 +326,19 @@ var Tasks = {
         optional = optional.filter(i => {
           return !i.includes("chrome:") && i !== "downloads.shelf" && i !== "contentSettings"
         })
+    } else if (optional && minVer >= /* MinNoDownloadBubbleFlag */ 117) {
+      optional = optional.filter(i => i !== "downloads.shelf")
     }
     if (!getBuildItem("OnBrowserNativePages")) {
       optional = optional.filter(i => { return !i.includes("chrome:") })
+      let hosts = manifest.host_permissions
+      hosts && (hosts = hosts.filter(i => { return !i.includes("chrome:") }),
+          hosts.length ? manifest.host_permissions = hosts : delete manifest.host_permissions)
+      hosts = manifest.optional_host_permissions
+      hosts && (hosts = hosts.filter(i => { return !i.includes("chrome:") }),
+          hosts.length ? manifest.optional_host_permissions = hosts : delete manifest.optional_host_permissions)
     }
-    if (!(browser & BrowserType.Chrome) || browser & ~BrowserType.Chrome && !locally || minVer < 35) {
+    if (!(browser & BrowserType.Chrome) || browser !== BrowserType.Chrome && !locally || minVer < 35) {
       delete manifest.offline_enabled;
     }
     if (browser === BrowserType.Chrome) {
@@ -361,7 +392,7 @@ var Tasks = {
       var oldData = readFile(file);
       if (data === oldData) {
         if (willListEmittedFiles) {
-          print('skip', file.replace(/\\/g, "/"))
+          print("Skip " + file.replace(/\\/g, "/"))
         }
         return cb();
       }
@@ -380,10 +411,15 @@ var Tasks = {
     let shortCommit = gulpUtils.NeedCommitInfo ? getBuildItem("Commit") : ""
     if (shortCommit && !cmd.toLowerCase().includes(" BUILD_Commit=")) { cmd += `BUILD_Commit=${shortCommit} ` }
     cmd += "TEST_WORKING=0 "
-    cmd += `npm run ${isEdge ? "edge-c" : getBuildItem("BTypes") === BrowserType.Firefox ? "firefox" : "chrome"}`
-    let checkout = shortCommit && `git checkout ${getGitCommit(-1) || shortCommit}`
+    if (getBuildItem("MV3") !== 0) {
+      cmd += `npm run ${isEdge ? "edge" : getBuildItem("BTypes") === BrowserType.Firefox ? "firefox" : "chrome"}`
+    } else {
+      cmd += `npm run ${isEdge ? "mv2-edge" : getBuildItem("BTypes") === BrowserType.Firefox ? "mv2-ff" : "mv2-cr"}`
+    }
+    let clone = shortCommit && `>>> git clone https://github.com/gdh1995/vimium-c.git`
+    let checkout = shortCommit && `>>> git checkout ${getGitCommit(-1) || shortCommit}`
     let install_deps = `npm ci`
-    let fullCmds = [checkout, install_deps, cmd].map(i => i && i.trim()).filter(i => i)
+    let fullCmds = [clone, checkout, install_deps, cmd].map(i => i && i.trim()).filter(i => i)
     try {
       fs.writeFileSync(osPath.join(DEST, ".snapshot.sh"), fullCmds.concat("").join("\n"))
     } catch (e) {
@@ -412,7 +448,6 @@ var Tasks = {
   bg: ["background"],
   c: ["content"],
   f: ["front"],
-  l: ["lib"],
   p: ["pages"],
   pa: ["pages"],
   pg: ["pages"],
@@ -448,7 +483,7 @@ var Tasks = {
   "minc": ["size/content"],
   "content/size": ["size/content"],
   "content/csize": ["size/content"],
-  "cize": ["size/content"],
+  "csize": ["size/content"],
   "words": ["build/content", function (cb) {
     process.env.CHECK_WORDS = "1";
     gulp.series("min/content")(function () {
@@ -486,14 +521,13 @@ gulp.task("locally", function(done) {
   if (locally) { return done(); }
   locally = true;
   gTypescript = null;
-  if (process.env.BUILD_MV3 && !process.env.LOCAL_DIST) {
-    delete process.env.BUILD_MV3
-    print("MV3 is not enabled locally")
+  if (process.env.BUILD_MV3 === "0" && !process.env.LOCAL_DIST) {
+    throw new Exception("MV3 can not be disabled locally")
   }
   compilerOptions = loadValidCompilerOptions("scripts/gulp.tsconfig.json");
   createBuildConfigCache();
   var old_has_polyfill = has_polyfill;
-  has_polyfill = getBuildItem("MinCVer") < 43 /* MinSafe$String$$StartsWith */;
+  has_polyfill = getBuildItem("MinCVer") < /* MinSafe$String$$StartsWith */ 43
   if (has_polyfill != old_has_polyfill) {
     CompileTasks.front[0][1] = has_polyfill ? POLYFILL_FILE : "!" + POLYFILL_FILE;
     CompileTasks.lib.length = 1;
@@ -597,7 +631,7 @@ function computeModuleType(needDynamicImport) {
   const btypes = getBuildItem("BTypes")
   return btypes & BrowserType.Edge
       || btypes & BrowserType.Chrome && (
-        getBuildItem("MinCVer") < /* MinUsableScript$type$$module$InExtensions */ 63
+        getBuildItem("MinCVer") < /* MinUsableScript$type$$module$InExtensions */ 66
         || needDynamicImport && getBuildItem("MinCVer") < /* MinES$DynamicImport */ 63) // lgtm [js/redundant-operation]
       || btypes & BrowserType.Firefox &&
         needDynamicImport && getBuildItem("MinFFVer") < /* MinEnsuredES$DynamicImport */ 67
@@ -672,6 +706,10 @@ const beforeTerser = exports.beforeTerser = (file) => {
       contents = contents.replace(/\b__awaiter\(void 0,[^,]+,[^,]+,\s?(?=\(?function|\(\(?\))/g, "__myAwaiter(");
     }
   }
+  if (!(btypes & ~BrowserType.Firefox) && allPathStr.includes("/vimium-c.js")) {
+    get();
+    contents = contents.replaceAll("isSafeEl_()", "true");
+  }
   if (allPathStr.includes("/env.js")) {
     const result = skip_declaring_known_globals(btypes, minCVer, () => (get(), contents))
     if (result != null) {
@@ -711,8 +749,19 @@ const postTerser = exports.postTerser = async (terserConfig, file, allPaths) => 
     contents = contents.replace(/\n?\/\*!? ?@OUTPUT ?\{([^}]+)\} ?\*\/\n?/g, '$1')
   }
   if (allPathStr.indexOf("extend_click.") >= 0) {
-    get();
-    contents = patchExtendClick(contents);
+    var btypes = getBuildItem("BTypes"), minCVer = getBuildItem("MinCVer")
+    if (!getBuildItem("MV3") || btypes & ~(BrowserType.Chrome | BrowserType.Firefox)
+        || btypes & BrowserType.Chrome && minCVer < /* MinRegisterContentScriptsWorldInMV3 */ 102) {
+      get();
+      contents = patchExtendClick(contents);
+    }
+  }
+  if (allPathStr.indexOf("extend_click_vc.") >= 0) {
+    get()
+    if (!contents.includes("VC(1)")) {
+      contents = contents.replace(/ ?\bVC\b ?/, "")
+    }
+    logger("%o: %o %s", ":extend_click_vc", contents.length, "bytes in file");
   }
   if (locally) {
     get();
@@ -722,7 +771,7 @@ const postTerser = exports.postTerser = async (terserConfig, file, allPaths) => 
     get()
     contents = contents.trim() === '"use strict";' ? "" : contents
   }
-  if (terserConfig.format && terserConfig.format.max_line_len) {
+  if (terserConfig && terserConfig.format && terserConfig.format.max_line_len) {
     get()
     const tooLong = contents.split("\n").filter(i => i.length > MaxLineLen2)
     if (tooLong.length > 0) {
@@ -854,7 +903,7 @@ function parseBuildItem(key, newVal) {
 
 function patchExtendClick(source) {
   //@ts-check
-  if (!(getBuildItem("BTypes") & ~BrowserType.Firefox)) { return source; }
+  if (getBuildItem("BTypes") === BrowserType.Firefox) { return source; }
   const patched = _patchExtendClick(source, locally, logger);
   if (typeof patched === "string") { return patched; }
   if (getBuildItem("MinCVer") < /* MinEnsuredES6ArrowFunction */ 49 && getBuildItem("BTypes") & BrowserType.Chrome) {
@@ -905,6 +954,12 @@ function patchExtendClick(source) {
 var known_defs
 const loadTerserConfig = exports.loadTerserConfig = (reload) => {
   var a = _loadTerserConfig(getBuildItem("NDEBUG") ? "scripts/uglifyjs.dist.json" : "scripts/uglifyjs.local.json", reload);
+  if (!getBuildItem("Mangle")) {
+    a.mangle = false
+    a.compress.sequences = false
+    a.compress.join_vars = false
+  }
+  if (!a.mangle) { a.format.beautify = true }
   {
     if (!getBuildItem("NDEBUG")) {
       a.format.beautify = true
@@ -922,7 +977,5 @@ const loadTerserConfig = exports.loadTerserConfig = (reload) => {
   if (gNoComments || getBuildItem("NDEBUG")) {
     a.format.comments = /^!/
   }
-  if (!getBuildItem("Mangle")) { a.mangle = false }
-  if (!a.mangle) { a.format.beautify = true }
   return a;
 }

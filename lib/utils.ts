@@ -1,4 +1,5 @@
 export type XrayedObject<T extends object> = T & { wrappedJSObject: T }
+export declare const enum kNextTarget { parent = 0, child = 1, realClick = 2, nonCss = 3, _mask = "" }
 
 const OnOther_: BrowserType = Build.BTypes && !(Build.BTypes & (Build.BTypes - 1))
     ? Build.BTypes as number
@@ -6,17 +7,18 @@ const OnOther_: BrowserType = Build.BTypes && !(Build.BTypes & (Build.BTypes - 1
     : Build.BTypes & BrowserType.Safari && typeof safari !== "undefined" && safari ? BrowserType.Safari
     : !(Build.BTypes & BrowserType.Chrome) || Build.BTypes & BrowserType.Firefox && typeof browser !== "undefined"
       && browser && (browser as typeof chrome).runtime
+      && (!(Build.MinCVer < BrowserVer.MinSafe$String$$StartsWith) || "".startsWith)
       && (browser as typeof chrome).runtime.getURL("").startsWith("moz")
     ? BrowserType.Firefox : BrowserType.Chrome
-export const OnChrome: boolean = !(Build.BTypes & ~BrowserType.Chrome)
-    || !!(Build.BTypes & BrowserType.Chrome && OnOther_ & BrowserType.Chrome)
-export const OnFirefox: boolean = !(Build.BTypes & ~BrowserType.Firefox)
-    || !!(Build.BTypes & BrowserType.Firefox && OnOther_ & BrowserType.Firefox)
-export const OnEdge: boolean = !(Build.BTypes & ~BrowserType.Edge)
-    || !!(Build.BTypes & BrowserType.Edge && OnOther_ & BrowserType.Edge)
-export const OnSafari: boolean = !(Build.BTypes & ~BrowserType.Safari)
-    || !!(Build.BTypes & BrowserType.Safari && OnOther_ & BrowserType.Safari)
-export const WithDialog: boolean = OnChrome || OnFirefox
+export const OnChrome: boolean = Build.BTypes === BrowserType.Chrome as number
+    || !!(Build.BTypes & BrowserType.Chrome) && OnOther_ === BrowserType.Chrome
+export const OnFirefox: boolean = Build.BTypes === BrowserType.Firefox as number
+    || !!(Build.BTypes & BrowserType.Firefox) && OnOther_ === BrowserType.Firefox
+export const OnEdge: boolean = Build.BTypes === BrowserType.Edge as number
+    || !!(Build.BTypes & BrowserType.Edge) && OnOther_ === BrowserType.Edge
+export const OnSafari: boolean = Build.BTypes === BrowserType.Safari as number
+    || !!(Build.BTypes & BrowserType.Safari) && OnOther_ === BrowserType.Safari
+export const WithDialog: boolean = !OnEdge
 
 /** its initial value should be 0, need by {@see ../content/request_handlers#hookOnWnd} */
 export let chromeVer_: BrowserVer = 0
@@ -35,6 +37,8 @@ export const injector = VimiumInjector
 export const isAsContent = injector === void 0
 export const doc = document
 export const loc_ = location
+// contentDocument.open may replace a location of `about:blank` with the parent frame's
+export const isIFrameInAbout_ = !isTop && loc_.protocol === "about:"
 export const runtime_ff = OnFirefox ? (browser as typeof chrome).runtime : null
 
 let esc: {
@@ -62,6 +66,12 @@ export function set_noRAF_old_cr_ (_newNoRAF: BOOL): void { noRAF_old_cr_ = _new
 
 export let fgCache: OnlyEnsureItemsNonNull<SettingsNS.FrontendSettingCache>
 export function set_fgCache (_newCache: SettingsNS.FrontendSettingCache): void { fgCache = _newCache as typeof fgCache }
+
+export let confVersion = 0
+export function set_confVersion (_newConfVer: number): void { confVersion = _newConfVer }
+
+export let inherited_: 0 | PortType.confInherited = 0
+export function set_inherited_ (_newInherited: typeof inherited_): void { inherited_ = _newInherited }
 
 export let clickable_: ElementSet
 export function set_clickable_ (_newClickable: ElementSet): void { clickable_ = _newClickable }
@@ -106,12 +116,11 @@ export function set_onWndFocus (_newOnWndFocus: (this: void) => void): void { on
 export const safeObj = Object.create as { (o: null): any; <T>(o: null): SafeDict<T> }
 
 export const safer: <T extends object> (opt: T) => T & SafeObject
-    = OnChrome && Build.MinCVer < BrowserVer.Min$Object$$setPrototypeOf
-        && !Object.setPrototypeOf
-      ? <T extends object> (obj: T): T & SafeObject => { (obj as any).__proto__ = null; return obj as T & SafeObject; }
+    = OnChrome && Build.MinCVer < BrowserVer.Min$Object$$setPrototypeOf && !Object.setPrototypeOf
+      ? <T extends object> (obj: T) => ("__proto__" in obj && ((obj as any).__proto__ = null), obj as T & SafeObject)
       : <T extends object> (opt: T): T & SafeObject => Object.setPrototypeOf(opt, null);
 
-export let weakRef_not_ff = (!OnEdge ? OnFirefox ? null as never : <T extends object>(val: T | null | undefined
+export let weakRef_not_ff = (!OnEdge ? <T extends object>(val: T | null | undefined
       ): WeakRef<T> | null | undefined => val && new (WeakRef as WeakRefConstructor)(val)
     : (_newObj: object | null | undefined) => _newObj) as {
   <T extends object>(val: T): WeakRef<T>
@@ -119,18 +128,17 @@ export let weakRef_not_ff = (!OnEdge ? OnFirefox ? null as never : <T extends ob
   <T extends object>(val: T | null | undefined): WeakRef<T> | null | undefined
 } | null
 
-export let weakRef_ff = !OnFirefox ? null as never : (<T extends object>(val: T | null | undefined, id: kElRef
-      ): WeakRef<T> | null | undefined =>
-      val && ((window as any)["__ref_" + id] = new (WeakRef as WeakRefConstructor)(val))) as {
+export let weakRef_ff = (!OnFirefox ? null as never : weakRef_not_ff) as {
   <T extends object>(val: T, id: kElRef): WeakRef<T>
   <T extends object>(val: T | null, id: kElRef): WeakRef<T> | null
   <T extends object>(val: T | null | undefined, id: kElRef): WeakRef<T> | null | undefined
 }
+export function set_weakRef_ff (new_weakRef: typeof weakRef_ff) { weakRef_ff = new_weakRef }
 
 export const deref_ = OnEdge ? weakRef_not_ff as never
     : OnChrome && Build.MinCVer >= BrowserVer.MinEnsured$WeakRef || OnSafari || WeakRef
     ? <T extends object>(val: WeakRef<T> | null | undefined): T | null | undefined => val && val.deref()
-    : (weakRef_not_ff = weakRef_ff = <T> (val: T): T => val) as never
+    : (OnFirefox ? weakRef_ff = <T> (val: T): T => val : weakRef_not_ff = <T> (val: T): T => val) as never
 
 export const raw_unwrap_ff = OnFirefox ? <T extends object> (val: T): T | undefined => {
   return (val as XrayedObject<T>).wrappedJSObject
@@ -147,20 +155,17 @@ export let timeout_: TimerFunc<ValidTimeoutID> =
     (Build.Inline ? setTimeout : (func, timeout) => setTimeout(func, timeout)) as TimerFunc<ValidTimeoutID>
 export let interval_: TimerFunc<ValidIntervalID> =
     (Build.Inline ? setInterval : (func, period) => setInterval(func, period)) as TimerFunc<ValidIntervalID>
-export let clearTimeout_: (timer: ValidTimeoutID) => void =
-    Build.Inline ? clearTimeout as never : timer => clearTimeout(timer as number)
-export let clearInterval_: (timer: ValidIntervalID) => void = // not reuse clearTimeout - avoid issues on injected pages
-    Build.Inline ? clearInterval as never : timer => clearInterval(timer as number)
+export let clearTimeout_ = (timer: ValidTimeoutID | ValidIntervalID): void => { timer && clearTimeout(timer as number) }
 
 export const setupTimerFunc_cr = !OnChrome ? 0 as never : (_newTimerFunc: TimerFunc<number>
     , _newClearTimer: (timer: ValidTimeoutID | ValidIntervalID) => void): void => {
   timeout_ = interval_ = _newTimerFunc as TimerFunc<TimerID & number>
-  clearTimeout_ = clearInterval_ = _newClearTimer
+  clearTimeout_ = _newClearTimer
 }
 
 export const setupTimerFunc_cr_mv3 = !OnChrome || !Build.MV3 ? 0 as never: (
-    newTout: typeof timeout_, newInt: typeof interval_, newCT: typeof clearTimeout_, newCI: typeof clearInterval_) => {
-  timeout_ = newTout, interval_ = newInt, clearTimeout_ = newCT, clearInterval_ = newCI
+    newTout: typeof timeout_, newInt: typeof interval_, newCT: typeof clearTimeout_) => {
+  timeout_ = newTout, interval_ = newInt, clearTimeout_ = newCT
 }
 
 /**
@@ -210,16 +215,47 @@ export const recordLog = (tip: kTip | string): (() => void) =>
     console.log.bind(console, tip > 0 ? VTr(<kTip> tip) : tip
         , loc_.pathname.replace(<RegExpOne> /^.*(\/[^\/]+\/?)$/, "$1"), getTime())
 
+export const splitEntries_ = <T, LongArr extends boolean = false> (
+    map: (LongArr extends true ? (T extends [string, infer A] ? Dict<A> : never) | T[] : [string, T]) | string | boolean
+    , sep?: "," | ";" | "##" | "//"): LongArr extends true ? T[] : [string, T] => {
+  let arr: unknown[]
+  if (isTY(map as object, kTY.obj) && (map as ArrayLike<unknown>).length == null) {
+    if (OnChrome && Build.BTypes < BrowserVer.MinEnsuredES$Object$$values$and$$entries
+        && chromeVer_ < BrowserVer.MinEnsuredES$Object$$values$and$$entries) {
+      arr = []
+      for (let key in map as Dict<unknown>) { arr.push([key, (map as EnsuredDict<unknown>)[key]]) }
+    } else {
+      arr = Object.entries!(map as object) as [string, unknown][]
+    }
+  } else {
+    arr = (map + "").split(sep!)
+  }
+  return arr as any
+}
+
+type MayBeSelector = "" | true | false | 0 | null | void | undefined
+export let findOptByHost: {
+  (rules: kTip, cssCheckEl?: undefined): "css-selector" | void
+  (rules: string | kTip | object | MayBeSelector | void, cssCheckEl: SafeElement
+      , mapMode: kNextTarget.child | kNextTarget.realClick | kNextTarget.nonCss): string | boolean | void
+  (rules: string | object | MayBeSelector | void, cssCheckEl: 0): string | void
+  (rules: string | object | MayBeSelector | void, cssCheckEl?: SafeElement): "css-selector" | void
+}
+export function set_findOptByHost (newFindOptByHost: typeof findOptByHost): void { findOptByHost = newFindOptByHost }
+
 export const parseSedOptions = (opts: UserSedOptions): ParsedSedOpts => {
   const sed = opts.sed
-  return isTY(sed, kTY.obj) && sed || { r: sed, k: opts.sedKeys || opts.sedKey }
+  return isTY(sed, kTY.obj) && sed ? !(sed as string[]).length ? sed as Exclude<typeof sed, string[]>
+        : { r: "", k: findOptByHost(sed as string[], 0) satisfies string | void as string | undefined }
+      : { r: sed, k: opts.sedKeys || opts.sedKey }
 }
 
 type EnsureExisting<T> = { [P in keyof T]-?: T[P] }
 type AllowUndefined<T> = { [P in keyof T]: T[P] | undefined }
-export const parseOpenPageUrlOptions = ((opts, decoded?: boolean | null): AllowUndefined<EnsureExisting<ParsedOpenPageUrlOptions>> => ({
+export const parseOpenPageUrlOptions = ((opts, decoded?: boolean | null
+    ): AllowUndefined<EnsureExisting<ParsedOpenPageUrlOptions>> => ({
   d: (decoded = opts.decoded, decoded != null ? decoded : opts.decode),
-  g: opts.group, i: opts.incognito, k: opts.keyword, m: opts.replace, o: opts.opener,p: opts.position,
+  g: opts.group, i: opts.incognito, k: opts.keyword, m: opts.replace, o: opts.opener, p: opts.position,
   r: opts.reuse, s: parseSedOptions(opts), t: opts.testUrl, w: opts.window
 })) as (opts: OpenPageUrlOptions & UserSedOptions) => ParsedOpenPageUrlOptions
 
@@ -252,6 +288,14 @@ export const promiseDefer_ = <T> (): { p: Promise<T>, r: (value: T) => void } =>
   return { p, r: r! }
 }
 
+// if `var queueMicrotask`, on Firefox globalThis.queueMicrotask is undefined even when window.queueMicrotask exists
+export const queueTask_: typeof queueMicrotask | undefined = Build.NDEBUG && (!(Build.BTypes & BrowserType.Edge
+      || Build.BTypes & BrowserType.Firefox && Build.MinFFVer < FirefoxBrowserVer.Min$queueMicrotask
+      || Build.BTypes & BrowserType.Chrome && Build.MinCVer < BrowserVer.Min$queueMicrotask) || !OnFirefox)
+    ? queueMicrotask
+    : (window as {} as typeof globalThis).queueMicrotask
+      && (window as {} as typeof globalThis).queueMicrotask.bind(window)
+
 /** ==== shortcuts of constant code ==== */
 
 type PlainObject = { arguments?: undefined } & Dict<any>
@@ -276,4 +320,4 @@ export const abs_: (num: number) => number = Build.Inline ? math.abs : (arg): nu
 
 export function includes_<T> (this: T[] | readonly T[], el: T): boolean { return this.indexOf(el) >= 0 }
 
-export const urlSameIgnorehash = (s1: string, s2: string): boolean | "" => s2 && s1.split("#")[0] !== s2.split("#")[0]
+export const urlSameIgnoringHash = (s1: string, s2: string): boolean | "" => s2 && s1.split("#")[0] === s2.split("#")[0]

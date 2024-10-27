@@ -1,18 +1,21 @@
 import {
-  setupEventListener, isTop, keydownEvents_, timeout_, fgCache, doc, isAlive_, isJSUrl, chromeVer_, VTr, OnEdge,
-  vApi, Stop_, createRegExp, isTY, OBJECT_TYPES, OnChrome, OnFirefox, WithDialog, isAsContent, safeCall, max_
+  setupEventListener, isTop, keydownEvents_, timeout_, fgCache, doc, isAlive_, isJSUrl, chromeVer_, VTr, OnEdge, Stop_,
+  vApi, createRegExp, isTY, OBJECT_TYPES, OnChrome, OnFirefox, WithDialog, isAsContent, safeCall, max_,isIFrameInAbout_,
+  firefoxVer_
 } from "../lib/utils"
 import { prevent_ } from "../lib/keyboard_utils"
 import {
   createElement_, attachShadow_, NONE, fullscreenEl_unsafe_, docEl_unsafe_, getComputedStyle_, set_docSelectable_, kDir,
-  GetParent_unsafe_, getSelection_, GetShadowRoot_, getEditableType_, htmlTag_, textOffset_, derefInDoc_, supportInert_,
-  notSafe_not_ff_, CLK, frameElement_, runJS_, isStyleVisible_, rangeCount_, getAccessibleSelectedNode, removeEl_s,
+  GetParent_unsafe_, getSelection_, TryGetShadowRoot_, getEditableType_, textOffset_, derefInDoc_, supportInert_,
+  CLK, frameElement_, runJS_, isStyleVisible_, rangeCount_, getAccessibleSelectedNode, removeEl_s, htmlTag_, hasTag_,
   appendNode_s, append_not_ff, setClassName_s, isNode_, contains_s, setOrRemoveAttr_s, textContent_s, inputSelRange,
-  parentNode_unsafe_s, setDisplaying_s, editableTypes_, getRootNode_mounted, singleSelectionElement_unsafe, isHTML_
+  parentNode_unsafe_s, setDisplaying_s, getRootNode_mounted, singleSelectionElement_unsafe, isHTML_, HTMLElementProto,
+  getDirectionOfNormalSelection,
+  uneditableInputs_
 } from "../lib/dom_utils"
 import {
-  bZoom_, dScale_, getZoom_, wdZoom_, boundingRect_, prepareCrop_, getClientRectsForAreas_,
-  getVisibleClientRect_, getBoundingClientRect_, padClientRect_, isContaining_, cropRectToVisible_, getCroppedRect_,
+  bZoom_, dScale_, getZoom_, wdZoom_, boundingRect_, prepareCrop_, getClientRectsForAreas_, getVisibleBoundingRect_,
+  getVisibleClientRect_, getBoundingClientRect_, padClientRect_, isContaining_, cropRectS_, getCroppedRect_,
   setBoundary_, wndSize_, dimSize_, selRange_, isSelARange, ViewOffset
 } from "../lib/rect"
 import { currentScrolling } from "./scroller"
@@ -20,7 +23,10 @@ import { find_box, styleSelectable } from "./mode_find"
 import { DrawableHintItem, isHintsActive, hintManager, reinitLinkHintsIn, isHC_ } from "./link_hints"
 import { post_, runFallbackKey } from "./port"
 import { insert_Lock_, raw_insert_lock } from "./insert"
-import { hide as omniHide, omni_box } from "./omni"
+import { isWaitingAccessKey, resetAnyClickHandler_cr } from "./key_handler"
+import { hide as omniHide, omni_box, omni_dialog_non_ff, omni_status, postToOmni, Status as OmniStatus } from "./omni"
+import { getPreferredRectOfAnchor } from "./local_links"
+import { showPicker_ } from "./async_dispatcher"
 
 export declare const enum kExitOnClick { // eslint-disable-next-line @typescript-eslint/no-shadow
   NONE = 0, REMOVE = 8, helpDialog = 1, vomnibar = 2,
@@ -29,50 +35,58 @@ export declare const enum kExitOnClick { // eslint-disable-next-line @typescript
 let box_: HTMLDivElement & SafeHTMLElement | null = null
 let styleIn_: HTMLStyleElement | string | null = null
 let root_: VUIRoot = null as never
+let uiParent_: VUIRoot | HTMLSpanElement
 let cssPatch_: [string | number, (css: string) => string] | null = null
 let lastFlashEl: SafeHTMLElement | null = null
-let _toExitOnClick = kExitOnClick.NONE
-let curModalElement: HTMLDialogElement | null | undefined
+let toExitOnClick_ = kExitOnClick.NONE
+let curModalElement: HTMLDialogElement | HTMLDivElement | null | undefined
 let helpBox: HTMLElement | null | undefined
 let hideHelp: ((event?: EventToPrevent) => void) | undefined | null
+let hasPopover_ = 0
 
-export { box_ as ui_box, root_ as ui_root, styleIn_ as style_ui, lastFlashEl, curModalElement, helpBox, hideHelp }
-export const removeModal = WithDialog ? (): void => {
-  curModalElement && (removeEl_s(curModalElement), curModalElement = null)
-} : (): void => { /* empty */ }
+export {
+  box_ as ui_box, root_ as ui_root, styleIn_ as style_ui, lastFlashEl, curModalElement, hasPopover_, helpBox, hideHelp,
+  toExitOnClick_,
+}
 export function set_hideHelp (_newHide: typeof hideHelp): void { hideHelp = _newHide }
 export function set_helpBox (_newHelpBox: typeof helpBox): void { helpBox = _newHelpBox }
 
+export const removeModal = WithDialog ? (): void => {
+  curModalElement && (removeEl_s(curModalElement), curModalElement = null, hasPopover_ &= ~1)
+} : (): void => { /* empty */ }
+
 export let addUIElement = function (element: HTMLElement, adjust_type?: AdjustType): void {
     box_ = createElement_("div");
-    root_ = attachShadow_(box_);
+    root_ = attachShadow_(box_)
     // listen "load" so that safer if shadowRoot is open
     // it doesn't matter to check `.mode == "closed"`, but not `.attachShadow`
     OnChrome && Build.MinCVer >= BrowserVer.MinEnsuredShadowDOMV1
         || OnFirefox && Build.MinFFVer >= FirefoxBrowserVer.MinEnsuredShadowDOMV1
-        || !OnEdge && (Build.NDEBUG ? !OnChrome || chromeVer_ > BrowserVer.MinEnsuredShadowDOMV1 - 1
-              : root_.mode === "closed")
-        || setupEventListener(OnChrome && Build.MinCVer >= BrowserVer.MinShadowDOMV0 || !OnEdge && root_ !== box_
-              ? root_ as ShadowRoot : 0, "load", function Onload(this: ShadowRoot | Window, e: Event): void {
+        || (!Build.NDEBUG ? !OnEdge && root_.mode === "closed"
+            : OnChrome ? chromeVer_ > BrowserVer.MinEnsuredShadowDOMV1 - 1
+            : OnFirefox ? firefoxVer_ > BrowserVer.MinEnsuredShadowDOMV1 - 1 : !OnEdge)
+    ? appendNode_s(root_, uiParent_ = createElement_("span"))
+    : (uiParent_ = root_,
+        setupEventListener(OnChrome && Build.MinCVer >= BrowserVer.MinShadowDOMV0 || !OnEdge && root_ !== box_
+            ? root_ as ShadowRoot : 0, "load", function Onload(this: ShadowRoot | Window, e: Event): void {
       if (!isAlive_) { setupEventListener(0, "load", Onload, 1); return; } // safe enough even if reloaded
       const t = e.target as HTMLElement | Document;
       if (t === omni_box || t === find_box) {
         Stop_(e); t.onload && t.onload(e)
       }
-    }, 0, 1); // should use a listener in active mode: https://www.chromestatus.com/features/5745543795965952
+    }, 0, 1)) // should use a listener in active mode: https://www.chromestatus.com/features/5745543795965952
     addUIElement = (element2: HTMLElement, adjust2?: AdjustType, before?: Element | null | true): void => {
       const doesAdjustFirst = (OnEdge
           || OnChrome && Build.MinCVer < BrowserVer.Min$Node$$isConnected
               && chromeVer_ < BrowserVer.Min$Node$$isConnected
           ? parentNode_unsafe_s(box_!) : box_!.isConnected!) && element2 !== curModalElement
       adjust2 && doesAdjustFirst && adjustUI()
-      root_.insertBefore(element2, before === true ? root_.firstChild : before || null)
+      uiParent_.insertBefore(element2, before === true ? uiParent_.firstChild : before || null)
       adjust2 && !doesAdjustFirst && adjustUI()
     };
     setUICSS = (innerCSS): void => {
       if (OnEdge || (OnChrome && Build.MinCVer < BrowserVer.MinShadowDOMV0
-            || OnFirefox && Build.MinFFVer < FirefoxBrowserVer.MinEnsuredShadowDOMV1)
-          && (box_ === root_)) {
+            || OnFirefox && Build.MinFFVer < FirefoxBrowserVer.MinEnsuredShadowDOMV1) && (root_ === box_)) {
         box_!.id = "VimiumUI"
       }
       const S = "style" as const
@@ -81,7 +95,7 @@ export let addUIElement = function (element: HTMLElement, adjust_type?: AdjustTy
         createStyle(cssPatch_ ? cssPatch_[1](css) : css, styleIn_ as HTMLStyleElement)
       }
       setUICSS(innerCSS)
-      appendNode_s(root_, styleIn_)
+      appendNode_s(uiParent_, styleIn_)
       /**
        * Note: Tests on C35, 38, 41, 44, 47, 50, 53, 57, 60, 63, 67, 71, 72 confirmed
        *        that el.sheet has been valid when promise.then, even on XML pages.
@@ -94,7 +108,7 @@ export let addUIElement = function (element: HTMLElement, adjust_type?: AdjustTy
         adjust_type = AdjustType.DEFAULT // erase info about what's a first command
       }
     }
-    appendNode_s(root_, element)
+    appendNode_s(uiParent_, element)
     if (styleIn_) {
       setUICSS(styleIn_ as Exclude<typeof styleIn_, Element | null | undefined | "">)
     } else {
@@ -111,19 +125,21 @@ export const getBoxTagName_old_cr = OnChrome && Build.MinCVer < BrowserVer.MinFo
         ? "body" : "div"
   : 0 as never
 
-export const addElementList = function <T extends boolean | BOOL> (
-      array: readonly DrawableHintItem[], offset: { readonly [index in 0 | 1]: number }, dialogContainer?: T
-      ): (T extends true | 1 ? HTMLDialogElement : HTMLDivElement) & SafeElement {
+export const addElementList = function <TopType extends BOOL | 3> (
+      array: readonly DrawableHintItem[], offset: { readonly [index in 0 | 1]: number }, onTop?: TopType
+      ): (TopType extends 1 | 3 ? HTMLDialogElement | HTMLDivElement : HTMLDivElement) & SafeElement {
     const kMaxSlice = 2048, needToSlice = array.length > kMaxSlice
-    const parent = createElement_(WithDialog && dialogContainer ? "dialog"
+    const useDialog = onTop && !(array.length && (OnChrome && Build.MinCVer >= BrowserVer.MinEnsuredPopover
+        || !OnEdge && (HTMLElementProto! satisfies HTMLElement as Partial<PopoverElement>).showPopover))
+    const parent = createElement_(WithDialog && useDialog ? "dialog"
         : OnChrome && Build.MinCVer < BrowserVer.MinForcedColorsMode ? getBoxTagName_old_cr() : "div");
     const style = parent.style
-    const cls = "R HM" + fgCache.d, zoom = bZoom_ / (WithDialog && dialogContainer ? 1 : dScale_)
+    const cls = "R HM" + fgCache.d, zoom = bZoom_ / (WithDialog && onTop ? 1 : dScale_)
     let innerBox: HTMLDivElement | HTMLBodyElement | HTMLDialogElement | undefined = parent
     let i = 0
-    setClassName_s(parent, WithDialog && dialogContainer ? cls + " DLG" : cls)
+    setClassName_s(parent, WithDialog && useDialog ? cls + " DLG" : cls)
     if (OnChrome && Build.MinCVer < BrowserVer.MinForcedColorsMode
-        && dialogContainer && array.length && getBoxTagName_old_cr() < "d") { // <body>
+        && WithDialog && useDialog && array.length && getBoxTagName_old_cr() < "d") { // <body>
       innerBox = createElement_(getBoxTagName_old_cr())
       appendNode_s(parent, innerBox)
       setClassName_s(innerBox, cls)
@@ -133,7 +149,6 @@ export const addElementList = function <T extends boolean | BOOL> (
       for (; i < array.length; i += kMaxSlice) {
         var slice = (needToSlice ? array.slice(i, i + kMaxSlice) : array).map(el => el.m) // eslint-disable-line no-var
         !(Build.BTypes & BrowserType.Chrome) || Build.MinCVer >= BrowserVer.MinTestedES6Environment
-        && Build.MinCVer >= BrowserVer.MinEnsured$ParentNode$$appendAndPrepend
         ? innerBox.append!(...slice) : innerBox.append!.apply(innerBox, slice)
       }
     } else {
@@ -149,11 +164,12 @@ export const addElementList = function <T extends boolean | BOOL> (
       zoom - 1 && (style.zoom = zoom as number | string as string);
     }
     fullscreenEl_unsafe_() && (style.position = "fixed");
-    if (WithDialog && dialogContainer) {
+    if (WithDialog && onTop) {
       curModalElement = parent as HTMLDialogElement
+      hasPopover_ |= !(useDialog satisfies boolean | 0 | undefined) as boolean | BOOL as BOOL
     }
     addUIElement(parent, AdjustType.DEFAULT, lastFlashEl)
-    return parent as (T extends true | 1 ? HTMLDialogElement : HTMLDivElement) & SafeElement
+    return parent as (TopType extends 1 | 3 ? HTMLDialogElement : HTMLDivElement) & SafeElement
 }
 
 export const adjustUI = (event?: Event | /* enable */ 1 | /* disable */ 2): void => {
@@ -161,17 +177,33 @@ export const adjustUI = (event?: Event | /* enable */ 1 | /* disable */ 2): void
     // so here should only use `fullscreenEl_unsafe_`
     const el: Element | null = fullscreenEl_unsafe_(),
     disableUI = event === 2,
-    el2 = el && !root_.contains(el) && !contains_s(box_!, el) ? el : docEl_unsafe_()!
+    // https://developer.mozilla.org/en-US/docs/Web/CSS/Replaced_element
+    isReplacedEl = el && createRegExp(kTip.ReplacedHtmlTags, "").test(htmlTag_(el)),
+    el2 = el && !isReplacedEl && !root_.contains(el) && !contains_s(box_!, el) ? el : docEl_unsafe_()!
     // Chrome also always remove node from its parent since 58 (just like Firefox), which meets the specification
     // doc: https://dom.spec.whatwg.org/#dom-node-appendchild
     //  -> #concept-node-append -> #concept-node-pre-insert -> #concept-node-adopt -> step 2
     disableUI ? removeEl_s(box_!) : el2 === parentNode_unsafe_s(box_!)
-        && (curModalElement || omni_box || !box_!.nextElementSibling) ||
+        && (!box_!.nextElementSibling || omni_box && omni_status > OmniStatus.Inactive || curModalElement) ||
     (OnFirefox ? (appendNode_s as typeof append_not_ff) : append_not_ff)(el2, box_!)
     const sin = styleIn_, s = sin && (sin as HTMLStyleElement).sheet
     s && (s.disabled = false);
     if (WithDialog) {
-      disableUI || curModalElement && !curModalElement.open && curModalElement.showModal()
+      if (disableUI) { /* empty */ }
+      else if (hasPopover_ || isReplacedEl && (OnChrome && Build.MinCVer >= BrowserVer.MinEnsuredPopover
+          || (uiParent_ as PopoverElement).showPopover)) {
+        (uiParent_ as PopoverElement).popover = "manual"
+        setClassName_s(uiParent_ as SafeHTMLElement, "PO")
+        ; (uiParent_ as PopoverElement).togglePopover(false)
+        ; (uiParent_ as PopoverElement).showPopover()
+      } else if ((uiParent_ as PopoverElement).popover) {
+        (uiParent_ as PopoverElement).popover = null
+        setClassName_s(uiParent_ as SafeHTMLElement, "")
+      } else if (curModalElement) {
+        // if box_ has been re-added, then `.open` is true and `.showModal()` throws without a `.close()`
+        (curModalElement as HTMLDialogElement).open && (curModalElement as HTMLDialogElement).close();
+        (curModalElement as HTMLDialogElement).showModal()
+      }
     }
     if (el || event) {
       const removeEL = !el || disableUI, FS = "fullscreenchange";
@@ -215,7 +247,6 @@ export const ensureBorder = (zoom?: number): void => {
 
 export const createStyle = (text: string, css?: HTMLStyleElement | null): HTMLStyleElement => {
     css = css || createElement_("style");
-    css.type = "text/css";
     textContent_s(css, text)
     return css;
 }
@@ -257,7 +288,7 @@ export const getSelectionOf = (node: DocumentOrShadowRootMixin): Selection | nul
 export const getSelected = (notExpectCount?: {r?: ShadowRoot | null}): Selection => {
   type Item<Ref> = Ref extends WeakRef<infer U> ? U : never
   let el: Document | DocumentFragment | Element | null | undefined, sel: Selection | null
-  let sr: ShadowRoot | null = null
+  let sr: ShadowRoot | null = null, sr2: ShadowRoot | null
   if (el = derefInDoc_(currentScrolling)) {
       type ReferredInDoc = EnsuredMountedElement & Item<typeof currentScrolling>;
       el = getRootNode_mounted(el as ReferredInDoc)
@@ -268,24 +299,19 @@ export const getSelected = (notExpectCount?: {r?: ShadowRoot | null}): Selection
         }
       }
   }
-  if (!sr) {
-    sel = getSelection_();
-    let sel2 = OnChrome && Build.MinCVer >= BrowserVer.MinShadowDOMV0
+  sel = sr ? sel! : getSelection_()
+  let sel2: Selection | null | false = OnChrome && (Build.MinCVer >= BrowserVer.MinShadowDOMV0
+          || chromeVer_ > BrowserVer.MinShadowDOMV0 - 1)
         || !OnFirefox && typeof ShadowRoot == OBJECT_TYPES[kTY.func] ? sel : null
-    while (sel2) {
-      sel2 = null;
+  while (sel2) {
           el = singleSelectionElement_unsafe(sel)
-          if (el && (sr = GetShadowRoot_(el as Element))) {
-            if (OnChrome ? sel2 = getSelectionOf(sr) : hasGetSelection(sr) && (sel2 = getSelectionOf(sr))) {
-              sel = sel2!;
-            } else {
-              sr = null;
-            }
-          }
+    sel2 = el && (sr2 = TryGetShadowRoot_(el as Element)) && (OnChrome || hasGetSelection(sr2)) && getSelectionOf(sr2)
+    if (sel2) {
+      sr = sr2!, sel = sel2
     }
   }
   notExpectCount && (notExpectCount.r = sr)
-  return sel!
+  return sel
 }
 
 /** return HTMLElement if there's only Firefox */
@@ -293,7 +319,7 @@ export const getSelectionParent_unsafe = ((sel: Selection, re?: RegExpG & RegExp
     let range = selRange_(sel), text: HTMLElement["innerText"] | undefined
       , selected: string | undefined, match: RegExpExecArray | null, result = 0
       , par: Node | null = range && range.commonAncestorContainer, lastPar = par!
-    while (par && !(par as NodeToElement).tagName) {
+    while (par && !isNode_(par, kNode.ELEMENT_NODE)) {
       par = parentNode_unsafe_s(par as Text)
     }
     // now par is Element or null, and may be a <form> / <frameset>
@@ -318,10 +344,10 @@ export const getSelectionParent_unsafe = ((sel: Selection, re?: RegExpG & RegExp
   (sel: Selection, re?: undefined): Element | null
 }
 
-export const getSelectionBoundingBox_ = (sel?: Selection, ensured?: BOOL): Rect | null => {
-  const range = selRange_(sel || getSelected(), ensured), bcr = range && range.getBoundingClientRect(),
-  rect = bcr && padClientRect_(bcr, 3)
-  return rect && (rect.b > rect.t || rect.r > rect.l) ? rect : null
+export const getSelectionBoundingBox_ = (sel?: Selection | void, ensured?: BOOL, range0?: Range): Rect | null => {
+  const range = range0 || selRange_(sel || getSelected(), ensured), bcr = range && range.getBoundingClientRect(),
+  rect = bcr && padClientRect_(bcr, range0 ? 1 : 3)
+  return rect && rect.b > rect.t ? rect : null
 }
 
 /** `type`: 0 means to trim; always check focused `<input>` on Firefox and blurred inputs on Chrome */
@@ -329,11 +355,11 @@ export const getSelectionText = (type?: 0 | 1, sel?: Selection): string => {
     sel = sel || getSelection_()
     let s = "" + <SelWithToStr> sel, node: Element | null, start: number | null
     if (OnFirefox && !s) {
-      s = !insert_Lock_() || getEditableType_<0>(node = raw_insert_lock!) !== EditableType.TextBox
+      s = !insert_Lock_() || getEditableType_<0>(node = raw_insert_lock!) < EditableType.MaxNotTextBox + 1
           || (start = textOffset_(node as TextElement)) == null ? s
           : (node as TextElement).value.slice(start, textOffset_(node as TextElement, 1)!)
     } else if (s && !insert_Lock_()
-        && (node = singleSelectionElement_unsafe(sel)) && getEditableType_<0>(node) === EditableType.TextBox
+        && (node = singleSelectionElement_unsafe(sel)) && getEditableType_<0>(node) > EditableType.MaxNotTextBox
         && !getSelectionBoundingBox_(sel, 1)) {
       s = "";
     }
@@ -342,6 +368,11 @@ export const getSelectionText = (type?: 0 | 1, sel?: Selection): string => {
 
 export const doesSelectRightInEditableLock = (): boolean =>
     (raw_insert_lock as TextElement).selectionDirection !== kDir[0]
+
+export const maySelectRight_ = (sel: Selection): boolean =>
+    insert_Lock_() && getEditableType_<0>(raw_insert_lock!) > EditableType.MaxNotTextBox
+    ? doesSelectRightInEditableLock()
+    : !!getDirectionOfNormalSelection(sel, getAccessibleSelectedNode(sel), getAccessibleSelectedNode(sel, 1))
 
 export const removeSelection = function (root?: VUIRoot & Pick<DocumentOrShadowRoot, "getSelection">): boolean {
     const sel = (OnChrome && Build.MinCVer >= BrowserVer.MinShadowDOMV0
@@ -359,7 +390,7 @@ export const resetSelectionToDocStart = (sel?: Selection, range?: Range | null):
 export const selectAllOfNode = (node: Node): void => { getSelection_().selectAllChildren(node) }
 
 export const selectNode_ = (element: SafeElement): void => {
-  if (getEditableType_<0>(element) > EditableType.MaxNotTextModeElement) {
+  if (getEditableType_<0>(element) > EditableType.MaxNotEditableElement) {
     (element as TextElement).select()
   } else {
     const range = doc.createRange()
@@ -369,10 +400,9 @@ export const selectNode_ = (element: SafeElement): void => {
 }
 
 export const moveSel_s_throwable = (element: LockableElement, action: SelectActions | undefined): void => {
-    const elTag = htmlTag_(element), _rawType = editableTypes_[elTag]
-    const type = _rawType ? _rawType > EditableType.MaxNotTextModeElement ? _rawType : EditableType.Default
-        : element.isContentEditable ? EditableType.rich_ : EditableType.Default
-    const isBox = type === EditableType.TextBox || type > EditableType.input_ && textContent_s(element).includes("\n"),
+    let type = getEditableType_<0>(element)
+    const isBox = type === EditableType.TextArea
+        || type === EditableType.ContentEditable && textContent_s(element).includes("\n"),
     gotoStart = action === "start",
     gotoEnd = !action || action === "end" || isBox && (action + "")[3] === "-"
     let doesCollpase: boolean | BOOL = gotoEnd || gotoStart
@@ -382,8 +412,9 @@ export const moveSel_s_throwable = (element: LockableElement, action: SelectActi
       return;
     }
     // not need `this.getSelection_()`
-    if (type > EditableType.input_) {
-      selectAllOfNode(element);
+    if (type === EditableType.ContentEditable) {
+      action && doesCollpase || !contains_s(element, getAccessibleSelectedNode(getSelected()) || doc)
+          ? selectAllOfNode(element) : doesCollpase = 0
     } else {
       len = (element as TextElement).value.length
       const start = textOffset_(element as TextElement), end = textOffset_(element as TextElement, 1)
@@ -399,65 +430,76 @@ export const moveSel_s_throwable = (element: LockableElement, action: SelectActi
       }
     }
     doesCollpase && collpaseSelection(getSelection_(), gotoEnd)
-    if (type === EditableType.input_
-        && (OnChrome && Build.MinCVer >= BrowserVer.MinEnsured$input$$showPicker
-            || (element as HTMLInputElement).showPicker)
-        && (!len && (str = (element as HTMLInputElement).autocomplete) && str !== "off"
+    if (OnEdge) { /** empty */ }
+    else if (getEditableType_<0>(element as SafeElement) === EditableType.Input
+        ? (!len && (str = (element as HTMLInputElement).autocomplete) && str !== "off"
             || (element as HTMLInputElement).list)
-        && getEditableType_(element as HTMLInputElement)) {
-      (element as HTMLInputElement).showPicker!()
+        : Build.MV3 && OnChrome && // in case it change .type
+          hasTag_("input", element) && uneditableInputs_[element.type] === 4) {
+      showPicker_(element as HTMLInputElement, EditableType.Input)
     }
 }
 
-export const collpaseSelection = (sel: Selection, toEnd?: VisualModeNS.ForwardDir | boolean): void => {
-  toEnd ? sel.collapseToEnd() : sel.collapseToStart()
+export const collpaseSelection = (sel: Selection, toEnd?: VisualModeNS.ForwardDir | boolean,
+    fix_input?: number): void => {
+  if (!OnFirefox && fix_input && raw_insert_lock && getEditableType_<0>(raw_insert_lock) > EditableType.MaxNotTextBox) {
+    fix_input = textOffset_(raw_insert_lock as TextElement, toEnd)!
+    inputSelRange(raw_insert_lock as TextElement, fix_input, fix_input, VisualModeNS.kDir.right)
+  } else {
+    toEnd ? sel.collapseToEnd() : sel.collapseToStart()
+  }
 }
 
 export const getRect = (clickEl: SafeElement, refer?: HTMLElementUsingMap | null): Rect | null => {
-    getZoom_(clickEl);
-    prepareCrop_();
+    const tag = htmlTag_(clickEl)
     if (refer) {
       return getClientRectsForAreas_(refer, [], [clickEl as HTMLAreaElement]);
+    } else if (tag === "a") {
+      return getPreferredRectOfAnchor(clickEl as HTMLAnchorElement)
+    } else if (tag === "input") {
+      return getVisibleBoundingRect_(clickEl, 1)
     }
-    const rect = OnFirefox || !notSafe_not_ff_!(clickEl) ? getVisibleClientRect_(clickEl) : null,
-    bcr = padClientRect_(getBoundingClientRect_(clickEl), 8),
-    rect2 = rect && !isContaining_(bcr, rect) ? rect
-      : cropRectToVisible_(bcr.l, bcr.t, bcr.r, bcr.b) ? bcr : null;
+    const rect = getVisibleClientRect_(clickEl),
+    bcr = padClientRect_(getBoundingClientRect_(clickEl), 3),
+    rect2 = rect && !isContaining_(bcr, rect) ? rect : cropRectS_(bcr) ? bcr : null
     return rect2 && getCroppedRect_(clickEl, rect2);
 }
 
 export const flash_ = function (el: SafeElement | null, rect?: Rect | null, lifeTime?: number
-      , classNames?: string, knownViewOffset?: ViewOffset): (() => void) | void {
-    rect || (rect = getRect(el!))
+      , classNames?: string, knownViewOffset?: ViewOffset): SafeHTMLElement | (() => void) | void {
+    rect || (getZoom_(el!), prepareCrop_(), rect = getRect(el!))
     if (!rect) { return; }
     const flashEl = createElement_(OnChrome
         && Build.MinCVer < BrowserVer.MinForcedColorsMode ? getBoxTagName_old_cr() : "div"),
     nfs = knownViewOffset ? 2 : <BOOL> <BOOL | boolean> +!fullscreenEl_unsafe_()
     setClassName_s(flashEl, "R Flash" + (classNames || "")
-        + (setBoundary_(flashEl.style, rect, knownViewOffset, nfs) ? " AbsF" : ""))
+        + (setBoundary_(flashEl.style, rect, nfs, knownViewOffset, 8) ? " AbsF" : ""))
     OnChrome &&
     bZoom_ !== 1 && nfs && (flashEl.style.zoom = "" + bZoom_);
     addUIElement(flashEl, AdjustType.DEFAULT)
     lastFlashEl = flashEl
-    // not need to normalize lifeTime
     const remove = (): void => {
       lastFlashEl === flashEl && (lastFlashEl = null)
       removeEl_s(flashEl)
     };
-    lifeTime! < 0 || timeout_(remove, (lifeTime || GlobalConsts.DefaultRectFlashTime) * (1 + +fgCache.m))
+    knownViewOffset || timeout_(remove, (lifeTime || GlobalConsts.DefaultRectFlashTime) * (1 + +fgCache.m))
     return remove;
 } as {
-    (el: null, rect: Rect, lifeTime?: number, classNames?: string, knownViewOffset?: ViewOffset): () => void;
-    (el: SafeElement, rect?: null, lifeTime?: number, classNames?: string): (() => void) | void;
+    (el: null, rect: Rect, lifeTime: -1, classNames: string, knownViewOffset: ViewOffset): () => void
+    (el: null, rect: Rect, lifeTime?: number, classNames?: string, _offset?: void): () => void
+    (el: SafeElement, rect?: Rect | null, lifeTime?: number, classNames?: string, _offset?: void): (() => void) | void
 }
 
   /** key: 1 := help dialog; 2 := vomnibar; -1: remove for help dialog; -2: remove for vomnibar */
 export const setupExitOnClick = (key: kExitOnClick): void => {
-  key = key & kExitOnClick.REMOVE ? _toExitOnClick & ~key : _toExitOnClick | key
-  key !== _toExitOnClick && setupEventListener(0, CLK, doExitOnClick, !(_toExitOnClick = key), 1)
+  key = key & kExitOnClick.REMOVE ? toExitOnClick_ & ~key : toExitOnClick_ | key
+  if (key !== toExitOnClick_) {
+    toExitOnClick_ = key
+    OnChrome ? resetAnyClickHandler_cr(isWaitingAccessKey) : setupEventListener(0, CLK, doExitOnClick_, !key, 1)
+  }
 }
 
-const doExitOnClick = (event?: MouseEventToPrevent): void => {
+export const doExitOnClick_ = (event?: MouseEventToPrevent): void => {
   if (event) {
       if (// simulated events generated by page code
           (OnChrome && Build.MinCVer < BrowserVer.Min$Event$$IsTrusted ? event.isTrusted === false : !event.isTrusted)
@@ -467,16 +509,23 @@ const doExitOnClick = (event?: MouseEventToPrevent): void => {
           || !parentNode_unsafe_s(box_!)
           // the click target is in Vimium C's UI
           || (OnChrome && Build.MinCVer >= BrowserVer.MinShadowDOMV0
-                || OnFirefox && Build.MinFFVer >= FirefoxBrowserVer.MinEnsuredShadowDOMV1
-              ? event.target === box_
+                || OnFirefox && Build.MinFFVer >= FirefoxBrowserVer.MinEnsuredShadowDOMV1 || !OnEdge && root_ !== box_
+              ? event.target === box_ && !(!OnFirefox && WithDialog && omni_dialog_non_ff
+                  && omni_status == OmniStatus.Showing && !(root_ as ShadowRoot).activeElement)
               : !(event.target instanceof Element) || root_.contains(event.target))
           ) {
         return;
       }
   }
   event && prevent_(event)
-  _toExitOnClick & kExitOnClick.helpDialog && hideHelp!()
-  _toExitOnClick & kExitOnClick.vomnibar && omniHide()
+  toExitOnClick_ & kExitOnClick.helpDialog && hideHelp!()
+  toExitOnClick_ & kExitOnClick.vomnibar && omniHide()
+}
+
+export const focusIframeContentWnd_ = (iframe: AccessableIFrameElement, res?: boolean | 0): void => {
+  if (res) { return }
+  iframe === omni_box && res !== 0 ? omni_status < OmniStatus.Showing || postToOmni(VomnibarNS.kCReq.focus)
+  : iframe.contentWindow.focus()
 }
 
 /** must be called only if having known anotherWindow is "in a same origin" */
@@ -534,8 +583,10 @@ export const checkHidden = ((cmd?: FgCmdAcrossFrames, options?: OptionsWithForce
   el = curFrameElement || docEl_unsafe_();
   let box: Rect | null,
   parEvents: ReturnType<typeof getParentVApi> | undefined,
+  defaultToPar = isIFrameInAbout_ && cmd === kFgCmd.framesGoBack,
   // use client{Width,Height} in case an <iframe> has border (e.g.: is blocked so its CSS is never added)
-  result: boolean | BOOL = dimSize_(curFrameElement, kDim.elClientH) < 4
+  result: boolean | BOOL = defaultToPar
+      || dimSize_(curFrameElement, kDim.elClientH) < 4
       || dimSize_(curFrameElement, kDim.elClientW) < 4 || !!el && !isStyleVisible_(el)
   if (cmd) {
     // if in a forced cross-origin env (by setting doc.domain),
@@ -543,10 +594,10 @@ export const checkHidden = ((cmd?: FgCmdAcrossFrames, options?: OptionsWithForce
     // so here only use `parApi.innerHeight_()` in case
     if ((OnFirefox ? (parEvents = getParentVApi()) : curFrameElement)
         && (result || (box = boundingRect_(curFrameElement!)).b <= 0
-            || (OnFirefox ? box.t > parEvents!.i!() : box.t > (parent as Window).innerHeight))) {
+            || box.t > (OnFirefox ? parEvents!.i!() : (parent as Window).innerHeight))) {
       OnFirefox || (parEvents = getParentVApi())
       if (parEvents && !parEvents.a(keydownEvents_)) {
-        parEvents.f(cmd, options!, count!, 1);
+        parEvents.f(cmd, options!, count!, +!defaultToPar as boolean | BOOL as BOOL)
         result = 1;
       }
     }
@@ -572,6 +623,16 @@ export const filterOutInert = (hints: Hint[]): void => {
       ? hints.length : 0
   while (0 <= --i) {
     hints[i][0].closest!("[inert]") && hints.splice(i, 1)
+  }
+}
+
+export const onToggle = (event: Event & { [property in "newState" | "oldState"]?: "open" | "closed" }): void => {
+  const newState = event.newState, target = event.target as Node
+  if (event.isTrusted && isNode_(target, kNode.ELEMENT_NODE) && !hasTag_("details", target)) {
+    hasPopover_ = max_(hasPopover_ & 1, hasPopover_ + (newState! > "o" ? 2 : -2))
+    if (root_ && hasPopover_ > 0) {
+      adjustUI()
+    }
   }
 }
 

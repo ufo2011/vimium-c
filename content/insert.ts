@@ -1,19 +1,19 @@
 import {
   doc, keydownEvents_, safeObj, isTop, set_keydownEvents_, setupEventListener, Stop_, OnChrome, OnFirefox, weakRef_ff,
-  esc, onWndFocus, isEnabled_, readyState_, injector, recordLog, weakRef_not_ff, OnEdge, getTime, abs_, fgCache,
-  safeCall, timeout_, timeStamp_
+  esc, onWndFocus, isEnabled_, readyState_, recordLog, weakRef_not_ff, OnEdge, getTime, abs_, fgCache, deref_,
+  isTY, timeout_, timeStamp_, chromeVer_, VTr
 } from "../lib/utils"
-import { post_, runFallbackKey, safePost } from "./port"
+import {
+  activeEl_unsafe_, getEditableType_, getEventPath, getSelection_, frameElement_, deepActiveEl_unsafe_, blur_unsafe,
+  SafeEl_not_ff_, MDW, fullscreenEl_unsafe_, removeEl_s, isNode_, BU, docHasFocus_, getRootNode_mounted, testMatch,
+  TryGetShadowRoot_, isAriaFalse_, findSelectorByHost
+} from "../lib/dom_utils"
+import { post_, runFallbackKey, runtime_port, safePost } from "./port"
 import { getParentVApi, ui_box, ui_root } from "./dom_ui"
 import { hudHide } from "./hud"
 import { setNewScrolling, scrollTick } from "./scroller"
-import { set_isCmdTriggered, resetAnyClickHandler, onPassKey } from "./key_handler"
-import {
-  activeEl_unsafe_, getEditableType_, GetShadowRoot_, getSelection_, frameElement_, deepActiveEl_unsafe_, blur_unsafe,
-  SafeEl_not_ff_, MDW, fullscreenEl_unsafe_, removeEl_s, isNode_, BU, docHasFocus_, getRootNode_mounted, testMatch,
-  getEventPath
-} from "../lib/dom_utils"
-import { handler_stack, removeHandler_, prevent_, isEscape_ } from "../lib/keyboard_utils"
+import { set_isCmdTriggered, resetAnyClickHandler_cr, onPassKey } from "./key_handler"
+import { handler_stack, removeHandler_, prevent_, isEscape_, consumeKey_mac } from "../lib/keyboard_utils"
 import { InputHintItem } from "./link_hints"
 import { find_box } from "./mode_find"
 
@@ -31,27 +31,31 @@ let isHintingInput: BOOL = 0
 let inputHint: { /** box */ b: HTMLDivElement | null; /** hints */ h: InputHintItem[] } | null = null
 let suppressType: string | 0 = 0
 let insert_last_: WeakRef<LockableElement> | null | undefined
+let insert_last2_: WeakRef<LockableElement> | null | undefined
 let is_last_mutable: BOOL = 1
 let lastWndFocusTime = 0
-// the `readyState_ > "c"` is just to grab focus on `chrome://*/*` URLs
-let grabBackFocus: boolean | ((event: Event, target: LockableElement) => void) = readyState_ > (OnChrome ? "i" : "l")
+// the `readyState_ > "i"` is to grab focus on `chrome://*/*` URLs and `about:*` iframes
+let grabBackFocus: boolean | ((event: Event, target: LockableElement) => void) = readyState_ > "i"
 let onExitSuppress: ((this: void) => void) | 0 | undefined
 let onWndBlur2: ((this: void) => void) | undefined | null
 let passAsNormal: BOOL = 0
+let readonlyFocused_: 0 | 1 | -1 = 0
 
 export {
-  lock_ as raw_insert_lock, insert_global_, passAsNormal,
-  insert_last_, is_last_mutable as insert_last_mutable,
+  lock_ as raw_insert_lock, insert_global_, passAsNormal, readonlyFocused_,
+  insert_last_, insert_last2_, is_last_mutable as insert_last_mutable,
   grabBackFocus, suppressType, inputHint as insert_inputHint, onWndBlur2,
 }
 export function set_insert_global_ (_newIGlobal: typeof insert_global_): void { insert_global_ = _newIGlobal }
 export function set_insert_last_ (_newILast: WeakRef<LockableElement> | null): void { insert_last_ = _newILast }
+export function set_insert_last2_ (_newILast2: typeof insert_last2_): void { insert_last2_ = _newILast2 }
 export function set_is_last_mutable (_newIsLastMutable: BOOL): void { is_last_mutable = _newIsLastMutable }
 export function set_inputHint (_newIHint: typeof inputHint): void { inputHint = _newIHint }
 export function set_isHintingInput (_newIsHintingInput: BOOL): void { isHintingInput = _newIsHintingInput }
 export function set_grabBackFocus (_newGrabBackFocus: typeof grabBackFocus): void { grabBackFocus = _newGrabBackFocus }
 export function set_onWndBlur2 (_newOnBlur: typeof onWndBlur2): void { onWndBlur2 = _newOnBlur }
 export function set_passAsNormal (_newNormal: BOOL): void { passAsNormal = _newNormal }
+export function set_readonlyFocused_ (_newRoFocused: 0 | 1 | -1): 0 | 1 | -1 { return readonlyFocused_ = _newRoFocused }
 // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
 
 export const insertInit = (doesGrab?: boolean | null, inLoading?: 1): void => {
@@ -60,7 +64,7 @@ export const insertInit = (doesGrab?: boolean | null, inLoading?: 1): void => {
   if (doesGrab) {
     if (activeEl && getEditableType_(activeEl)) {
       if (inLoading) {
-        insert_last_ = null;
+        insert_last_ = insert_last2_ = null
         counter = 1
         recordLog(kTip.logGrabFocus)()
       }
@@ -74,7 +78,7 @@ export const insertInit = (doesGrab?: boolean | null, inLoading?: 1): void => {
       grabBackFocus = (event: Event, target: LockableElement): void => {
         const activeEl1 = activeEl_unsafe_(), now = getTime()
         // on Chrome, password saver won't set doc.activeElement when dispatching "focus" events
-        if (activeEl1 === target || activeEl1 && GetShadowRoot_(activeEl1)) {
+        if (activeEl1 === target || activeEl1 && TryGetShadowRoot_(activeEl1)) {
           Stop_(event);
           counter && abs_(now - tick) > 512 ? counter = 1 : counter++ || recordLog(kTip.logGrabFocus)()
           tick = now
@@ -160,7 +164,7 @@ export const focusUpper = (key: kKeyCode, force: boolean, event: ToPrevent | 0):
   if (!parEl && (!force || isTop)) { return; }
   event && prevent_(event); // safer
   if (parEl) {
-    keydownEvents_[key] = 1;
+    Build.OS & kBOS.MAC ? consumeKey_mac(key, event as KeyboardEventToPrevent) : (keydownEvents_[key] = 1)
     const parApi = getParentVApi()
     if (parApi && !parApi.a(keydownEvents_)) {
       parApi.s()
@@ -176,19 +180,17 @@ export const focusUpper = (key: kKeyCode, force: boolean, event: ToPrevent | 0):
 
 export const exitInsertMode = <(target: Element, event?: HandlerNS.Event) => HandlerResult> ((
     target: LockableElement | null, event?: HandlerNS.Event): HandlerResult => {
-  if (GetShadowRoot_(target!) || target === lock_) {
+  if (target === lock_ || TryGetShadowRoot_(target as Element)) {
     target = lock_
     lock_ = null
   } else {
     target = getEditableType_(target!) ? target : null
   }
-  let match: boolean | void = !1
   const ret = insert_global_ && insert_global_.p || target && event
-      && (fgCache.p && (match = safeCall(testMatch, fgCache.p, [target])))
+      && testConfiguredSelector_<"passEsc">(target, 1)
       && isEscape_(event.c) ? HandlerResult.Nothing : HandlerResult.Prevent
   if (target) {
     ret ? target.blur() : timeout_(blur_unsafe.bind(0, target), 0)
-    match !== !!match && (fgCache.p = "")
   }
   if (insert_global_) {
     runFallbackKey(insert_global_, 0)
@@ -206,10 +208,10 @@ export const exitInputHint = (): void => {
   }
 }
 
-export const resetInsert = (): void => {
-  insert_last_ = lock_ = insert_global_ = null;
-  is_last_mutable = 1;
-  exitGrab(); setupSuppress();
+export const resetInsertAndScrolling = (): void => { // force terser to mark it inline
+  setNewScrolling(insert_last_ = insert_last2_ = lock_ = insert_global_ = null), is_last_mutable = 1,
+  exitGrab(), setupSuppress()
+  readonlyFocused_ > 0 && hudHide()
 }
 
 export const onFocus = (event: Event | FocusEvent): void => {
@@ -217,6 +219,7 @@ export const onFocus = (event: Event | FocusEvent): void => {
       ? !event.isTrusted : event.isTrusted === false) { return; }
   // on Firefox, target may also be `document`
   let target: EventTarget | Element | Window | Document = event.target;
+  let el2: SafeElement & { _: 1 } | LockableElement | null | undefined
   if (target === window) {
     lastWndFocusTime = timeStamp_(event)
     onWndFocus()
@@ -227,7 +230,8 @@ export const onFocus = (event: Event | FocusEvent): void => {
   // since BrowserVer.MinMaybeAutoFillInShadowDOM , Chrome will auto fill a password in a shadow tree
   if (lock_ && lock_ === (OnChrome ? deepActiveEl_unsafe_() : activeEl_unsafe_())) { return; }
   if (target === ui_box) { Stop_(event); return }
-  const sr = GetShadowRoot_(target as Element);
+  // on Edge 107 and MV3 mode, chrome.dom may throw `invalid extension context`
+  const sr = OnChrome ? TryGetShadowRoot_(<Element> target, runtime_port ? 0 : 1) : TryGetShadowRoot_(target as Element)
   if (sr) {
     const path = getEventPath(event)
     let topOfPath: EventTarget | undefined
@@ -246,25 +250,43 @@ export const onFocus = (event: Event | FocusEvent): void => {
   }
   if (!lastWndFocusTime || timeStamp_(event) - lastWndFocusTime > 30) {
     if (!OnFirefox) {
-      let el: SafeElement | null = SafeEl_not_ff_!(target as Element)
-      el && setNewScrolling(el)
+      el2 = SafeEl_not_ff_!(target as Element) satisfies SafeElement | null as SafeElement & { _: 1 } | null
+      el2 && setNewScrolling(el2)
     } else {
       setNewScrolling(target as SafeElement)
     }
   }
   lastWndFocusTime = 0;
-  if (getEditableType_<EventTarget>(target)) {
+  let editableParent: SafeElement | null, type: EditableType | boolean
+  if (type = getEditableType_<EventTarget>(target)) {
     if (grabBackFocus) {
       (grabBackFocus as Exclude<typeof grabBackFocus, boolean>)(event, target);
     } else {
       esc!(HandlerResult.Nothing)
       lock_ = target
-      if (is_last_mutable) {
-        // here ignore the rare case of an XMLDocument with a editable node on Firefox, for smaller code
-        if (activeEl_unsafe_() !== doc.body) {
+      // here ignore the rare case of an XMLDocument with a editable node on Firefox, for smaller code
+      if (activeEl_unsafe_() !== doc.body) {
+        if (is_last_mutable) {
+          el2 = deref_(insert_last_)
+          insert_last2_ = !el2 || el2 === target ? insert_last2_
+              : OnFirefox && Build.MinFFVer < FirefoxBrowserVer.MinWeakRefReliableForDom
+              ? weakRef_ff(el2, kElRef.lastEditable2) : insert_last_
           insert_last_ = OnFirefox ? weakRef_ff(target, kElRef.lastEditable) : weakRef_not_ff!(target)
+        } else {
+          insert_last2_ = OnFirefox ? weakRef_ff(target, kElRef.lastEditable2) : weakRef_not_ff!(target)
         }
       }
+      editableParent = (type as number | boolean as EditableType) !== EditableType.ContentEditable
+          || OnChrome && Build.MinCVer < BrowserVer.Min$Element$$closest && chromeVer_ < BrowserVer.Min$Element$$closest
+          ? target
+          : OnFirefox ? target.closest!("[contenteditable]") satisfies Element | null as SafeElement | null
+          : SafeEl_not_ff_!(target.closest!("[contenteditable]"))
+      readonlyFocused_ = editableParent && testConfiguredSelector_<"ignoreReadonly">(editableParent, 0) ? -1
+        : (type as number | boolean as EditableType) > EditableType.MaxNotEditableElement
+          && editableParent && !isAriaFalse_(editableParent, kAria.readOnly)
+          || (type as number|boolean as EditableType) > EditableType.MaxNotTextBox && (target as TextElement).readOnly
+        ? 1 : 0
+      readonlyFocused_ > 0 && hudHide()
     }
   }
 }
@@ -276,7 +298,7 @@ export const onBlur = (event: Event | FocusEvent): void => {
   let target: EventTarget | Element | Window | Document = event.target, topOfPath: EventTarget | undefined
   if (target === window) { onWndBlur(); return }
   if (OnFirefox && target === doc) { return; }
-  const sr = GetShadowRoot_(target as Element)
+  const sr = OnChrome ? TryGetShadowRoot_(target as Element, runtime_port ? 0 : 1) : TryGetShadowRoot_(<Element> target)
   if (sr && target !== ui_box) {
   const path = getEventPath(event)
   const same = !OnEdge && (!OnChrome
@@ -297,6 +319,7 @@ export const onBlur = (event: Event | FocusEvent): void => {
     if (inputHint && !isHintingInput && docHasFocus_()) {
       exitInputHint();
     }
+    readonlyFocused_ > 0 && hudHide()
   }
 }
 
@@ -342,10 +365,7 @@ const onWndBlur = (): void => {
     set_keydownEvents_(safeObj<any>(null))
   }
   set_isCmdTriggered(kKeyCode.None)
-  if (OnChrome) {
-    /*#__NOINLINE__*/ resetAnyClickHandler();
-  }
-  injector || (<RegExpOne> /a?/).test("");
+  OnChrome && /*#__NOINLINE__*/ resetAnyClickHandler_cr()
   esc!(HandlerResult.ExitNormalMode);
 }
 
@@ -356,4 +376,20 @@ const getSimpleNodeMap = (): ShadowNodeMap => {
     get (node: Node): kNodeInfo | undefined { return (node as NodeWithInfo).vimiumC },
     delete (node: Node): any { (node as NodeWithInfo).vimiumC = kNodeInfo.NONE }
   }
+}
+
+const testConfiguredSelector_ = <T extends "passEsc" | "ignoreReadonly">(target: SafeElement
+    , passEsc: T extends "passEsc" ? 1 : 0): boolean | 0 => {
+  let selector: string | [string] | 0 | void = (passEsc ? fgCache.p : fgCache.y) as string | [string] | 0
+  if (isTY(selector)) {
+    if (OnEdge) {
+      selector = selector.replace(<RegExpG & RegExpSearchable<0>> /:default/g
+          , () => VTr(passEsc + kTip.defaultIgnoreReadonly))
+    }
+    selector = findSelectorByHost(selector, target)
+    selector = selector ? (!OnEdge ? [selector.replace(":default"
+        , VTr(passEsc + kTip.defaultIgnoreReadonly) as "css")] : [selector]) : 0
+    fgCache[("yp"[passEsc]) as "y" | "p"] = (selector satisfies [string] | 0) as never
+  }
+  return selector && testMatch(selector[0], target)
 }

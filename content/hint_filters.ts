@@ -114,7 +114,8 @@ export const rotate1 = (totalHints: readonly HintItem[], reverse?: boolean, save
   }
   for (const zIndexSubArray of zIndexes_) {
     const length = zIndexSubArray.length, end = reverse ? -1 : length
-    const max = (Build.NDEBUG ? max_ : Math.max).apply(math, zIndexSubArray)
+    const max = !(Build.BTypes & BrowserType.Chrome) || Build.MinCVer >= BrowserVer.MinTestedES6Environment
+        ? max_(...zIndexSubArray) : (Build.NDEBUG ? max_ : math.max).apply(math, zIndexSubArray)
     let oldI: number = totalHints[zIndexSubArray[reverse ? 0 : length - 1]].z!
     for (let j = reverse ? length - 1 : 0; j !== end; reverse ? j-- : j++) {
       const hint = totalHints[zIndexSubArray[j]]
@@ -157,7 +158,7 @@ export const initFilterEngine = (hints: readonly FilteredHintItem[]): void => {
   pageNumberHintArray = hints.slice(curRangeSecond - 1, curRangeSecond + curRangeCountS1)
   getMatchingHints(hintKeyStatus, "", "", 0);
 }
-export const generateHintText = (hint: Hint, hintInd: number, allItems: readonly HintItem[]): HintText => {
+export const generateHintText = ((hint: Hint, hintInd: number, allItems: readonly HintItem[]): HintText => {
   const el = hint[0], localName = el.localName
   let text = "", show: 0 | 1 | 2 = 0, ind: number;
   if (!("lang" in el)) { // SVG elements or plain `Element` nodes
@@ -208,7 +209,7 @@ export const generateHintText = (hint: Hint, hintInd: number, allItems: readonly
           ? generateHintText([el2] as {[0]: Hint[0]} as Hint, hintInd, allItems).t : ""
       show = text ? 2 : 0
     }
-    text = text || el.title || (!(Build.BTypes & ~BrowserType.Safari)
+    text = text || el.title || (Build.BTypes === BrowserType.Safari as number
             || !(Build.BTypes & ~(BrowserType.Chrome | BrowserType.Safari))
                 && Build.MinCVer >= BrowserVer.MinEnsuredAriaProperties ? el.ariaLabel : attr_s(el, ALA))
         || ((text = el.className) && closableClasses_.test(text) ? "Close" : "")
@@ -224,6 +225,9 @@ export const generateHintText = (hint: Hint, hintInd: number, allItems: readonly
       show > 1 && ++hintInd < allItems.length && allItems[hintInd].h!.t.replace(":", "") === text
     ) ? ":" + text : text
   return { t: text, w: null };
+}) as {
+  (hint: Hint, hintInd: number, allItems: readonly HintItem[]): HintText
+  (hint: [HTMLInputElement]): HintText
 }
 
 export const getMatchingHints = (keyStatus: KeyStatus, text: string, seq: string

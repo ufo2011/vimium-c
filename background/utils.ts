@@ -1,4 +1,7 @@
-import { CurCVer_, CurFFVer_, framesForTab_, OnChrome, OnEdge, OnFirefox } from "./store"
+import {
+  contentConfVer_, CurCVer_, CurFFVer_, framesForTab_, omniConfVer_, OnChrome, OnEdge, OnFirefox, set_contentConfVer_,
+  set_omniConfVer_, os_
+} from "./store"
 
 export const spacesRe_ = <RegExpG & RegExpSearchable<0>> /\s+/g
 export const protocolRe_ = <RegExpOne> /^[a-z][\+\-\.\da-z]+:\/\//
@@ -47,14 +50,14 @@ export const unicodeRSubstring_ = (str: string, start: number, end: number): str
     // Note: ZWJ is too hard to split correctly (https://en.wikipedia.org/wiki/Zero-width_joiner)
     // so just remove such a character (if any)
     // unicode surrogates: https://www.jianshu.com/p/7ae9005e0671
-    end += charCode >= 0xD800 && charCode < 0xDC00 ? 1 : charCode === 0x200D && end > start + 1 ? -1 : 0;
+    end += charCode >= 0xD800 && charCode < 0xDC00 || charCode === 0x200D && end > start + 1 ? -1 : 0
     return str.slice(start, end);
 }
 
 export const unicodeLSubstring_ = (str: string, start: number, end: number): string => {
-    const charCode = start > 0 && start < str.length ? str.charCodeAt(start) : 0;
-    start += charCode >= 0xDC00 && charCode <= 0xDFFF ? -1
-        : charCode === 0x200D && start < str.length - 1 && start < end - 1 ? 1 : 0;
+    const charCode = start > 0 && start < str.length && start < end ? str.charCodeAt(start) : 0
+    start += charCode >= 0xDC00 && charCode <= 0xDFFF
+        || charCode === 0x200D && start < str.length - 1 && start < end - 1 ? 1 : 0
     return str.slice(start, end);
 }
 
@@ -83,7 +86,7 @@ const _tlds = ["", "",
 .ca.cc.cd.cf.cg.ch.ci.ck.cl.cm.cn.co.cr.cu.cv.cw.cx.cy.cz.de.dj.dk.dm.do.dz.ec.ee.eg.er.es.et.eu.fi.fj.fk.fm.fo.fr\
 .ga.gb.gd.ge.gf.gg.gh.gi.gl.gm.gn.gp.gq.gr.gs.gt.gu.gw.gy.hk.hm.hn.hr.ht.hu.id.ie.il.im.in.io.iq.ir.is.it.je.jm.jo\
 .jp.ke.kg.kh.ki.km.kn.kp.kr.kw.ky.kz.la.lb.lc.li.lk.lr.ls.lt.lu.lv.ly.ma.mc.md.me.mg.mh.mk.ml.mm.mn.mo.mp.mq.mr.ms\
-.mt.mu.mv.mw.mx.my.mz.na.nc.ne.nf.ng.ni.nl.no.np.nr.nu.nz.om.pa.pe.pf.pg.ph.pk.pl.pm.pn.pr.ps.pt.pw.py.qa.re.ro.rs\
+.mt.mu.mv.mw.mx.my.mz.na.nc.ne.nf.ng.ni.nl.no.np.nr.nu.nz.om.pa.pe.pf.pg.ph.pk.pl.pm.pn.pr.ps.pt.pw.qa.re.ro.rs\
 .ru.rw.sa.sb.sc.sd.se.sg.sh.si.sj.sk.sl.sm.sn.so.sr.ss.st.su.sv.sx.sy.sz.tc.td.tf.tg.th.tj.tk.tl.tm.tn.to.tr.tt.tv\
 .tw.tz.ua.ug.uk.us.uy.uz.va.vc.ve.vg.vi.vn.vu.wf.ws.ye.yt.za.zm.zw",
     ".aaa.abb.abc.aco.ads.aeg.afl.aig.anz.aol.app.art.aws.axa.bar.bbc.bbt.bcg.bcn.bet.bid.bio.biz.bms.bmw.bnl.bom.boo\
@@ -105,15 +108,16 @@ const _tlds = ["", "",
 
 export const safeObj_ = (() => Object.create(null)) as { (): SafeObject; <T>(): SafeDict<T> }
 
-export const safer_ = (OnChrome && Build.MinCVer < BrowserVer.Min$Object$$setPrototypeOf
-      && !Object.setPrototypeOf ? function <T extends object> (obj: T): T & SafeObject {
-        (obj as any).__proto__ = null; return obj as T & SafeObject; }
+export const safer_ = (OnChrome && Build.MinCVer < BrowserVer.Min$Object$$setPrototypeOf && !Object.setPrototypeOf
+      ? <T extends object> (obj: T) => ("__proto__" in obj && ((obj as any).__proto__ = null), obj as T & SafeObject)
       : <T extends object> (opt: T): T & SafeObject => Object.setPrototypeOf(opt, null)
-    ) as (<T extends object> (opt: T) => T & SafeObject)
+    ) as <T extends object> (opt: T) => T & SafeObject
 
-export const isTld_ = (tld: string, onlyEN?: boolean): Urls.TldType =>
+export const isTld_ = (tld: string, onlyEN?: boolean, wholeHost?: string): Urls.TldType =>
     !onlyEN && (<RegExpOne> /[^a-z]/).test(tld) ? ((<RegExpOne> /^xn--[\x20-\x7f]+/).test(tld)
         || _nonENTlds.includes("." + tld + ".") ? Urls.TldType.NonENTld : Urls.TldType.NotTld)
+      : tld.length === 2 && wholeHost && ("cc.cu.in.rs.sh".includes(tld) ? wholeHost.includes("_")
+          : tld === "so" && wholeHost.startsWith("lib")) ? Urls.TldType.NotTld
       : tld && tld.length < _tlds.length && _tlds[tld.length].includes(tld) ? Urls.TldType.ENTld
       : Urls.TldType.NotTld;
 
@@ -137,7 +141,7 @@ export const isIPHost_ = (hostname: string, type: 0 | 4 | 6): boolean => {
 export const safeParseURL_ = (url: string): URL | null => { try { return new URL(url) } catch { return null } }
 
 export const DecodeURLPart_ = (url: string | undefined, wholeURL?: 1 | "atob"): string => {
-    if (!url) { return ""; }
+    if (!url || wholeURL !== "atob" && !url.includes("%")) { return url || "" }
     try {
       url = (wholeURL ? wholeURL === "atob" ? atob : decodeURI : decodeURIComponent)(url);
     } catch {}
@@ -146,14 +150,20 @@ export const DecodeURLPart_ = (url: string | undefined, wholeURL?: 1 | "atob"): 
 
 export const decodeUrlForCopy_ = (url: string, __allowSpace?: boolean): string => {
     if (!url.includes("%")) { return url }
+    if (!protocolRe_.test(url) && !(<RegExpI> /^(about|data|javascript|vimium)/i).test(url)) { return url }
     const ori = url.replace(<RegExpG> /%(2[356f]|3[adf]|40)/gi, "%25$1"
         ).replace(<RegExpG> /%(?![\da-fA-F]{2})/g, "%25")
     let str = DecodeURLPart_(ori, 1)
     str = str.length !== ori.length ? str : encodeAsciiURI_(url, 1)
     const noSpace = !__allowSpace && (protocolRe_.test(str) ? !str.startsWith("vimium:")
         : str.startsWith("data:") || str.startsWith("about:"))
-    str = str.replace(noSpace ? spacesRe_ : <RegExpG & RegExpSearchable<0>> /[\r\n]+|\s$/g, encodeURIComponent)
-    return str
+    str = str.replace(noSpace ? spacesRe_ : <RegExpG & RegExpSearchable<0>> /[\r\n]+/g, encodeURIComponent)
+  let ch = str && str.charAt(str.length - 1)
+  if (ch && !(<RegExpI> /[a-z\d\ud800-\udfff]/i).test(ch)) {
+    ch = ch < "\x7f" ? "%" + (ch.charCodeAt(0) + 256).toString(16).slice(1) : encodeAsciiComponent_(ch)
+    ch.length > 1 && (str = str.slice(0, str.length - 1) + ch)
+  }
+  return str
 }
 
 export const decodeEscapedURL_ = (url: string, allowSpace?: boolean): string => {
@@ -204,7 +214,8 @@ export const makeRegexp_ = (pattern: string, suffix: string, logError?: 0): RegE
     return null;
 }
 
-export const makePattern_ = typeof URLPattern === "undefined" || !URLPattern ? (): null => null
+export const makePattern_ = !(OnChrome && Build.MinCVer >= BrowserVer.MinEnsuredURLPattern)
+    && (typeof URLPattern === "undefined" || !URLPattern) ? (): null => null
     : (pattern: string, logError?: 0): URLPattern | null => {
   if (!pattern.endsWith("*")) {
     const ind = pattern.indexOf("://")
@@ -212,7 +223,11 @@ export const makePattern_ = typeof URLPattern === "undefined" || !URLPattern ? (
     pattern += ind > 0 && (ind2 === pattern.length - 1 || ind2 < 0) ? (ind2 > 0 ? "" : "/") + "*\\?*#*" : ""
   }
   try {
-    return new URLPattern!(pattern)
+    if (OnChrome && Build.MinCVer < BrowserVer.MinURLPatternWith$ignoreCase
+        && CurCVer_ < BrowserVer.MinURLPatternWith$ignoreCase) {
+      return new URLPattern!(pattern)
+    }
+    return new URLPattern!(pattern, "http://localhost", { ignoreCase: true })
   } catch {
     logError === 0 || console.log("%c/%s/%s", "color:#c41a16", pattern, "is not a valid URLPattern.")
   }
@@ -235,7 +250,7 @@ export const deferPromise_ = <T> (): { promise_: Promise<T>, resolve_ (result: T
 
 export const nextTick_ = !OnEdge
     && (!OnChrome || Build.MinCVer >= BrowserVer.Min$queueMicrotask || CurCVer_ > BrowserVer.Min$queueMicrotask - 1)
-    && (!OnFirefox || Build.MinFFVer >= FirefoxBrowserVer.Min$queueMicrotask || typeof queueMicrotask === "function")
+    && (!OnFirefox || Build.MinFFVer >= FirefoxBrowserVer.Min$queueMicrotask || globalThis.queueMicrotask)
     ? (callback: () => void): void => { queueMicrotask(callback) }
     : (callback: () => void): void => { void Promise.resolve().then(callback) }
 
@@ -268,16 +283,9 @@ export const fetchFile_ = ((filePath: string, format?: "blob" | "arraybuffer"): 
   filePath = !format && !filePath.includes("/") ? "/front/" + filePath : filePath
   if (!OnChrome || (format ? Build.MinCVer >= BrowserVer.MinFetchDataURL || CurCVer_ >= BrowserVer.MinFetchDataURL
       : Build.MinCVer >= BrowserVer.MinFetchExtensionFiles || CurCVer_ >= BrowserVer.MinFetchExtensionFiles)) {
-    return fetch(filePath as `/${string}`).then(r => json ? r.json<Dict<string>>().then((res): Map<string, any> => {
-      safer_(res)
-      if (!OnChrome || Build.MinCVer >= BrowserVer.MinEnsuredES$Object$$values$and$$entries
-          || CurCVer_ >= BrowserVer.MinEnsuredES$Object$$values$and$$entries) {
-        return new Map<string, any>(Object.entries!(res))
-      }
-      const map = new Map<string, any>()
-      for (let key in res) { map.set(key, res[key]) }
-      return map
-    }) : format ? format === "blob" ? r.blob() : r.arrayBuffer() : r.text())
+    return fetch(filePath as `/${string}`).then(r =>
+        json ? r.json<Dict<string>>().then((res): Map<string, any> => new Map<string, any>(Object.entries!(res)))
+        : format ? format === "blob" ? r.blob() : r.arrayBuffer() : r.text())
   }
   const req = new XMLHttpRequest() as TextXHR | JSONXHR | BlobXHR | ArrayXHR
   req.open("GET", filePath, true)
@@ -307,7 +315,7 @@ export const fetchFile_ = ((filePath: string, format?: "blob" | "arraybuffer"): 
 declare var AbortController: new () => { signal: object, abort(): void }
 declare var AbortSignal: { timeout? (timeout: number): object }
 
-export const fetchOnlineResources_ = (url: string, timeout?: number): Promise<[Blob, string] | null | 0> => {
+export const fetchOnlineResources_ = (url: string, timeout?: number): Promise<[Blob | null, string] | null | 0> => {
   let timer1 = 0, p: Promise<Response> | Promise<Blob | null | 0>
   timeout = timeout || 10_000
   if (!OnChrome || Build.MinCVer >= BrowserVer.MinAbortController
@@ -321,13 +329,15 @@ export const fetchOnlineResources_ = (url: string, timeout?: number): Promise<[B
       timer1 = setTimeout(abortCtrl.abort.bind(abortCtrl), timeout)
       p = (fetch as GlobalFetch)(url, { cache: "force-cache", signal: abortCtrl.signal })
     }
-    p = p.then<Blob | 0, null>(res => res.blob().catch(() => 0 as const), () => null)
+    p = p.then<Blob | 0 | null, null>(res => res.status >= 300 || res.status < 200 ? null
+          : res.blob().catch((e) => (console.log("on reading response:", e), 0 as const))
+        , (e) => (console.log("on requesting", e), null))
   } else {
     const req = new XMLHttpRequest() as BlobXHR, defer = deferPromise_<Blob | null | 0>()
     req.open("GET", url, true)
     req.responseType = "blob"
-    req.onload = (): void => { defer.resolve_(req.response) }
-    req.onerror = (): void => { defer.resolve_(null) }
+    req.onload = (): void => { defer.resolve_(req.status < 300 && req.status >= 200 ? req.response : null) }
+    req.onerror = (e): void => { Build.NDEBUG || console.log("on requesting", e); defer.resolve_(null) }
     timer1 = setTimeout((): void => {
       req.onload = req.onerror = null as never
       defer.resolve_(0)
@@ -339,10 +349,11 @@ export const fetchOnlineResources_ = (url: string, timeout?: number): Promise<[B
   timer1 && p.then((): void => { clearTimeout(timer1) })
   return p.then(blob => {
     if (!blob) {
-      console.clear()
+      Build.NDEBUG && console.clear()
       return blob
     }
-    return convertToDataURL_(blob.slice(0, Math.min(16, blob.size), blob.type)).then(dataUrl => [blob, dataUrl])
+    return convertToDataURL_(Build.MV3 ? blob : blob.slice(0, Math.min(16, blob.size), blob.type))
+        .then(dataUrl => [Build.MV3 ? null : blob, dataUrl])
   })
 }
 
@@ -351,12 +362,6 @@ export const convertToDataURL_ = (blob: Blob): Promise<"data:"> => {
   reader.onload = (ev): void => { defer.resolve_(ev.target.result) }
   reader.readAsDataURL(blob)
   return defer.promise_
-}
-
-export const revokeBlobUrl_ = (url: string): void => {
-  try {
-    URL.revokeObjectURL(url)
-  } catch {}
 }
 
 export const escapeAllForRe_ = (s: string): string =>
@@ -401,9 +406,148 @@ export const dedupChars_ = (chars: string) => {
   return out
 }
 
+export const base64_ = (text: string, decode?: 1, hasEncoder?: boolean) => {
+  let WithTextDecoder = !OnEdge && (Build.MinCVer >= BrowserVer.MinEnsuredTextEncoderAndDecoder || !OnChrome
+      || CurCVer_ > BrowserVer.MinEnsuredTextEncoderAndDecoder - 1 || !!globalThis.TextDecoder)
+  WithTextDecoder = hasEncoder ?? false
+  let text2 = decode ? DecodeURLPart_(text, "atob") : text
+  if (!decode) {
+    let arr: ArrayLike<number>
+    if (WithTextDecoder) {
+      arr = new TextEncoder().encode(text)
+    } else {
+      text2 = encodeURIComponent(text).replace(<RegExpG & RegExpSearchable<0>> /%..|[^]/g
+          , (s): string => s.length === 1 ? s : String.fromCharCode(parseInt(s.slice(1), 16)))
+      arr = ([] as string[]).map.call<string[], [(ch: string) => number], number[]>(
+          text2 as string | string[] as string[], (ch: string): number => ch.charCodeAt(0))
+    }
+    text2 = btoa(String.fromCharCode.apply(String, arr as number[]))
+  } else if (text2 != text) {
+    const kPairRe = /(?:\xed(?:[\xa1-\xbf][\x80-\xbf]|\xa0[\x80-\xbf])){2}/g
+    const kUtf8Re = /([\xc0-\xdf][\x80-\xbf]|[\xe0-\xef][\x80-\xbf]{2}|[\xf0-\xf7][\x80-\xbf]{3})+/g
+    try {
+      text2 = text2.replace(<RegExpG & RegExpSearchable<0>> kPairRe, (s): string => {
+        if (s[1] > "\xb0" || s[1] == "\xb0" && s[2] >= "\x80" || s[4] < "\xb0" || s[4] == "\xb0" && s[4] < "\x80") {
+          return s
+        }
+        const x = ([] as string[]).map.call<string[], [(ch: string) => number], number[]>(
+              s as string | string[] as string[], (ch: string): number => ch.charCodeAt(0))
+        return String.fromCharCode(((x[0] & 0xf) << 12) | ((x[1] & 0x3f) << 6) | (x[2] & 0x3f)
+            , ((x[3] & 0xf) << 12) | ((x[4] & 0x3f) << 6) | (x[5] & 0x3f))
+      }).replace(<RegExpG & RegExpSearchable<0>> kUtf8Re, (utf8): string => {
+        if (WithTextDecoder) {
+          const charCodes = ([] as string[]).map.call<string[], [(ch: string) => number], number[]>(
+                utf8 as string | string[] as string[], (ch: string): number => ch.charCodeAt(0))
+          utf8 = new TextDecoder("utf-8", { fatal: true }).decode(new Uint8Array(charCodes))
+        } else {
+          const encoded = ([] as string[]).map.call<string[], [(ch: string) => string], string[]>(
+                utf8 as unknown as string[], (ch: string) => "%" + ("00" + ch.charCodeAt(0).toString(16)).slice(-2))
+          utf8 = decodeURIComponent(encoded.join(""))
+        }
+        return utf8
+      })
+    } catch { /* empty */ }
+  }
+  return text2
+}
+
+export const encodeUnicode_ = (s: string): string => "\\u" + (s.charCodeAt(0) + 0x10000).toString(16).slice(1)
+
 export const now = (): string => {
   return new Date(Date.now() - new Date().getTimezoneOffset() * 1000 * 60).toJSON().slice(0, -5).replace("T", " ")
 }
 
 export const getImageExtRe_ = (): RegExpI & RegExpOne & RegExpSearchable<0> =>
     (<RegExpI & RegExpOne & RegExpSearchable<0>> /\.(?:avif|bmp|gif|icon?|jpe?g|a?png|svg|tiff?|webp)$/i)
+
+export const isNotPriviledged = (port: WSender): boolean => {
+  const url = port.s.url_
+  return !(OnChrome ? url.startsWith("chrome") || url.startsWith("edge") : url.startsWith(location.protocol))
+}
+
+const detectSubExpressions_ = (expression_: string, singleCmd?: 1): [pairs: [number, number][], end: number] => {
+  const pairs: [number, number][] = []
+  let pos_ = 0, lastStart = -1, curlyBraces = 0, end = expression_.length
+  for (; pos_ < end; pos_++) {
+    switch (expression_[pos_]) {
+    case "#": case "&":
+      if (expression_.charAt(pos_ + 1) === "#") {
+        pairs.push([pos_ + 1, end])
+        pos_ = expression_.length
+      }
+      break
+    case "(": case ")": case "?": case "+": singleCmd && (end = pos_); break
+    case ":": curlyBraces || singleCmd && (end = pos_); break
+    case "{": case "[": curlyBraces++ || (lastStart = pos_); break
+    case "]": case "}": --curlyBraces || pairs.push([lastStart, pos_ + 1]); break
+    case '"': {
+      const literal = (<RegExpOne> /^"([^"\\]|\\[^])*"/).exec(expression_.slice(pos_))
+      curlyBraces || literal && pairs.push([pos_, pos_ + literal[0].length])
+      pos_ += literal ? literal[0].length - 1 : 0
+      break
+    }
+    default: {
+      const literal = (<RegExpOne> /^(?:[$a-zA-Z_][$\w]*|\d[\d.eE+-]|,?\s+)/).exec(expression_.slice(pos_))
+      pos_ += literal ? literal[0].length - 1 : 0
+      // no break;
+    }
+    }
+  }
+  return [pairs, end]
+}
+
+export const tryParse = <T = object>(slice: string): T | string => {
+    try { return JSON.parse(slice) }
+    catch { return slice }
+}
+
+export const extractComplexOptions_ = (expression_: string): [options: string, endInSource: number] => {
+  const [pairs, end] = detectSubExpressions_(expression_, 1)
+  let output = "", lastRight = 0
+  for (const [left, right] of pairs) {
+    if (expression_[left] === '#') { break }
+    if (expression_[left - 1] !== "=" || expression_[right] && expression_[right] !== "&") { continue }
+    output += expression_.slice(lastRight, left)
+    lastRight = right
+    const parsed = tryParse(expression_.slice(left, right))
+    const correct = typeof parsed !== "string" || parsed.length !== right - left
+    if (!correct) {
+      output += parsed.replace(<RegExpG & RegExpSearchable<0>> /&/g, "%26")
+      continue
+    }
+    const str = JSON.stringify(parsed)
+    output += str.replace(<RegExpG & RegExpSearchable<0>> /[%\s&]/g, encodeUnicode_)
+  }
+  output += expression_.slice(lastRight, end)
+  return [output, end]
+}
+
+export const splitWhenKeepExpressions = (src: string, sep: string): string[] => {
+  const pairs = detectSubExpressions_(src)[0]
+  let ind = -1, ind2 = 0, lastInd = 0, results: string[] = []
+  while ((ind = src.indexOf(sep, ind + 1)) >= 0) {
+    while (ind2 < pairs.length && ind >= pairs[ind2][1]) { ind2++ }
+    if (ind2 < pairs.length && ind >= pairs[ind2][0]) {
+      ind = pairs[ind2][1] - 1
+    } else {
+      results.push(src.slice(lastInd, ind))
+      lastInd = ind + 1
+    }
+  }
+  results.push(src.slice(lastInd))
+  return results
+}
+
+export const nextConfUpdate = (useOmni: 0 | 1): number => {
+  let version = useOmni ? omniConfVer_ : contentConfVer_
+  version = ((version + 1) & 0xfff) || 1
+  return useOmni ? set_omniConfVer_(version) : set_contentConfVer_(version)
+}
+
+export const recencyBase_ = (): number => {
+  return (OnChrome || OnFirefox) && Build.OS & kBOS.LINUX_LIKE
+      && (Build.OS === kBOS.LINUX_LIKE as number || os_ === kOS.linuxLike) ? 0
+      : OnChrome && Build.MinCVer < BrowserVer.Min$performance$$timeOrigin
+        && CurCVer_ < BrowserVer.Min$performance$$timeOrigin
+      ? Date.now() - performance.now() : performance.timeOrigin!
+}

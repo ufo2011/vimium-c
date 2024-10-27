@@ -2,8 +2,8 @@
 declare namespace CompletersNS {
   const enum SugType {
     Empty = 0,
-    bookmark = 1,
-    history = 2,
+    kBookmark = 1,
+    kHistory = 2,
     tab = 4,
     search = 8,
     domain = 16,
@@ -31,7 +31,7 @@ declare namespace CompletersNS {
     SugTypeOffset = 3,
     MatchTypeMask = (1 << SugTypeOffset) - 1,
   }
-  type ValidTypes = "bookm" | "domain" | "history" | "omni" | "bomni" | "search" | "tab";
+  type ValidTypes = "bookm" | "domain" | "history" | "search" | "tab"
   /**
    * "math" can not be the first suggestion, which is limited by omnibox handlers
    */
@@ -57,7 +57,7 @@ declare namespace CompletersNS {
     /** maxResults */ r?: number;
     /** flags */ f: QueryFlags;
     /** last sug types: empty means all */ t: SugType;
-    /** original type */ o: ValidTypes;
+    /** original type */ o: ValidTypes | "omni" | "bomni"
   }
 
   interface WritableCoreSuggestion {
@@ -70,7 +70,7 @@ declare namespace CompletersNS {
 
   type CoreSuggestion = Readonly<WritableCoreSuggestion>;
 
-  type SessionId = [windowId: number, sessionId: string] | /** tabId */ number
+  type SessionId = [windowId: number, sessionId: string, wndTabs: number] | /** tabId */ number
   interface BaseSuggestion extends CoreSuggestion {
     t: string;
     textSplit?: string;
@@ -95,54 +95,25 @@ declare namespace CompletersNS {
 }
 
 declare namespace MarksNS {
-  type ScrollInfo = [ x: number, y: number, hash?: string ]
+  type ScrollInfo = readonly [ x: number, y: number, hash?: string, ...exArgs: unknown[] ]
   interface ScrollableMark {
     scroll: ScrollInfo;
   }
-  interface BaseMark {
+  interface FgQuery {
     /** markName */ n: string;
+    /** local */ l: boolean
+    /** url */ u: string
+    /** other info */ s: string | null | 0 | ScrollInfo
   }
-
-  interface BaseMarkProps {
-    /** scroll */ s: ScrollInfo;
-    /** url */ u: string;
-  }
-
-  interface Mark extends BaseMark, BaseMarkProps {
-  }
-
-  interface NewTopMark extends BaseMark {
-    /** scroll */ s?: undefined;
-  }
-  interface NewMark extends Mark {
-    /** local */ l?: 0 | 2; /** default to false */
-  }
-
-  interface FgGlobalQuery extends BaseMark {
-    /** local */ l?: 0; /** default to false */
-    /** url */ u?: undefined;
-    /** old */ o?: undefined
-  }
-  interface FgLocalQuery extends BaseMark {
-    /** local */ l: 2;
-    /** url */ u: string;
-    /** old */ o?: {
-      /** scrollX */ x: number;
-      /** scrollY */ y: number;
-      /** hash */ h: string;
-    };
-  }
-  type FgQuery = FgGlobalQuery | FgLocalQuery;
-
-  interface FgMark extends ScrollInfo {
-    [2]?: string;
-  }
-
+  interface FgCreateQuery extends FgQuery { /** scroll */ s: ScrollInfo }
+  interface FgGotoQuery extends FgQuery { /** old mark */ s: string | null | 0 }
   interface FocusOrLaunch {
     /** scroll */ s?: ScrollInfo;
     /** url */ u: string;
     /** prefix */ p?: boolean | null
+    /** parent */ a?: boolean | null
     /** match a tab to replace */ q?: SimpleParsedOpenUrlOptions
+    /** wait a while on a new tab */ w?: number | boolean | null
     /** fallback */ f?: Req.FallbackOptions | null
   }
 }
@@ -192,7 +163,9 @@ declare const enum VisualAction {
 
   MaxNotNewMode = 50,
   VisualMode = MaxNotNewMode + VisualModeNS.Mode.Visual, VisualLineMode = MaxNotNewMode + VisualModeNS.Mode.Line,
-  CaretMode = MaxNotNewMode + VisualModeNS.Mode.Caret, EmbeddedFindMode = CaretMode + 2,
+  CaretMode = MaxNotNewMode + VisualModeNS.Mode.Caret,
+  EmbeddedFindMode = (CaretMode + 2) & ~1, EmbeddedFindAndExtendSelection,
+  EmbeddedFindModeToPrev, EmbeddedFindToPrevAndExtendSelection,
 
   MaxNotScroll = 60, ScrollUp, ScrollDown,
 }
@@ -235,7 +208,7 @@ interface PrefixUrlMatcher extends BaseUrlMatcher {
 }
 interface PatternUrlMatcher extends BaseUrlMatcher {
   /** type */ readonly t: kMatchUrl.Pattern
-  /** value */ readonly v: URLPattern
+  /** value */ readonly v: { p: URLPattern, s: string }
 }
 type ValidUrlMatchers = RegExpUrlMatcher | PrefixUrlMatcher | PatternUrlMatcher
 
@@ -248,6 +221,7 @@ declare const enum ReuseType {
   /** @deprecated */ newWindow = newWnd,
   frame = 3,
   newFg = -1,
+  newTab = -1,
   newBg = -2,
   reuseInCurWnd = -3,
   OFFSET_LAST_WINDOW = -4,
@@ -258,11 +232,11 @@ declare const enum ReuseType {
   lastWndBgInactive = -8,
   /** @deprecated */ lastWndBgBg = lastWndBgInactive,
   Default = newFg,
-  MAX = 3,
+  MAX = 3, MIN = -8,
 }
-type ValidReuseNames = Exclude<keyof typeof ReuseType, "MAX" | "OFFSET_LAST_WINDOW" | "Default">
+type ValidReuseNames = Exclude<keyof typeof ReuseType, "MAX" | "MIN" | "OFFSET_LAST_WINDOW" | "Default">
 declare type UserReuseType = ReuseType | boolean | ValidReuseNames
-    | "newwindow" | "new-window" | "newwnd" | "new-wnd" | "newfg" | "new-fg" | "newbg" | "new-bg"
+    | "newwindow" | "new-window" | "newwnd" | "new-wnd" | "newfg" | "new-fg" | "newbg" | "new-bg" | "new-tab" | "newtab"
     | "lastwndfg" | "lastwnd" | "last-wnd-fg" | "last-wnd" | "lastwndbg" | "last-wnd-bg" | "if-last-wnd" | "iflastwnd"
     | "last-wnd-bgbg" | "lastwndbgbg" | "last-wnd-bg-inactive" | "lastwndbginactive"
     | "reuse-in-cur-wnd" | "reuseincurwnd"
@@ -286,10 +260,11 @@ declare namespace Frames {
   // upper-case items are for tabs
   const enum Flags {
     Default = 0, blank = Default, locked = 1, lockedAndDisabled = 3, MASK_LOCK_STATUS = 3, userActed = 4,
-    hasCSS = 8, hadVisualMode = 16, hasFindCSS = 32, hadHelpDialog = 64,
-    otherExtension = 128, isVomnibar = 256, ResReleased = 512, WaitToRelease = 1024, SOURCE_WARNED = 2048,
+    hasCSS = 8, hadVisualMode = 16, hasFindCSS = 32, aboutIframe = 64,
+    otherExtension = 128, isVomnibar = 256, ResReleased = 512, OldEnough = 1024, SOURCE_WARNED = 2048,
     UrlUpdated = 0x1000, SettingsUpdated = 0x2000, CssUpdated = 0x4000, KeyMappingsUpdated = 0x8000,
-    KeyFSMUpdated = 0x10000, MASK_UPDATES = 0x1f000, HadIFrames = 0x20000,
+    KeyFSMUpdated = 0x10000, MASK_UPDATES = 0x1f000, HadIFrames = 0x20000, hadHelpDialog = 0x40000,
+    Refreshing = 0x80000,
   }
   const enum NextType {
     next = 0, Default = next, parent = 1, current = 2,
@@ -306,20 +281,23 @@ declare const enum PortNameEnum {
 }
 
 declare const enum PortType {
-  initing = 0, isTop = 1, hasFocus = 2, reconnect = 4, hasCSS = 8,
-  omnibar = 16, otherExtension = 32, selfPages = 64, Tee = 128, refreshInBatch = 256,
+  initing = 0, isTop = 1, hasFocus = 2, confInherited = 4, reconnect = 8, hasCSS = 16,
+  onceFreezed = 32, aboutIframe = 64, selfPages = 128, omnibar = 256, refreshInBatch = 512,
+  otherExtension = 1024, Tee = 2048, Offscreen = 4096, OFFSET_SETTINGS = /** log2(8192) */ 13,
   /** for external extensions like NewTab Adapter */ CloseSelf = 999,
 }
 
 declare const enum kKeyLayout {
   NONE = 0, alwaysIgnore = 1, ignoreIfNotASCII = 2, inCmdIgnoreIfNotASCII = 4, ignoreIfAlt = 8,
-  ignoreCaps = 16, mapLeftModifiers = 64, mapRightModifiers = 128,
+  ignoreCaps = 16, inPrivResistFp_ff = 32, mapLeftModifiers = 64, mapRightModifiers = 128,
   FgMask = 255, fromOld = 256, ignoreCapsOnMac = 512,
   MapModifierStart = mapLeftModifiers, MapModifierOffset = 6, MapModifierMask = mapLeftModifiers | mapRightModifiers,
   DefaultFromOld = inCmdIgnoreIfNotASCII | fromOld, Default = DefaultFromOld, IfFirstlyInstalled = ignoreIfNotASCII,
 }
 declare namespace SettingsNS {
   interface DirectlySyncedItems {
+    /** hideHud */ h: ["hideHud", boolean]
+    /** ignoreReadonly */ y: ["ignoreReadonly", string]
     /** keyLayout */ l: ["keyLayout", kKeyLayout]
     /** keyboard */ k: ["keyboard", [delay: number, interval: number, /** on Firefox */ screenRefreshRate?: number]]
     /** linkHintCharacters */ c: ["linkHintCharacters", string];
@@ -344,7 +322,7 @@ declare namespace SettingsNS {
     /** browser */ b: ["browser", BrowserType | undefined];
     /** browserVer */ v: ["browserVer", BrowserVer | FirefoxBrowserVer | 0]
     /** browserSecondVersionCode */ V: ["browserVer2nd", number];
-    /** OS */ o: ["OS", kOS.mac | kOS.unixLike | kOS.win];
+    /** OS */ o: ["OS", kOS.mac | kOS.linuxLike | kOS.win]
   }
   type DeclaredConstValues = Readonly<SelectValueType<Pick<ConstItems, "v">>>;
   interface AllConstValues extends Readonly<SelectValueType<ConstItems>> {}
@@ -352,10 +330,11 @@ declare namespace SettingsNS {
     /** maxMatchNumber */ n: ["maxMatches", number];
     /** queryInterval */ i: ["queryInterval", number];
     /** comma-joined size numbers */ s: ["sizes", string];
-    /** styles */ t: ["styles", string];
+    /** styles */ t: ["styles", string]
   }
-  interface VomnibarBackendItems {
+  interface VomnibarBackendItems extends SelectNVType<Omit<VomnibarOptionItems, "t">> {
     actions: string;
+    styles: string | string[]
   }
   interface OtherVomnibarItems {
     /** css */ c: ["omniCSS", string];
@@ -367,7 +346,7 @@ declare namespace SettingsNS {
     /** `2`: auto (following browser); `1`: fixed true */ autoReduceMotion: 0 | 1 | 2
     grabBackFocus: boolean;
     showAdvancedCommands: boolean;
-    vomnibarOptions: SelectNVType<VomnibarOptionItems> & VomnibarBackendItems;
+    vomnibarOptions: VomnibarBackendItems;
   }
   interface FrontUpdateAllowedSettings {
     showAdvancedCommands: 0;
@@ -375,7 +354,7 @@ declare namespace SettingsNS {
 
   interface AutoSyncedItems extends DirectlySyncedItems {}
   interface FrontendSettingsSyncingItems extends AutoSyncedItems, ManuallySyncedItems {}
-  type FrontendComplexSyncingItems = Pick<FrontendSettingsSyncingItems, "c" | "n" | "l" | "d">
+  type FrontendComplexSyncingItems = Pick<FrontendSettingsSyncingItems, "c" | "n" | "l" | "d" | "p" | "y">
   interface DeclaredFrontendValues extends SelectValueType<ManuallySyncedItems & OneTimeItems>, DeclaredConstValues {
   }
   type AutoSyncedNameMap = SelectNameToKey<AutoSyncedItems>
@@ -393,9 +372,10 @@ declare namespace SettingsNS {
   interface VomnibarPayload extends DeclaredVomnibarPayload, AllConstValues {}
 }
 declare const enum kOS {
-  mac = 0, unixLike = 1, win = 2,
+  mac = 0, linuxLike = 1, win = 2,
   MAX_NOT_WIN = 1, UNKNOWN = 9,
 }
+declare const enum kBOS { MAC = 1, LINUX_LIKE = 2, WIN = 4 }
 
 declare const enum HintMode {
     empty = 0, focused = 1, list = 1, newTab = 2,
@@ -413,13 +393,15 @@ declare const enum HintMode {
   DOWNLOAD_MEDIA = 35, min_media = /* DOWNLOAD_MEDIA */ 35,
   COPY_IMAGE = 36,
   OPEN_IMAGE = 37, max_media = /* OPEN_IMAGE */ 37,
-  SEARCH_TEXT = 38,
+  SEARCH_TEXT = 38, min_string = 38,
   COPY_TEXT = /* (SEARCH_TEXT & ~1) + 2 */ 40,
     min_copying = /* COPY_TEXT */ 40, mode1_text_list = /* COPY_TEXT | list */ 41,
   COPY_URL = 42,
     mode1_url_list = /* COPY_URL | list */ 43, min_link_job = /* COPY_URL */ 42, max_copying = /* mode1_url_list */ 43,
+    max_string = max_copying,
   DOWNLOAD_LINK= 44,
   OPEN_INCOGNITO_LINK = 45,
+  OPEN_LINK = 46,
   EDIT_LINK_URL = /* min_disable_queue */ 64,
     max_link_job = /* EDIT_LINK_URL */ 64, min_edit = /* EDIT_LINK_URL */ 64, min_then_as_arg = /* EDIT_LINK_URL */ 64, 
   EDIT_TEXT = 65, max_edit = /* EDIT_TEXT */ 65,
@@ -434,25 +416,25 @@ declare namespace VomnibarNS {
     Default = inner,
   }
   const enum PixelData {
-    MarginTop = 64,
+    FrameTop = 64,
     InputBar = 54, InputBarWithLine = InputBar + 1,
     Item = 44, LastItemDelta = 46 - Item,
     MarginV1 = 9, MarginV2 = 10, ShadowOffset = 2, MarginV = MarginV1 + MarginV2 + ShadowOffset * 2,
     OthersIfEmpty = InputBar + MarginV,
     OthersIfNotEmpty = InputBarWithLine + MarginV + LastItemDelta,
-    ListSpaceDeltaWithoutScrollbar = MarginTop + MarginV1 + InputBarWithLine + LastItemDelta + ((MarginV2 / 2) | 0),
+    ListSpaceDeltaWithoutScrollbar = FrameTop + MarginV1 + InputBarWithLine + LastItemDelta + ((MarginV2 / 2) | 0),
     MarginH = 24, AllHNotUrl = 20 * 2 + 20 + MarginH,
     MeanWidthOfMonoFont = 7.7, MeanWidthOfNonMonoFont = 4,
-    WindowSizeX = 0.8, AllHNotInput = AllHNotUrl,
+    WindowSizeRatioX = 0.8, MaxWidthInPixel = 1944, AllHNotInput = AllHNotUrl,
   }
   interface GlobalOptions extends TrailingSlashOptions, UserSedOptions {
-    mode: string;
+    mode?: string;
     currentWindow?: boolean;
-    newtab: boolean | BOOL;
-    keyword: string;
+    newtab?: boolean | BOOL;
+    keyword?: string;
     url?: true | string | null;
     /** known url */ u?: string | null | undefined
-    urlSedKeys: "sedKeys" | null
+    urlSedKeys?: "sedKeys" | null
     exitOnClick?: boolean;
     autoSelect?: boolean | null | BOOL;
     preferTabs?: "new" | "new-opened" | "newOpened";
@@ -468,9 +450,12 @@ declare namespace VomnibarNS {
     noSessions?: boolean | "always" | "start"
     clickLike?: null | "chrome" | /** as "chrome" */ true | "vivaldi" | /** as "vivaldi" */ "chrome2"
     activeOnCtrl?: boolean
-    position: OpenPageUrlOptions["position"]
-    itemSedKeys: "sedKeys" | null
-    itemKeyword: string | null
+    position?: OpenPageUrlOptions["position"]
+    inputSedKeys?: "sedKeys" | null
+    itemSedKeys?: "sedKeys" | null
+    itemKeyword?: string | null
+    itemField?: string | null
+    testUrl?: null | boolean | "whole" | "whole-string"
   }
 }
 
@@ -497,7 +482,7 @@ interface VimiumInjectorTy {
   host: string;
   version: string;
   $: VApiTy;
-  $h: ExternalMsgs[kFgReq.inject]["res"]["h"];
+  $h: (stat_num: number) => string
   clickable: ElementSet | null | undefined;
   cache: Dict<any> | null;
   getCommandCount: (this: void) => number;
@@ -543,8 +528,7 @@ declare const enum GlobalConsts {
   LinkHintTooHighThreshold = 20, // scrollHeight / innerHeight
   LinkHintPageHeightLimitToCheckViewportFirst = 15000,
   ElementsFromPointTakesTooSlow = 1000,
-  MinElementCountToStopPointerDetection = 400,
-  MinElementCountToStopScanOnClick = 5000,
+  DefaultMaxElementCountToDetectPointer = 400,
   MaxScrollbarWidth = 24,
   MinScrollableAreaSizeForDetection = 50,
   MaxHeightOfLinkHintMarker = 24,
@@ -556,6 +540,7 @@ declare const enum GlobalConsts {
   CommandCountLimit = 9999,
   MediaWatchInterval = 60_000, // 60 seconds - chrome.alarms only accepts an interval >= 1min, so do us
   MaxHistoryURLLength = 2_000, // to avoid data: URLs and malformed webpages
+  MaxLengthToCheckIgnoredTitles = 100,
   TrimmedURLPathLengthWhenURLIsTooLong = 320,
   TrimmedTitleLengthWhenURLIsTooLong = 160,
   MatchCacheLifeTime = 6000,
@@ -567,7 +552,7 @@ declare const enum GlobalConsts {
   MaxRetryTimesForSecret = 89,
   MarkAcrossJSWorlds = "__VimiumC_", // .length should be {@link #GlobalConsts.LengthOfMarkAcrossJSWorlds}
   LengthOfMarkAcrossJSWorlds = 10,
-  ExtendClick_DelayToFindAll = 600,
+  ExtendClick_EndTimeOfAutoReloadLinkHints = 600,
   ExtendClick_DelayToStartIteration = 666,
   SYNC_QUOTA_BYTES = 102_400, // QUOTA_BYTES of storage.sync in https://developer.chrome.com/extensions/storage
   SYNC_QUOTA_BYTES_PER_ITEM = 8192,
@@ -577,14 +562,13 @@ declare const enum GlobalConsts {
   LOCAL_STORAGE_BYTES = 10_485_760, // 10MB
   MaxTabTreeIndent = 5,
   MinStayTimeToRecordTabRecency = 666,
-  MaxTabRecency = 500,
-  MaxTabsKeepingRecency = 400,
   FirefoxAddonPrefix = "https://addons.mozilla.org/firefox/addon/",
   FirefoxHelp = "https://support.mozilla.org/kb/keyboard-shortcuts-perform-firefox-tasks-quickly",
   ChromeWebStorePage = "https://chrome.google.com/webstore/detail/vimium-c-all-by-keyboard/$id/reviews",
   ChromeHelp = "https://support.google.com/chrome/answer/157179",
   EdgStorePage = "https://microsoftedge.microsoft.com/addons/detail/aibcglbfblnogfjhbcmmpobjhnomhcdo",
   EdgHelp = "https://support.microsoft.com/help/4531783/microsoft-edge-keyboard-shortcuts",
+  kCssDefault = ":default",
 
   kIsHighContrast = "isHC_f",
   MinCancelableInBackupTimer = 50,
@@ -595,14 +579,17 @@ declare const enum GlobalConsts {
   NormalModeId = "n",
   OmniModeId = "o",
   ForcedMapNum = "c-v-",
-  KeySequenceTimeout = 3e5,
+  KeySequenceTimeout = 30_000,
+  ModifierKeyTimeout = 2_900,
   OptionsPage = "pages/options.html",
-  kLoadEvent = "VimiumC"
+  kLoadEvent = "VimiumC",
+  kEvalNameInMV3 = "__VimiumC_eval__",
+  KeepAliveTime = 900_000,
 }
 
 declare const enum kModeId {
   Plain = 0, Normal, Insert, Next, max_not_command = Next, Link, Marks, Find, Visual, Omni,
-  Show, NO_MAP_KEY_EVEN_MAY_IGNORE_LAYOUT, NO_MAP_KEY,
+  Show, NO_MAP_KEY_BUT_MAY_IGNORE_LAYOUT, NO_MAP_KEY,
   MIN_EXPECT_ASCII = Find, MIN_NOT_EXPECT_ASCII = NO_MAP_KEY,
 }
 declare const enum kHandler {
@@ -613,15 +600,15 @@ declare const enum kHandler {
 }
 
 declare const enum kCharCode {
-  tab = 9, space = 32, minNotSpace, bang = 33, quote2 = 34, hash = 35,
-  maxCommentHead = hash, and = 38, quote1 = 39,
+  tab = 9, lineFeed = 10, formFeed = 11, space = 32, minNotSpace, bang = 33, quote2 = 34, hash = 35,
+  maxCommentHead = hash, and = 38, quote1 = 39, plus = 43,
   /** '-' */ dash = 45,
   dot = 46, slash = 47,
   maxNotNum = 48 - 1, N0, N1, N9 = N0 + 9, minNotNum, colon = 58, lt = 60, gt = 62, question = 63,
   A = 65, maxNotAlphabet = A - 1, minAlphabet = A, B, C, D, E, F, G,
   H, I = A + 8, K = I + 2, R = A + 17, S = A + 18, W = A + 22, Z = A + 25, maxAlphabet = A + 25, minNotAlphabet,
-  a = 97, CASE_DELTA = a - A,
-  backslash = 92, s = 115,
+  backslash = 92, /** '`' */ backtick = 96, a = 97, o = 111, s = 115, x = 120, CASE_DELTA = a - A,
+  curlyBraceStart = 123, curlyBraceEnd = 125, nbsp = 0xa0,
 }
 
 declare const enum kKeyCode {
@@ -649,7 +636,7 @@ declare const enum KeyStat {
 }
 declare const enum kChar {
   INVALID = " ", EMPTY = "",
-  hash = "#", minNotCommentHead = "$",
+  hash = "#", minNotCommentHead = "$", groupnext = "groupnext",
   space = "space", pageup = "pageup", pagedown = "pagedown",
   end = "end", home = "home", left = "left", up = "up", right = "right", down = "down",
   insert = "insert", delete = "delete",
@@ -662,7 +649,7 @@ declare const enum kChar {
   maxNotNum = "/", minNotNum = ":", maxASCII = "~",
   maxNotF_num = "f0", minNotF_num = "f:", maxF_num = "f9",
   CharCorrectionList = ";=,-./`[\\]'\\:+<_>?~{|}\"|", EnNumTrans = ")!@#$%^&*(",
-  Modifier = "modifier", Alt = "alt", Menu = "contextmenu",
+  Modifier = "modifier", Alt = "alt", Meta = "meta", Menu = "contextmenu", Alt2 = "alt2"
 }
 
 declare const enum BrowserType {

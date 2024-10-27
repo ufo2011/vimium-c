@@ -6,7 +6,7 @@ import * as BgUtils_ from "./utils"
 import { browserWebNav_ } from "./browser"
 import { formatVimiumUrl_ } from "./normalize_urls"
 import * as settings from "./settings"
-import { asyncIterFrames_ } from "./ports"
+import { asyncIterFrames_, resetInnerKeepAliveTick_ } from "./ports"
 
 export const createRule_ = (pattern: string, keys: string): ExclusionsNS.Tester => {
     let re: RegExp | null | undefined, newPattern: URLPattern | null | undefined
@@ -24,7 +24,7 @@ export const createRule_ = (pattern: string, keys: string): ExclusionsNS.Tester 
       }
     }
     rule = re ? { t: kMatchUrl.RegExp, v: re as RegExpOne, k: keys }
-        : newPattern ? { t: kMatchUrl.Pattern, v: newPattern, k: keys }
+        : newPattern ? { t: kMatchUrl.Pattern, v: { p: newPattern, s: pattern.slice(1) }, k: keys }
         : {
       t: kMatchUrl.StringPrefix,
       v: pattern.startsWith(":vimium://")
@@ -43,8 +43,8 @@ export const createSimpleUrlMatcher_ = (host: string): ValidUrlMatchers | null =
       const re = BgUtils_.makeRegexp_(host, "")
       return re ? { t: kMatchUrl.RegExp, v: re as RegExpOne } : null
     } else if (host[0] === "`") {
-      const newPattern = BgUtils_.makePattern_(host.slice(1))
-      return newPattern ? { t: kMatchUrl.Pattern, v: newPattern } : null
+      const slice = host.slice(1), newPattern = BgUtils_.makePattern_(slice)
+      return newPattern ? { t: kMatchUrl.Pattern, v: { p: newPattern, s: slice } } : null
     } else if (host === "localhost" || !host.includes("/") && host.includes(".")
         && (!(<RegExpOne> /:(?!\d+$)/).test(host) || BgUtils_.isIPHost_(host, 6))) { // ignore rare `IPV6 + :port`
       host = host.toLowerCase()
@@ -60,8 +60,10 @@ export const createSimpleUrlMatcher_ = (host: string): ValidUrlMatchers | null =
           : { t: kMatchUrl.StringPrefix, v: "https://" + (host.startsWith(".") ? host.slice(1) : host) + "/" }
     } else {
       host = (host[0] === ":" ? host.slice(1) : host).replace(<RegExpOne> /([\/?#])\*$/, "$1")
-      host = host.startsWith("vimium://")
-          ? formatVimiumUrl_(host.slice(9), false, Urls.WorkType.ConvertKnown) : host
+      host = host.startsWith("vimium://") ? formatVimiumUrl_(host.slice(9), false, Urls.WorkType.ConvertKnown)
+          : host.startsWith("extension:") ? OnChrome ? "chrome-" + host : OnFirefox ? "moz-" + host
+            : location.protocol + host.slice(10)
+          : host
       ind = host.indexOf("://")
       return {
         t: kMatchUrl.StringPrefix,
@@ -72,7 +74,7 @@ export const createSimpleUrlMatcher_ = (host: string): ValidUrlMatchers | null =
 
 export const matchSimply_ = (matcher: ValidUrlMatchers, url: string): boolean =>
     matcher.t === kMatchUrl.RegExp ? matcher.v.test(url)
-    : matcher.t === kMatchUrl.StringPrefix ? url.startsWith(matcher.v) : matcher.v.test(url)
+    : matcher.t === kMatchUrl.StringPrefix ? url.startsWith(matcher.v) : matcher.v.p.test(url)
 
 let listening_ = false
 let listeningHash_ = false
@@ -88,14 +90,7 @@ const setRules_ = (rules: ExclusionsNS.StoredRule[]): void => {
 export const parseMatcher_ = (pattern: string | null): BaseUrlMatcher[] => {
   const res = pattern ? [createRule_(pattern, "")] : rules_
   return res.map<BaseUrlMatcher>(i => ({ t: i.t, v: i.t === kMatchUrl.RegExp ? i.v.source
-      : i.t === kMatchUrl.StringPrefix ? i.v : {
-    hash: i.v.hash,
-    hostname: i.v.hostname,
-    pathname: i.v.pathname,
-    port: i.v.port,
-    protocol: i.v.protocol,
-    search: i.v.search,
-  } satisfies URLPatternDict}))
+      : i.t === kMatchUrl.StringPrefix ? i.v : i.v.s }))
 }
 
 export const getExcluded_ = (url: string, sender: Frames.Sender): string | null => {
@@ -103,7 +98,7 @@ export const getExcluded_ = (url: string, sender: Frames.Sender): string | null 
     for (const rule of rules_) {
       if (rule.t === kMatchUrl.RegExp ? rule.v.test(url)
           : rule.t === kMatchUrl.StringPrefix ? url.startsWith(rule.v)
-          : rule.v.test(url)) {
+          : rule.v.p.test(url)) {
         const str = rule.k;
         if (str.length === 0 || str[0] === "^" && str.length > 2 || _onlyFirstMatch) { return str && str.trim() }
         matchedKeys += str;
@@ -122,30 +117,30 @@ let getOnURLChange_ = (): null | ExclusionsNS.Listener => {
   const onURLChange: null | ExclusionsNS.Listener = !browserWebNav_()
       || !(OnChrome || OnFirefox || browserWebNav_()!.onHistoryStateUpdated) ? null
       : !OnChrome || Build.MinCVer >= BrowserVer.MinWithFrameId || CurCVer_ >= BrowserVer.MinWithFrameId
-      ? (details): void => { reqH_[kFgReq.checkIfEnabled](details) }
+      ? (details): void => { reqH_[kFgReq.checkIfEnabled](details); resetInnerKeepAliveTick_() }
       : (details): void => {
         const ref = framesForTab_.get(details.tabId),
-        msg: Req.bg<kBgReq.url> = { N: kBgReq.url, H: kFgReq.checkIfEnabled };
-        Build.LessPorts && ref && ref.flags_ & Frames.Flags.ResReleased && (ref.flags_ |= Frames.Flags.UrlUpdated)
+        msg: Req.bgUrl<kFgReq.checkIfEnabled> = { N: kBgReq.url, H: kFgReq.checkIfEnabled, U: 0 }
+        ref && ref.flags_ & Frames.Flags.ResReleased && (ref.flags_ |= Frames.Flags.UrlUpdated)
         // force the tab's ports to reconnect and refresh their pass keys
         for (const port of ref ? ref.ports_ : []) {
           port.postMessage(msg)
         }
+        resetInnerKeepAliveTick_()
       };
   getOnURLChange_ = () => onURLChange
   return onURLChange
 }
 
 export const getAllPassed_ = (): Set<string> | true | null => {
-    let all = new Set!<string>(), tick = 0;
+    const allPassKeys = new Set!<string>()
     for (const { k: passKeys } of rules_) {
       if (passKeys) {
         if (passKeys[0] === "^" && passKeys.length > 2) { return true; }
-        for (const key of passKeys.split(" ")) { all.add(key); tick++ }
+        for (const key of passKeys.split(" ")) { allPassKeys.add(key) }
       }
     }
-    return (!OnChrome || Build.MinCVer >= BrowserVer.MinEnsuredES6$ForOf$Map$SetAnd$Symbol
-        ? (all as NativeSet<string>).size : tick) ? all : null
+    return allPassKeys.size ? allPassKeys : null
 }
 
 export const RefreshStatus_ = (old_is_empty: boolean): void => {
@@ -153,7 +148,8 @@ export const RefreshStatus_ = (old_is_empty: boolean): void => {
       N: kBgReq.reset, p: null, f: 0
     };
     if (old_is_empty) {
-      always_enabled || settings.broadcast_({ N: kBgReq.url, H: kFgReq.checkIfEnabled })
+      always_enabled || settings.broadcast_({ N: kBgReq.url, H: kFgReq.checkIfEnabled, U: 0
+          } satisfies Req.bgUrl<kFgReq.checkIfEnabled>)
       return;
     }
     const needIcon = iconData_ != null || iconData_ !== undefined && needIcon_

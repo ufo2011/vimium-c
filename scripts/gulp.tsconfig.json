@@ -9,14 +9,13 @@
     "typescript": "typescript/lib/typescript"
   },
   "build": { // for [ local, dist ]
-    "MinCVer": [ 89, 47 ], // keep dist to be 47 : the release version
-    "MinFFVer": [ 89, 63 ],
-    "BTypes": [ 3, 1 ], // [ Chrome | Firefox, Chrome ]
+    "MinCVer": [ 121, 102 ], // keep dist to be 102 : the release version
+    "MinFFVer": [ 119, 101 ],
+    "BTypes": [ 1, 1 ], // [ Chrome, Chrome ]
     "OS": [ 7, 7 ],
     "DetectAPIOnFirefox": [1, 0],
     "NDEBUG": [ 0, 1 ],
     "Mangle": [ 0, 1 ],
-    "LessPorts": [ 1, 0 ],
     "Inline": [ 0, 1 ]
   },
   "extends": "../tsconfig.base.json"

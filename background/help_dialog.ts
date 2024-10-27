@@ -17,13 +17,15 @@ let html_: [string, string] | null = null
 let i18n_: Map<keyof typeof import("../i18n/zh/help_dialog.json"), string>
 const descriptions_ = new Map<kCName, [/** description */ string, /** parameters */ string]>()
 
-export const parseHTML = (template: string): [string, string] => {
+const parseHTML = (template: string): [string, string] => {
       const noShadow = !(Build.MV3 || (!OnChrome || Build.MinCVer >= BrowserVer.MinShadowDOMV0)
             && (!OnFirefox || Build.MinFFVer >= FirefoxBrowserVer.MinEnsuredShadowDOMV1)
             && (OnChrome || OnFirefox))
           && !(OnChrome && Build.MinCVer < BrowserVer.MinEnsuredUnprefixedShadowDOMV0
                 ? globalThis.ShadowRoot || (globalThis as MaybeWithWindow).document!.body!.webkitCreateShadowRoot
                 : globalThis.ShadowRoot),
+      noAllInitial = OnChrome && Build.MinCVer <= BrowserVer.CSS$All$$initial$MayBreakHelpDialog
+          && CurCVer_ === BrowserVer.CSS$All$$initial$MayBreakHelpDialog,
       noContain = OnChrome && Build.MinCVer <= BrowserVer.CSS$Contain$BreaksHelpDialogSize
           && CurCVer_ === BrowserVer.CSS$Contain$BreaksHelpDialogSize;
       let pos = template.indexOf("</style>") + 8, head = template.slice(0, pos), body = template.slice(pos).trim();
@@ -32,16 +34,21 @@ export const parseHTML = (template: string): [string, string] => {
         body = head.slice(0, arr.index).trim() + body;
         head = head.slice(arr.index + arr[0].length, -8);
       }
-      if (noShadow || noContain) {
+      if (noShadow || noContain || noAllInitial) {
         if (noContain) {
-          head = head.replace(<RegExpG> /contain:\s?[\w\s]+/g, "contain: none !important");
+          head = head.replace(<RegExpG> /contain:[\w\s!]+/g, "contain: none !important")
         }
+        if (noAllInitial) { head = head.replace("initial", "inherit") }
         if (noShadow) {
           head = head.replace(<RegExpG> /[#.][A-Z][^,{};]*[,{]/g, "#VimiumUI $&");
         }
       }
+    if (OnChrome && Build.MinCVer < BrowserVer.MinForcedColorsMode
+        && IsEdg_ && CurCVer_ < BrowserVer.MinForcedColorsMode) {
+      head = head.replace(<RegExpG> /forced-colors/g, "-ms-high-contrast")
+    }
       body = body.replace(<RegExpG & RegExpSearchable<1>> /\$(\w+)/g, (_, s): string => i18n_.get(s as "misc") ?? s)
-      const consts = BgUtils_.safer_<Dict<string>>({
+    const consts = BgUtils_.safer_<Dict<string>>({
       homePage: CONST_.HomePage_,
       version: CONST_.VerName_,
       release: convertToUrl_("vimium://release"),
@@ -53,9 +60,9 @@ export const parseHTML = (template: string): [string, string] => {
       browserHelp: OnFirefox ? GlobalConsts.FirefoxHelp as string
           : OnChrome && IsEdg_ ? GlobalConsts.EdgHelp
           : GlobalConsts.ChromeHelp
-      });
-      body = body.replace(<RegExpSearchable<1>> /\{\{(\w+)}}/g, (_, group: string) => consts[group] || _);
-      return [head, body]
+    })
+    body = body.replace(<RegExpSearchable<1>> /\{\{(\w+)}}/g, (_, group: string) => consts[group] || _)
+    return [head, body]
 }
 
 export const render_ = (isOptionsPage: boolean, showNames: boolean | null | undefined
@@ -74,12 +81,13 @@ export const render_ = (isOptionsPage: boolean, showNames: boolean | null | unde
         inlineRunKey_(registry)
         rawCommand = registry.command_
       }
-      const command = normalizeCmdName(rawCommand)
+      const command = normalizeCmdName_(rawCommand)
       let keys = commandToKeys.get(command)
       keys ? keys.push([key, registry]) : commandToKeys.set(command, [[key, registry]])
     })
+    const title2 = isOptionsPage ? " " + i18n_.get("cmdList") : ""
     const result = BgUtils_.safer_<Dict<string>>({
-      title2: isOptionsPage ? " " + i18n_.get("cmdList") : "",
+      title2: title2 && (title2.includes(" ", 1) ? title2 : title2.trimLeft()),
       name2: " - " + (extTrans_("name") as string).split(" - ")[1],
       tip: showNames && i18n_.get("tipClickToCopy") || "",
       lbPad: showNames ? '\n\t\t<tr><td class="HelpTd TdBottom">&#160;</td></tr>' : ""
@@ -116,11 +124,11 @@ type _NormalizedNames2<T extends kCName> =
     : T extends "quickNext" ? "nextTab"
     : T extends "closeSomeOtherTabs" ? "closeOtherTabs"
     : T extends "newTab" ? "createTab" : T extends "simBackspace" ? "simulateBackspace"
-    : T extends "showHUD" ? "showTip" : T extends "wait" ? "blank"
+    : T extends "showHUD" | "showHud" ? "showTip" : T extends "wait" ? "blank"
     : T
 type NormalizedNames = _NormalizedNames2<_NormalizedNames1<kCName>>
 
-const normalizeCmdName = (command: kCName): NormalizedNames => {
+export const normalizeCmdName_ = (command: kCName): NormalizedNames => {
       if (includes(command, "Mode") && includes(command, ".activate")) {
         command = includes(command, "ModeTo") ? command.replace("ModeTo", "")
             : command.replace("Mode", "")
@@ -146,7 +154,7 @@ const normalizeCmdName = (command: kCName): NormalizedNames => {
         command = "closeOtherTabs"
       } else if (command === "simBackspace") {
         command = "simulateBackspace"
-      } else if (command === "showHUD") {
+      } else if (command === "showHUD" || command === "showHud") {
         command = "showTip"
       } else if (command === "wait") {
         command = "blank"
@@ -229,8 +237,7 @@ const commandGroups_: {
     readonly [key in
         "pageNavigation" | "vomnibarCommands" | "historyNavigation" | "findCommands" | "tabManipulation" | "misc"
         ]: readonly (NoAliasInCNames<kCName> | 1 | `$${string}`)[]
-} & SafeObject = {
-  __proto__: null as never,
+} = {
   pageNavigation: [
     "LinkHints.activate"
     , "$button=\"\"/right, touch=false/true/\"auto\""
@@ -256,11 +263,12 @@ const commandGroups_: {
     , "scrollSelect", 1, "$dir=down|up, position=\"\"|begin|end"
     , "reload", "$hard"
     , "reloadTab"
-    , "reloadGivenTab", 1, "$hard, bypassCache"
+    , "reloadGivenTab", 1, "$hard"
     , "zoom", "$in, out, reset"
     , "zoomIn", 1
     , "zoomOut", 1
     , "zoomReset", 1
+    , "toggleUrl", 1
     , "toggleViewSource", 1
     , "copyCurrentUrl", "$type=url/title/frame, decoded"
     , "copyCurrentTitle"
@@ -277,6 +285,7 @@ const commandGroups_: {
     , "LinkHints.activateOpenImage", 1, "$auto=true"
     , "LinkHints.activateDownloadLink", 1
     , "LinkHints.activateOpenIncognito", 1
+    , "LinkHints.activateOpenUrl", 1
     , "LinkHints.activateFocus"
     , "LinkHints.activateHover", 1, OnFirefox ? "$" : "$showUrl=true"
     , "LinkHints.activateLeave", 1
@@ -328,8 +337,8 @@ const commandGroups_: {
     , "clearFindHistory", 1
   ],
   tabManipulation: [
-    "nextTab"
-    , "previousTab"
+    "nextTab", "$blur"
+    , "previousTab", "$blur"
     , "firstTab"
     , "lastTab"
     , "createTab"
@@ -346,7 +355,7 @@ const commandGroups_: {
     , "sortTabs", "$sort=recency|createTime"
     , "togglePinTab"
     , "toggleMuteTab", "$all, other"
-    , "visitPreviousTab", "$acrossWindows, onlyActive"
+    , "visitPreviousTab", "$blur, acrossWindows, onlyActive"
     , "closeTabsOnLeft", 1, "$$count=0"
     , "closeTabsOnRight", 1, "$$count=0"
     , "closeOtherTabs", 1, "$filter=\"\"/url/url+hash/url+title"
@@ -357,6 +366,7 @@ const commandGroups_: {
     , "clearContentSettings", 1
     , "copyWindowInfo", 1, "$format=\"${title}: ${url}\", join:true/string, decoded"
     , "captureTab"
+    , "toggleWindow", "$states=\"normal,maximized\""
   ],
   misc: [
     "showHelp"
@@ -376,12 +386,15 @@ const commandGroups_: {
     , "reset", 1
     , "runKey", 1, "$expect:Envs, keys:KeySequence[]|string"
     , "sendToExtension", 1, "$id:string, data:any, raw"
+    , "confirm", 1, "$ask:string, $then, $else"
     , "blank", 1
   ]
 }
 
 if (OnChrome) {
-  (commandGroups_.misc as Writable<typeof commandGroups_.misc>).push("closeDownloadBar")
+  (commandGroups_.misc as Writable<typeof commandGroups_.misc>).push("closeDownloadBar", 1)
+  Build.MinCVer < BrowserVer.MinNoDownloadBubbleFlag && CurCVer_ < BrowserVer.MinNoDownloadBubbleFlag
+      && (commandGroups_.misc as Writable<typeof commandGroups_.misc>).pop()
 }
 
 if (OnFirefox || OnChrome && IsEdg_) {

@@ -1,7 +1,7 @@
 /// <reference path="../typings/lib/window.d.ts" />
 
 (function (): void {
-  const MayChrome = !!(Build.BTypes & BrowserType.Chrome), MayNotChrome = !!(Build.BTypes & ~BrowserType.Chrome)
+  const MayChrome = !!(Build.BTypes & BrowserType.Chrome), MayNotChrome = Build.BTypes !== BrowserType.Chrome as number
   const mayBrowser_ = MayChrome && MayNotChrome
       && typeof browser === "object" && !("tagName" in (browser as unknown as Element))
       ? (browser as typeof chrome) : null
@@ -9,30 +9,78 @@
       : !!(mayBrowser_ && mayBrowser_.runtime && mayBrowser_.runtime.connect)
   const browser_ = useBrowser ? (browser as typeof chrome) : chrome
   const runtime = browser_.runtime
+  const isOffscreen = !!Build.MV3 && location.pathname.endsWith("offscreen.html")
   const destroy = (): void => {
-    window !== top && (parent as Window).focus()
+    isOffscreen || (parent as Window).focus()
     window.closed || window.close()
     port = null
   }
   const onTask = (_response: BaseTeeTask): void => {
     type TaskTypes<K> = K extends keyof TeeTasks ? Req.tee<K> : never
     let onFinish = (ok: boolean | string): void => {
+      okResult = true
       if (Build.MV3 || port) {
-        (port as any).postMessage(ok)
+        (port as any).postMessage({ H: kFgReq.teeRes, r: ok })
       } else {
         resolve!(ok)
       }
-      setTimeout(destroy, 0) // try to avoid a strange crashes on Chrome 103
+      isOffscreen || setTimeout(destroy, 0) // try to avoid a strange crashes on Chrome 103
     }
-    const { t: taskId, s: serialized, d: data, r: resolve } = _response as TaskTypes<keyof TeeTasks>
+    const { t: taskId, s: serialized, d: data } = _response as TaskTypes<keyof TeeTasks>
+    const resolve = Build.MV3 ? null : _response.r
     const runTask = (): void | Promise<unknown> => {
+      // MV3
+      // || OnChrome && chromeVer_ >= MinEnsured$Clipboard$$write$and$ClipboardItem
+      // || OnFirefox && taskId === kTeeTask.DrawAndCopy
       if (Build.MV3) {
         switch (taskId) {
         case kTeeTask.Copy:
         case kTeeTask.Paste:
             const navClip = navigator.clipboard!
+            if (!(Build.BTypes & ~BrowserType.Chrome) && Build.MinCVer >= BrowserVer.MinOffscreenAPIs || isOffscreen) {
+              const doc = document, textArea = doc.createElement("textarea")
+              if (taskId === kTeeTask.Copy) {
+                textArea.value = serialized
+                doc.body!.appendChild(textArea)
+                textArea.select()
+                doc.execCommand("copy")
+                textArea.remove()
+                textArea.value = ""
+              } else {
+                const newLenLimit = serialized < 0 ? -1 - serialized : serialized
+                textArea.maxLength = newLenLimit || GlobalConsts.MaxBufferLengthForPastingNormalText
+                doc.body!.appendChild(textArea)
+                textArea.focus()
+                doc.execCommand("paste")
+                okResult = textArea.value.slice(0, newLenLimit || GlobalConsts.MaxBufferLengthForPastingNormalText)
+                textArea.value = ""
+                textArea.remove()
+                textArea.removeAttribute("maxlength")
+              }
+              return Promise.resolve()
+            }
             return taskId === kTeeTask.Copy ? navClip.writeText!(serialized)
                 : navClip.readText!().then((result): void => { okResult = result })
+        case kTeeTask.Download:
+          return ((window as any).fetch as GlobalFetch)(serialized.u)
+              .then<Blob>(res => res.status < 300 && res.status > 199 ? res.blob() : Promise.reject("HTTP "+res.status))
+              .then((blob): void => {
+            const url = URL.createObjectURL(blob)
+            const a = document.createElement("a")
+            a.href = url
+            a.download = serialized.t
+            a.target = "_blank"
+            const mouseEvent = new MouseEvent("click", {
+              bubbles: true, cancelable: true, altKey: true, detail: 1, button: 0, buttons: 1
+            } as ValidMouseEventInit)
+            a.dispatchEvent(mouseEvent)
+          })
+        case kTeeTask.updateMedia:
+          if (Build.MV3) {
+            const obj = serialized.map(i => i ? matchMedia(i).matches : false)
+            onFinish(obj as any)
+          }
+          return
         }
       }
       switch (taskId) {
@@ -63,7 +111,7 @@
           return res instanceof Response ? res.blob() : res
         })
         .then((image): Promise<unknown> => {
-          if (!(Build.BTypes & ~BrowserType.Firefox)
+          if (Build.BTypes === BrowserType.Firefox as number
                 || !!(Build.BTypes & BrowserType.Firefox) && serialized.b! & BrowserType.Firefox) {
             return new Promise<void>((resolve): void => {
               const reader = new FileReader()
@@ -95,9 +143,9 @@
       }) : onFinish(false)
     }
     let okResult: true | string = true
-    document.hasFocus() ? onFocus() : (window.onfocus = onFocus, window.focus())
+    ; (isOffscreen || document.hasFocus()) ? onFocus() : (window.onfocus = onFocus, window.focus())
   }
-  let port: chrome.runtime.Port | null, once = false
+  let port: chrome.runtime.Port | null, refusedMoreMessages = false
   if (!Build.MV3) {
     const getBg = browser_.extension.getBackgroundPage
     const bg = getBg && getBg() as unknown as BgExports | null
@@ -110,7 +158,7 @@
     }
   }
   try {
-    port = runtime.connect({ name: "" + (PortType.selfPages | PortType.Tee) })
+    port = runtime.connect({ name: "" + (PortType.selfPages | PortType.Tee | (isOffscreen ? PortType.Offscreen : 0)) })
     port.onDisconnect.addListener(destroy)
   } catch {
     destroy()
@@ -118,11 +166,11 @@
   }
   port.onMessage.addListener((_response: unknown): void => {
     const response = _response as Req.bg<kBgReq>
-    if (response.N !== kBgReq.omni_runTeeTask || once) {
+    if (response.N !== kBgReq.omni_runTeeTask || refusedMoreMessages) {
       Build.NDEBUG || console.log("Vimium C: error: unknown message:", response)
       destroy()
     } else {
-      once = true
+      refusedMoreMessages = !isOffscreen
       onTask(response)
     }
   })

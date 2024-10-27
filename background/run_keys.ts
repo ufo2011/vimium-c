@@ -1,5 +1,5 @@
 import {
-  get_cOptions, cPort, cRepeat, set_cPort, cKey, keyToCommandMap_, get_cEnv, set_cEnv,
+  get_cOptions, cPort, cRepeat, set_cPort, cKey, keyToCommandMap_, get_cEnv, set_cEnv, OnChrome, curIncognito_,
   set_cKey, set_cOptions, set_runOneMapping_, runOneMapping_, inlineRunKey_, set_inlineRunKey_
 } from "./store"
 import * as BgUtils_ from "./utils"
@@ -8,20 +8,23 @@ import { getPortUrl_, safePost, showHUD, getCurFrames_ } from "./ports"
 import { createSimpleUrlMatcher_, matchSimply_ } from "./exclusions"
 import { extTrans_ } from "./i18n"
 import {
-  normalizedOptions_, envRegistry_, parseOptions_, normalizeCommand_, availableCommands_, makeCommand_
+  kCmdCxt, normalizedOptions_, envRegistry_, parseOptions_, normalizeCommand_, availableCommands_, makeCommand_
 } from "./key_mappings"
 import {
   copyCmdOptions, executeCommand, overrideOption, parseFallbackOptions, replaceCmdOptions, runNextCmdBy,
-  fillOptionWithMask, concatOptions, overrideCmdOptions
+  fillOptionWithMask, concatOptions, overrideCmdOptions, makeFallbackContext
 } from "./run_commands"
 import C = kBgCmd
 import NormalizedEnvCond = CommandsNS.NormalizedEnvCond
 
 declare const enum kStr { RunKeyWithId = "<v-runKey:$1>" }
+
+const DEBUG = 0
+
 const abs = Math.abs
 const kRunKeyOptionNames: readonly (Exclude<keyof BgCmdOptions[C.runKey], `$${string}` | `o.${string}`>)[] =
     [ "expect", "keys", "options", "mask" ]
-let loopIdToRunSeq = 0
+let _loopIdToRunSeq = 0
 
 const collectOptions = (opts: { [key: `o.${string}`]: any }): CommandsNS.Options | null => {
   const o2 = BgUtils_.safeObj_<any>(), others = [] as string[]
@@ -42,14 +45,19 @@ const collectOptions = (opts: { [key: `o.${string}`]: any }): CommandsNS.Options
 
 //#region execute a command when in a special environment
 
-declare const enum EnvMatchResult { abort, nextEnv, matched }
+declare const enum EnvMatchResult { interrupt, nextEnv, matched }
 
 const matchEnvRule = (rule: CommandsNS.EnvItem, info: CurrentEnvCache): EnvMatchResult => {
   // avoid sending messages to content scripts - in case a current tab is running slow
-  let host = rule.host, iframe = rule.iframe, fullscreen = rule.fullscreen, elSelector = rule.element
+  let { host, iframe, fullscreen, element: elSelector, incognito } = rule
   if (host === undefined) {
     host = rule.host = rule.url != null ? rule.url : null
     delete rule.url
+  }
+  if (incognito != null) {
+    if ((curIncognito_ === IncognitoType.true) !== !!incognito) {
+      return EnvMatchResult.nextEnv
+    }
   }
   if (typeof host === "string") {
     host = rule.host = createSimpleUrlMatcher_(host)
@@ -57,7 +65,7 @@ const matchEnvRule = (rule: CommandsNS.EnvItem, info: CurrentEnvCache): EnvMatch
   if (host != null) {
     let url: string | null | undefined | Promise<string> = info.url, slash: number
     if (url != null ? false : host.t === kMatchUrl.Pattern
-        ? ["/*", "*"].includes(host.v.pathname) && host.v.search === "*" && host.v.hash === "*"
+        ? ["/*", "*"].includes(host.v.p.pathname) && host.v.p.search === "*" && host.v.p.hash === "*"
         : host.t === kMatchUrl.StringPrefix
         && ((slash = host.v.indexOf("/", host.v.indexOf("://") + 3)) === host.v.length - 1 || slash === -1)) {
       const frames = getCurFrames_(), port = frames && frames.top_ || cPort
@@ -69,7 +77,7 @@ const matchEnvRule = (rule: CommandsNS.EnvItem, info: CurrentEnvCache): EnvMatch
             : /** should not reach here */ "")
         runKeyWithCond(info)
       })
-      return EnvMatchResult.abort
+      return EnvMatchResult.interrupt
     }
     if (!matchSimply_(host, url)) { return EnvMatchResult.nextEnv }
   }
@@ -91,7 +99,7 @@ const matchEnvRule = (rule: CommandsNS.EnvItem, info: CurrentEnvCache): EnvMatch
       runKeyWithCond(info)
       return runtimeError_()
     })
-    return EnvMatchResult.abort
+    return EnvMatchResult.interrupt
   } else if (!!fullscreen !== info.fullscreen) {
     return EnvMatchResult.nextEnv
   }
@@ -111,7 +119,7 @@ const matchEnvRule = (rule: CommandsNS.EnvItem, info: CurrentEnvCache): EnvMatch
     if (!selectorArr.length) { /* empty */ }
     else if (cur == null) {
       cPort && safePost(cPort, { N: kBgReq.queryForRunKey, n: performance.now(), c: info })
-      return cPort ? EnvMatchResult.abort : EnvMatchResult.nextEnv
+      return cPort ? EnvMatchResult.interrupt : EnvMatchResult.nextEnv
     } else if (! selectorArr.some((s): any => cur === 0 ? s.tag === "body" && !s.id && !s.classList :
         (!s.tag || cur[0] === s.tag) && (!s.id || cur[1] === s.id)
         && (!s.classList.length || cur[2].length > 0 && s.classList.every(i => cur[2].includes(i)))
@@ -126,8 +134,9 @@ const normalizeExpects = (options: KnownOptions<C.runKey>): (NormalizedEnvCond |
   const expected_rules = options.expect
   if (options.$normalized) { return expected_rules as NormalizedEnvCond[] }
   const normalizeKeys = (keys: string | string[] | null | undefined): string[] => {
-    return keys ? typeof keys === "string" ? keys.trim().split(<RegExpG> /[, ]+/)
-        : keys instanceof Array ? keys : [] : []
+    return !keys ? [] : typeof keys !== "string" ? (keys instanceof Array ? keys : [])
+        : (keys = keys.trim()).includes(" ") ? keys.split(/ +/)
+        : BgUtils_.splitWhenKeepExpressions(keys, ",").map(i => i.trim())
   }
   let new_rules: (NormalizedEnvCond | null)[] = []
   if (!expected_rules) { /* empty */ }
@@ -149,7 +158,8 @@ const normalizeExpects = (options: KnownOptions<C.runKey>): (NormalizedEnvCond |
               : ({ env: rule[0].trim(), keys: normalizeKeys(rule[1]), options: null }))
   }
   new_rules = new_rules.map((i): NormalizedEnvCond | null =>
-        i && i.env && i.env !== "__proto__" && i.keys.length ? i : null)
+      i && i.env && !(OnChrome && Build.MinCVer < BrowserVer.MinEnsuredES6$ForOf$Map$SetAnd$Symbol
+        && i.env === "__proto__") && (i.keys.length || i.options) ? i : null)
   overrideOption<C.runKey, "expect">("expect", new_rules, options)
   overrideOption<C.runKey, "keys">("keys", normalizeKeys(options.keys), options)
   overrideOption<C.runKey, "$normalized">("$normalized", 1, options)
@@ -196,13 +206,14 @@ export const runKeyWithCond = (info?: CurrentEnvCache): void => {
       if (rule === null) { continue }
     }
     const res = matchEnvRule(rule, info)
-    if (res === EnvMatchResult.abort) { return }
+    if (res === EnvMatchResult.interrupt) { return }
     if (res === EnvMatchResult.matched) {
       matched = normalizedRule
       break
     }
   }
-  const keys = (matched ? matched.keys : get_cOptions<C.runKey, true>().keys) as (string | SingleSequence)[]
+  const keys = (matched && matched.keys.length ? matched.keys : get_cOptions<C.runKey, true>().keys
+      ) as (string | SingleSequence)[]
   let seq: string | SingleSequence, keysInd: number
   const sub_name = matched ? typeof matched.env === "string" ? `[${matched.env}]: `
       : `(${expected_rules.indexOf(matched)})` : ""
@@ -234,24 +245,30 @@ export const runKeyWithCond = (info?: CurrentEnvCache): void => {
       key.t === kN.error && showHUD(key.val)
       return
     }
-    let options = matched && matched.options || get_cOptions<C.runKey, true>().options
+    let options = matched && matched.options && typeof matched.options === "object" && matched.options
+        || get_cOptions<C.runKey, true>().options
         || (get_cOptions<C.runKey, true>().$masked ? null : collectOptions(get_cOptions<C.runKey, true>()))
     options = concatOptions(options, options2)
-    const newIntId = loopIdToRunSeq = (loopIdToRunSeq + 1) % 64 || 1
-    const seqId = kStr.RunKeyWithId.replace("$1", "" + newIntId as "1")
+    const newIntId = (_loopIdToRunSeq + 1) % 64 || 1
+    const $seq: BgCmdOptions[C.runKey]["$seq"] = {
+      keys: key, repeat, options, cursor: key, timeout: 0, id: "single",
+      fallback: parseFallbackOptions(get_cOptions<C.runKey, true>())
+    }
     if (key.val.length > 1 || key.val[0].t !== kN.key) {
-      const fakeOptions: KnownOptions<C.runKey> = {
-        $seq: { keys: key, repeat, options, cursor: key, timeout: 0, id: seqId,
-                fallback: parseFallbackOptions(get_cOptions<C.runKey, true>()) },
-        $then: seqId, $else: "-" + seqId, $retry: -999
-      }
+      const seqId = kStr.RunKeyWithId.replace("$1", "" + newIntId as "1")
+      const fakeOptions: KnownOptions<C.runKey> = { $seq, $then: seqId, $else: "-" + seqId, $retry: -999 }
+      $seq.id = seqId
+      _loopIdToRunSeq = newIntId
       replaceCmdOptions(fakeOptions)
       keyToCommandMap_.set(seqId, makeCommand_("runKey", fakeOptions as CommandsNS.Options)!)
-      runKeyInSeq(fakeOptions.$seq!, 1, null, info)
+      runKeyInSeq($seq, 1, info)
     } else {
-      runOneKey(key.val[0], {
-        keys: key, repeat, options, cursor: key, timeout: 0, id: seqId, fallback: null
-      }, info)
+      if (!Build.NDEBUG && DEBUG) {
+        console.log("keySeq[%o]: single(%o) # %o * %o @ %o", newIntId, key.val[0].val, options, repeat, Date.now()%3e5)
+      }
+      replaceCmdOptions<C.runKey>({ $seq } satisfies KnownOptions<C.runKey> as KnownOptions<C.runKey>)
+      onLastKeyInSeq($seq, key.val[0])
+      runOneKey(key.val[0], $seq, info)
     }
   }
 }
@@ -274,8 +291,8 @@ interface IfElseNode extends BaseNode { t: kN.ifElse; val: { cond: Node, t: Node
 interface ErrorNode extends BaseNode { t: kN.error; val: string; par: null }
 type Node = ListNode | IfElseNode
 export const parseKeySeq = (keys: string): ListNode | ErrorNode => {
-  const re = <RegExpOne>
-      /^([$%][a-zA-Z]\+?)*([\d-]\d*\+?)?([$%][a-zA-Z]\+?)*((<([acmsv]-){0,4}.\w*(:i)?>|[^#()?:+$%-])+|-)(#[^()?:+]*)?/
+  const re = <RegExpOne
+      > /^([$%][a-zA-Z]\+?)*([\d-]\d*\+?)?([$%][a-zA-Z]\+?)*((<([acmsv]-){0,4}.\w*(:i)?>|[^#()?:+$%-])+|-)(#[^()?:+]*)?/
   let cur: ListNode = { t: kN.list, val: [], par: null }, root: ListNode = cur, last: Node | null
   for (let i = keys.length > 1 ? 0 : keys.length; i < keys.length; i++) {
     switch (keys[i]) {
@@ -311,16 +328,22 @@ export const parseKeySeq = (keys: string): ListNode | ErrorNode => {
         const hash = oneKey.indexOf("#")
         if (hash > 0 && (<RegExpOne> /[#&]#/).test(oneKey.slice(hash))) {
           oneKey = keys.slice(i)
+          i = keys.length
+        } else if (hash > 0 && (<RegExpOne> /["\[]/).test(oneKey.slice(hash))) {
+          const arr = BgUtils_.extractComplexOptions_(keys.slice(i + hash))
+          oneKey = oneKey.slice(0, hash) + arr[0]
+          i += hash + arr[1]
+        } else {
+          i += oneKey.length
         }
         cur.val.push({ t: kN.key, val: oneKey, par: cur })
-        i += oneKey.length
       }
       i--
       break
     }
   }
   if (keys.length === 1) { root.val.push({ t: kN.key, val: keys, par: root }) }
-  if (!Build.NDEBUG) { (root as Object as {toJSON?: any}).toJSON = exprKeySeq }
+  if (!Build.NDEBUG) { Object.defineProperty(root, "to_json", { get: exprKeySeq }) }
   BgUtils_.resetRe_()
   return root
 }
@@ -366,63 +389,75 @@ const nextKeyInSeq = (lastCursor: ListNode | KeyNode, dir: number): KeyNode | nu
   return cursor
 }
 
-export const runKeyInSeq = (seq: BgCmdOptions[C.runKey]["$seq"], dir: number
-    , fallback: Req.FallbackOptions["$f"] | null, envInfo: CurrentEnvCache | null): void => {
-  const cursor: KeyNode | null = nextKeyInSeq(seq.cursor as ListNode | KeyNode, dir)
+/** Note: this requires a temporary cOptions to modify */
+const onLastKeyInSeq = ($seq: BgCmdOptions[C.runKey]["$seq"], cursor: KeyNode | null): void => {
+  const runOptions = get_cOptions<C.runKey, true>() as KnownOptions<C.runKey> | null
+  const finalFallback = $seq.fallback
+  if (cursor && runOptions) { delete runOptions.$then, delete runOptions.$else }
+  if (!finalFallback) { return }
+  if (cursor) { // ensured no $then/$else in outerFallback
+    $seq.options = $seq.options ? Object.assign(finalFallback, $seq.options) : finalFallback
+  } else if (runOptions?.$f) {
+    finalFallback.$f = makeFallbackContext(finalFallback.$f, 0, runOptions.$f.t)
+  }
+  runOptions && (runOptions.$f = finalFallback.$f)
+}
+
+export const runKeyInSeq = ($seq: BgCmdOptions[C.runKey]["$seq"], dir: number, envInfo: CurrentEnvCache|null): void => {
+  const cursor: KeyNode | null = nextKeyInSeq($seq.cursor as ListNode | KeyNode, dir)
   const ifOk = cursor && nextKeyInSeq(cursor, 1), ifFail = cursor && nextKeyInSeq(cursor, -1)
   const isLast = !(cursor && (ifOk || ifFail))
-  const finalFallback = seq.fallback
-  let cmdOptions = get_cOptions<C.runKey, true>()
-  const seqId = seq.id
+  const finalFallback = $seq.fallback
+  const seqId = $seq.id, intSeqId = !Build.NDEBUG && DEBUG ? +(<RegExpOne>/\d+/).exec($seq.id)![0] : -1
   if (isLast) {
+    if (!Build.NDEBUG && DEBUG) {
+      console.log("keySeq[%o]: last = %o, fallback = %o @ %o", intSeqId, cursor && cursor.val
+          , finalFallback, Date.now() % 3e5)
+    }
+    if (kStr.RunKeyWithId.replace("$1", "" + _loopIdToRunSeq as "1") === $seq.id) {
+      _loopIdToRunSeq = Math.max(--_loopIdToRunSeq, 0)
+    }
     keyToCommandMap_.delete(seqId)
-    clearTimeout(seq.timeout || 0)
-    if (kStr.RunKeyWithId.replace("$1", "" + loopIdToRunSeq as "1") === seqId) {
-      loopIdToRunSeq = Math.max(--loopIdToRunSeq, 0)
-    }
-    if (cursor) {
-      delete cmdOptions.$then, delete cmdOptions.$else
-      if (finalFallback) {
-        seq.options = seq.options ? Object.assign(finalFallback, seq.options) : finalFallback
-      }
-    }
+    clearTimeout($seq.timeout || 0)
+    onLastKeyInSeq($seq, cursor)
+  } else if (!Build.NDEBUG && DEBUG) {
+    console.log("keySeq[%o]: cursor = %o : $then=%o $else=%o @ %o", intSeqId, cursor && cursor.val
+        , ifOk && ifOk.val, ifFail && ifFail.val, Date.now() % 3e5)
   }
+  let seqOptions = get_cOptions<C.runKey, true>()
   if (!cursor) {
-    if (finalFallback) {
-      finalFallback.$f ? finalFallback.$f.t = fallback && fallback.t || finalFallback.$f.t
-          : finalFallback.$f = fallback
-      if (runNextCmdBy(dir > 0 ? 1 : 0, finalFallback, 1)) { return }
-    }
-    dir < 0 && fallback && fallback.t && showHUD(extTrans_(`${fallback.t as 99}`))
+    if (finalFallback && runNextCmdBy(dir > 0 ? 1 : 0, finalFallback, 1)) { return }
+    const tip = dir > 0 ? 0 : seqOptions.$f?.t || finalFallback?.$f?.t || 0
+    tip && showHUD(extTrans_(`${tip as 99}`))
     return
   }
-  const thenPrefix = ifOk && cmdOptions.$then ? typeof ifOk.val === "string" ? ifOk.val : ifOk.val.prefix : ""
-  const elsePrefix = ifFail && cmdOptions.$else ? typeof ifFail.val === "string" ? ifFail.val : ifFail.val.prefix : ""
+  const thenPrefix = ifOk && seqOptions.$then ? typeof ifOk.val === "string" ? ifOk.val : ifOk.val.prefix : ""
+  const elsePrefix = ifFail && seqOptions.$else ? typeof ifFail.val === "string" ? ifFail.val : ifFail.val.prefix : ""
   const evenLoading = (thenPrefix.includes("$l") ? 1 : 0) + (elsePrefix.includes("$l") ? 2 : 0)
   const noDelay = (thenPrefix.includes("$D") ? 1 : 0) + (elsePrefix.includes("$D") ? 2 : 0)
   if (evenLoading || noDelay) {
-    if (seq.cursor === seq.keys) {
+    if ($seq.cursor === $seq.keys) {
       overrideCmdOptions<C.runKey>({})
-      cmdOptions = get_cOptions<C.runKey, true>()
+      seqOptions = get_cOptions<C.runKey, true>()
     }
-    cmdOptions.$then = (evenLoading & 1 ? "$l+" : "") + (noDelay & 1 ? "$D+" : "") + cmdOptions.$then
-    cmdOptions.$else = (evenLoading & 2 ? "$l+" : "") + (noDelay & 2 ? "$D+" : "") + cmdOptions.$else
+    seqOptions.$then = (evenLoading & 1 ? "$l+" : "") + (noDelay & 1 ? "$D+" : "") + seqOptions.$then
+    seqOptions.$else = (evenLoading & 2 ? "$l+" : "") + (noDelay & 2 ? "$D+" : "") + seqOptions.$else
   }
-  const timeout = isLast ? 0 : seq.timeout = setTimeout((): void => {
+  const timeout = isLast ? 0 : $seq.timeout = setTimeout((): void => {
     const old = keyToCommandMap_.get(seqId)
     const opts2 = old && (old.options_ as KnownOptions<C.runKey>)
     if (opts2 && opts2.$seq && opts2.$seq.timeout === timeout) {
       keyToCommandMap_.delete(seqId)
     }
   }, 30000)
-  runOneKey(cursor, seq, envInfo)
+  runOneKey(cursor, $seq, envInfo)
 }
 
 //#endregion
 
 //#region run one key node with count and placeholder prefixes and a suffix of inline options
 
-const parseKeyNode = (cursor: KeyNode): OneKeyInstance => {
+export const parseKeyNode = (cursor: KeyNode): OneKeyInstance => {
   let str = cursor.val
   if (typeof str !== "string") { return str }
   let arr = (<RegExpOne> /^([$%][a-zA-Z]\+?|-)+/).exec(str)
@@ -440,22 +475,22 @@ const parseKeyNode = (cursor: KeyNode): OneKeyInstance => {
     str = str.slice(hashIndex + 1)
     options = parseEmbeddedOptions(str)
   }
-  return cursor.val = { prefix, count, key: key !== "__proto__" ? key : "<v-__proto__>", options }
+  return cursor.val = { prefix, count, key: OnChrome && Build.MinCVer < BrowserVer.MinEnsuredES6$ForOf$Map$SetAnd$Symbol
+            && key === "__proto__" ? "<v-__proto__>" : key, options }
 }
 
 export const parseEmbeddedOptions = (/** has no prefixed "#" */ str: string): CommandsNS.RawOptions | null => {
   const arrHash = (<RegExpOne> /(^|&)#/).exec(str)
   const rawPart = arrHash ? str.slice(arrHash.index + arrHash[0].length) : ""
-  const encodeUnicode = (s: string): string => "\\u" + (s.charCodeAt(0) + 0x10000).toString(16).slice(1)
-  const encodeValue = (s: string): string =>
-      (<RegExpOne> /\s/).test(s) ? JSON.stringify(s).replace(<RegExpG & RegExpSearchable<0>> /\s/g, encodeUnicode) : s
+  const encodeValue = (s: string): string => (<RegExpOne> /\s/).test(s)
+      ? JSON.stringify(s).replace(<RegExpG & RegExpSearchable<0>> /\s/g, BgUtils_.encodeUnicode_) : s
   str = (arrHash ? str.slice(0, arrHash.index) : str).split("&").map((pair): string => {
     const key = pair.split("=", 1)[0], val = pair.slice(key.length)
-    return key + (val ? "=" + encodeValue(BgUtils_.DecodeURLPart_(val.slice(1))) : "")
+    return key ? key + (val ? "=" + encodeValue(BgUtils_.DecodeURLPart_(val.slice(1))) : "") : ""
   }).join(" ")
   if (rawPart) {
     const key2 = rawPart.split("=", 1)[0], val2 = rawPart.slice(key2.length)
-    str = (str ? str + " " : "") + key2 + (val2 ? "=" + encodeValue(val2.slice(1)) : "")
+    str = key2 ? (str ? str + " " : "") + key2 + (val2 ? "=" + encodeValue(val2.slice(1)) : "") : str
   }
   return parseOptions_(str, 2)
 }
@@ -463,12 +498,26 @@ export const parseEmbeddedOptions = (/** has no prefixed "#" */ str: string): Co
 const runOneKey = (cursor: KeyNode, seq: BgCmdOptions[C.runKey]["$seq"], envInfo: CurrentEnvCache | null): void => {
   const info = parseKeyNode(cursor)
   const isFirst = seq.cursor === seq.keys, hasCount = isFirst || info.prefix.includes("$c")
-  let options = concatOptions(seq.options, info.options)
+  const notWait = info.prefix.includes("$W")
+  const seqOptions = get_cOptions<C.runKey, true>()
+  let options = notWait ? concatOptions(info.options, BgUtils_.safer_({ $then: "", $else: "" }))
+      : concatOptions(seq.options, info.options)
   seq.cursor = cursor
   runOneKeyWithOptions(info.key, info.count * (hasCount ? seq.repeat : 1), options, envInfo, null, isFirst)
+  if (notWait) {
+    setTimeout((): void => {
+      replaceCmdOptions(seqOptions)
+      runKeyInSeq(seq, 1, null)
+    }, 0)
+    return
+  }
 }
 
-set_runOneMapping_(((key, port, fStatus): void => {
+const mayBuildVKey = (key: string): boolean => !key.includes("<") && !key.includes(":", 1)
+const findMappedVKey = (key: string): CommandsNS.Item | null =>
+    mayBuildVKey(key) && keyToCommandMap_.get(`<v-${key}>`) || null
+
+set_runOneMapping_(((key, port, fStatus, baseCount): void => {
   key = key.replace(<RegExpOne> /^([$%][a-zA-Z]\+?)+(?=\S)/, "")
   const arr: null | string[] = (<RegExpOne> /^\d+|^-\d*/).exec(key)
   let count = 1
@@ -477,15 +526,20 @@ set_runOneMapping_(((key, port, fStatus): void => {
     key = key.slice(prefix.length)
     count = prefix !== "-" ? parseInt(prefix, 10) || 1 : -1
   }
+  baseCount && (count *= baseCount)
   key = key.replace(<RegExpOne> /^([$%][a-zA-Z]\+?)+(?=\S)/, "")
   let hash = 1
   while (hash = key.indexOf("#", hash) + 1) {
     const slice = key.slice(0, hash - 1)
-    if (keyToCommandMap_.has(slice) || (<RegExpI> /^[a-z]+(\.[a-z]+)?$/i).test(slice)) { break }
+    if (keyToCommandMap_.has(slice) || findMappedVKey(slice) || (<RegExpI> /^[a-z]+(\.[a-z]+)?$/i).test(slice)) {break}
   }
   set_cPort(port!)
   set_cKey(kKeyCode.None)
   set_cOptions(null)
+  if (!Build.NDEBUG && DEBUG) {
+    console.log("run one: %o # %o * %o / %o @ %o", hash ? key.slice(0, hash - 1) : key, hash ? key.slice(hash) : null
+        , count, fStatus, Date.now() % 3e5)
+  }
   runOneKeyWithOptions(hash ? key.slice(0, hash - 1) : key, count, hash ? key.slice(hash) : null, null, fStatus)
 }) satisfies typeof runOneMapping_)
 
@@ -499,15 +553,17 @@ const runOneKeyWithOptions = (key: string, count: number
     , exOptions: CommandsNS.EnvItemOptions | string | null | undefined
     , envInfo: CurrentEnvCache | null, fallbackCounter?: FgReq[kFgReq.nextKey]["f"] | null
     , avoidStackOverflow?: boolean): void => {
-  let finalKey = key, registryEntry = key !== "__proto__" && keyToCommandMap_.get(key)
-      || !key.includes("<") && !key.includes(":", 1) && keyToCommandMap_.get(finalKey = `<v-${key}>`) || null
+  let finalKey = key, registryEntry = !(OnChrome && Build.MinCVer < BrowserVer.MinEnsuredES6$ForOf$Map$SetAnd$Symbol
+          && key === "__proto__") && keyToCommandMap_.get(key)
+      || mayBuildVKey(key) && keyToCommandMap_.get(finalKey = `<v-${key}>`) || null
   let entryReadonly = true
   if (registryEntry == null && key in availableCommands_) {
     entryReadonly = false
     registryEntry = makeCommand_(key as Exclude<keyof typeof availableCommands_, "__proto__">, null)
   }
   if (registryEntry == null) {
-    showHUD(`"${(<RegExpOne> /^\w+$/).test(key) ? finalKey : key}" has not been mapped`)
+    let desc = (<RegExpOne> /^\w+$/).test(key) ? finalKey : key
+    showHUD(`"${desc.length >= 20 ? desc.slice(0, 19) + "\u2026" : desc}" has not been mapped`)
     return
   }
   if (registryEntry.alias_ === kBgCmd.runKey && registryEntry.background_) {
@@ -539,6 +595,21 @@ const runOneKeyWithOptions = (key: string, count: number
         && registryEntry.background_ ? "runKey" : registryEntry.command_])
   }
   BgUtils_.resetRe_()
+  if (!Build.NDEBUG && DEBUG) {
+    const seq = registryEntry.options_ && typeof registryEntry.options_ === "object"
+        ? (registryEntry.options_ as Partial<KnownOptions<C.runKey>>).$seq : null
+    if (seq) {
+      console.log("run next in keySeq[%o] # $retry=%o * %o / %o @ %o", +(<RegExpOne>/\d+/).exec(seq.id)![0]
+          , (registryEntry.options_ as KnownOptions<C.runKey>).$retry, count, fallbackCounter, Date.now() % 3e5)
+    } else {
+      const alias = registryEntry.alias_, background = !!registryEntry.background_
+      const def = (Object.entries!(availableCommands_) as [kCName, CommandsNS.Description][]).find(
+          ([_, [defAlias, defBg]]): boolean => defAlias === alias && (defBg === kCmdCxt.bg) === background)!
+      console.log("run %o%s # %o * %o / %o @ %o", def[0]
+          , registryEntry.command_ !== def[0] ? `(${registryEntry.command_})` : ""
+          , registryEntry.options_, count, fallbackCounter, Date.now() % 3e5)
+    }
+  }
   if (avoidStackOverflow && registryEntry.alias_ === kBgCmd.runKey && registryEntry.background_) {
     setTimeout((): void => {
       set_cEnv(envInfo)
@@ -584,22 +655,21 @@ set_inlineRunKey_(((rootRegistry: Writable<CommandsNS.Item>
     if (!first) { return }
     canInline = canInline && (seq.tree as ListNode).val.length === 1 && (seq.tree as ListNode).val[0] === first
     const info = parseKeyNode(first), key = info.key
-    const parentEntry = keyToCommandMap_.get(key)
-        || !key.includes("<") && !key.includes(":", 1) && keyToCommandMap_.get(`<v-${key}>`) || null
-    if (parentEntry != null && parentEntry.alias_ === C.runKey && parentEntry.background_) {
+    const calleeEntry = keyToCommandMap_.get(key) || findMappedVKey(key)
+    if (calleeEntry != null && calleeEntry.alias_ === C.runKey && calleeEntry.background_) {
       path || (path = [rootRegistry])
-      if (path.includes(parentEntry)) {
+      if (path.includes(calleeEntry)) {
         rootRegistry.alias_ = C.showHUD
         rootRegistry.command_ = "showHUD"
         rootRegistry.options_ = BgUtils_.safer_<KnownOptions<C.showHUD>>({ text: '"runKey" should not call itself' })
         return
       }
-      path.push(parentEntry)
-      inlineRunKey_(parentEntry, path)
+      path.push(calleeEntry)
+      inlineRunKey_(calleeEntry, path.slice(0))
     }
-    const newName = parentEntry ? parentEntry.command_ : key in availableCommands_ ? key as kCName : null
+    const newName = calleeEntry ? calleeEntry.command_ : key in availableCommands_ ? key as kCName : null
     if (!newName) { return }
-    const doesContinue = parentEntry != null && parentEntry.alias_ === C.runKey && parentEntry.background_
+    const doesContinue = calleeEntry != null && calleeEntry.alias_ === C.runKey && calleeEntry.background_
     if (!doesContinue && !canInline) {
       rootRegistry.command_ = newName
       return
@@ -617,17 +687,17 @@ set_inlineRunKey_(((rootRegistry: Writable<CommandsNS.Item>
       delete (fullOpts as CommandsNS.RawOptions).count
     }
     count *= ($count ?? 1) * info.count
-    const parentOptions = parentEntry && normalizedOptions_(parentEntry)
+    const calleeOptions = calleeEntry && normalizedOptions_(calleeEntry)
     if (!doesContinue) {
-      fullOpts = concatOptions(parentOptions, fullOpts)
-      fullOpts && fullOpts === parentOptions && (fullOpts = copyCmdOptions(BgUtils_.safeObj_(), fullOpts))
+      fullOpts = concatOptions(calleeOptions, fullOpts)
+      fullOpts && fullOpts === calleeOptions && (fullOpts = copyCmdOptions(BgUtils_.safeObj_(), fullOpts))
       count !== 1 && (((fullOpts || (fullOpts = BgUtils_.safeObj_())) as CommandsNS.Options).$count = count)
       Object.assign(rootRegistry, makeCommand_(newName, fullOpts))
       return
     }
     keyOpts = fullOpts && (fullOpts.keys !== void 0 || fullOpts.expect !== void 0 || fullOpts.mask !== void 0)
-        ? fullOpts = concatOptions(parentOptions, fullOpts)!
-        : parentOptions || BgUtils_.safeObj_()
+        ? fullOpts = concatOptions(calleeOptions, fullOpts)!
+        : calleeOptions || BgUtils_.safeObj_()
   }
 }) satisfies typeof inlineRunKey_)
 

@@ -4,6 +4,123 @@ Release Notes of Vimium C
 ReadMe: https://github.com/gdh1995/vimium-c/#readme .<br/>
 说明文档: https://gitee.com/gdh1995/vimium-c#readme , https://github.com/gdh1995/vimium-c/blob/master/README-zh.md .
 
+#### v2.12
+* update minimum browser version to Chromium 109 and Firefox 115 in the public released packages
+  * they are the last versions supporting Win 7 and Win 8 series
+
+#### v2.11.3
+* fix broken LinkHints.activateCopyImage
+* FindMode: prefer browser's built-in scrolling on Chrome; `scroll=manual` to disable it
+
+#### v2.11.2
+* fix new bugs
+
+#### v2.11
+* Upgrade to the [Manifest V3](https://developer.chrome.com/docs/extensions/develop/migrate/what-is-mv3)
+  web-extension platform
+* Update the minimum version of Chromium to 102
+* tons of changes and some are not backward compatible
+
+#### v1.99.993
+* Marks: fix the mistake that `.prefix` was enabled by default and matches wrong URLs (breaking)
+  * now align with philc/Vimium's in common situations
+  * `.parent: boolean` is added to re-enable the old behavior
+* fix usages of inner clipboard
+* fix conflicts of `runKey` and the `$retry` counter
+* LinkHints: add `newtab=inactive` to always switch back to a current tab, whatever a page script does
+* LinkHints: add `.autoChild: boolean | css-selector` to click not a hinted element but its topmost or matched child
+* editText: add a new action of `blank` to trigger `.$else` if a `when` condition is mismatched
+* focusInput: now try updating its hinting rectangular after focusing
+* fix some small usages
+* fix support for Chrome before version 52
+
+#### v1.99.992
+* fix broken long key sequences in ke mappings
+* a try to fix Vimium C might be freezed by browser
+* some Ctrl/Alt shortcuts of Vomnibar are removed if in conflict with system's default usages
+* fix some tip text
+* basic support for popover on Chrome 114+
+* autoCopy now supports .type=tab-url/tab-title and other `type` values of `copyWindowInfo`
+
+#### v1.99.991
+* FindMode: fix some issues when highlighting all matches
+* Firefox: fix broken scrolling when a page is pinch-zoomed
+* key mappings: `env` now supports `incognito: boolean`
+* fix some UI issues on macOS, Ubuntu or Firefox
+
+#### v1.99.99
+* v1.99.99: fix broken `h` and `b` in visual-caret mode
+* fix Vimium C hangs in some situations on Chrome 110+
+* key mappings: support `map!` and `#if`/`#else`/`#endif` and even nested pairs
+  * use `map!` and `run!` to make a mapping work in both normal and plain insert mode
+  * support `unmap <esc>` and `unmap <c-[>` to disable them in normal mode
+  * change how `runKey` and `run` rules gets parsed
+  * use `\\<LF>` to merge two lines and strip whitespace prefix characters of a second line
+* text substitution: add a inner temporary clipboard and then
+  * substitution and `runKey mask` can read/write it,
+  * so that command may create complex `runKey` task from text in system clipboard easily
+* now when `<*-modifier>` works as a first prefix key, it will end in 3 seconds
+  * the key will be passed to web page scripts, to work better with `*+Letter`
+* LinkHints: support more usages including `LinkHints.activateOpenUrl`
+  * `LinkHints.activateCopyImage` supports `.url` to copy URL instead
+* Vomnibar: de-duplicate tab and history suggestions if possible
+  * now also list closed browser window sessions
+  * change what's copied on `Ctrl+C` and `Ctrl+Shift+C`
+  * v1.99.99: fix support for macbook touchpad
+* Scroller: fix checks of whether an area should be scrolled or not
+* VisualMode: fix the logic of scrolling caret into view
+  * Now `f` and `F` can open Find bar and then extend selection to a match
+* `nextTab`/.../`visitPreviousTab`: support `blur: boolean | host-matcher-string` to grab focus from input again
+* `focusInput` now supports `clickable` and `clickableOnHost`
+* `editText`: add `when` clause to control what to do
+* `confirm`: will show a prompt dialog; parameters are `ask: string, $then, minRepeat=1`
+* fix quite a few edge cases
+
+#### v1.99.96
+<a name="v1.99.97"></a>
+* UI: on macOS, prefer Menlo and Monaco in monospace fonts by default
+* fix exclusions rule changes can not be saved on options page ([#811](https://github.com/gdh1995/vimium-c/issues/811))
+* FindMode: fix compatibility with `scroll-behavior: smooth` ([#819](https://github.com/gdh1995/vimium-c/issues/819))
+* VisualMode: line mode: try its best to make moving work ([#813](https://github.com/gdh1995/vimium-c/issues/813))
+  * tested on Chrome 107 and Firefox 106 only
+* now the word block list also applies on bookmark paths ([#824](https://github.com/gdh1995/vimium-c/issues/824))
+* improve detection of browser version to support 360 eex ([#814](https://github.com/gdh1995/vimium-c/issues/814))
+* fix some other bugs and usage issues
+
+#### v1.99.90
+* Marks: rewrite logic again (and add parameters) to fix bugs since v1.99.4
+* work around broken `KeyboardEvent.repeat` of Firefox in Wayland mode
+* LinkHints: now show hints for SVG icons with a cursor of pointer
+* `reload` and `Marks.activate`: auto go to a parent frame from an `about:` frame
+
+#### v1.99.8
+* fix support for sandboxed `about:blank` iframes
+* fix broken `goNext` in v1.99.4-v1.99.7
+* Vomnibar: move caret if there're wheel and touchpad events on its input
+* fix other bugs
+
+#### v1.99.5
+* **v1.99.7**: fix imported bugs on key mappings
+* **experimental**: auto release resources on inactive pages,
+  to prepare for [Manifest V3 of extensions](https://developer.chrome.com/docs/extensions/mv3/intro/)
+* fix broken copying images on Chrome 107
+* fix it may cause initing of big pages very slow ([#751](https://github.com/gdh1995/vimium-c/issues/751))
+* Vomnibar: fix a second run is too slow on Chrome 102+
+  * fix unexpected white background color on Firefox 106+
+  * change labels for tabs and now support `:active` and `:new`
+  * vomnibar options: `styles` field: support `wheel-speed=<number>`
+  * v1.99.6: work around dark reader's `Filter(+)` mode on Firefox
+* LinkHints: improves "tooHigh" mode and support `longPage=true` to disable it
+  * v1.99.6: add `bubbles=true` to bubble `mouseenter` and `mouseleave` events
+* VisualMode: `caret` mode: allow `aw` and `as` to select a range, but not unconditionally collapse into one character
+* plain insert mode: now allow `mapKey x <v-xxx>` to create shortcuts like `:` + `xxx`
+* `runKey`: change the way of parsing nested `runKey` commands to work with `.mask` better
+  * `vimium://run` in search engines: queries are joined by `%20` by default
+* add/open bookmark: add `path` and support both folders and URL nodes
+* `dispatchEvent`: add `trusted=true` to make Vimium C itself handle the simulated keys
+* now can detect focused editable boxes in more edge cases
+* fix many small bugs and add more parameters for command
+
 #### v1.99.3
 * fix broken `mapKey <*-*> <f1_xxx>` in Insert mode (since v1.98.0)
 * fix broken `mapKey <*-*> <v-***>` in Normal and Insert mode on v1.99.1/2
@@ -35,7 +152,6 @@ ReadMe: https://github.com/gdh1995/vimium-c/#readme .<br/>
 * Vomnibar: tabs mode: recognize `:xxx` filters even if there're other query words
   * add `:group` to show tabs in a same group ([#671](https://github.com/gdh1995/vimium-c/issues/671))
 * FindMode: add `highlight: boolean | number` to show outline boxes for "near" matches
-* FindMode: now type `\0` to pause instant search until an `Enter`
   (to work around [#554](https://github.com/gdh1995/vimium-c/issues/554))
 * `goNext`: fix some wrong targets on twitter.com ([#559](https://github.com/gdh1995/vimium-c/issues/559))
   * improve the logic to detect clickable elements and their titles
@@ -578,7 +694,7 @@ bug fixes:
   https://github.com/gdh1995/vimium-c/issues/127#issuecomment-602038442))
 * `goNext`: prefer completely matched text (e.g. `">"` is preferred to `">|"`)
 * `goBack`: add an option of `local` to always use `history.go`, instead of async going
-* popup page: if an extension wants to run Vimium C but not is allowed, show a button to auto allow it
+* action page: if an extension wants to run Vimium C but not is allowed, show a button to auto allow it
 * some bug fixes
 
 #### 1.81.0
@@ -774,7 +890,7 @@ bug fixes:
 * some other bug fixes
 
 1.76.5:
-* fix a bug in the popup page ([#64](https://github.com/gdh1995/vimium-c/issues/64))
+* fix a bug in the action page ([#64](https://github.com/gdh1995/vimium-c/issues/64))
 * extension allow list: allow [Vimium C's helpers](https://github.com/gdh1995/vimium-c-helpers) by default
 
 1.76.4:

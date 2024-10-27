@@ -1,42 +1,49 @@
 import {
   setupEventListener, VTr, keydownEvents_, isAlive_, suppressCommonEvents, onWndFocus, timeout_, safer, fgCache,
   doc, getTime, chromeVer_, deref_, escapeAllForRe, tryCreateRegExp, vApi, callFunc, clearTimeout_, Stop_, isTY, Lower,
-  abs_, max_, min_, OnFirefox, OnChrome, OnEdge, firefoxVer_, os_, reflectApply_not_cr, OnSafari
+  abs_, max_, min_, OnFirefox, OnChrome, OnEdge, firefoxVer_, os_, reflectApply_not_cr, OnSafari, math
 } from "../lib/utils"
 import {
   replaceOrSuppressMost_, removeHandler_, prevent_, getMappedKey, keybody_, isEscape_, keyNames_, DEL, BSP, ENTER,
-  whenNextIsEsc_
+  whenNextIsEsc_, isRepeated_, consumeKey_mac
 } from "../lib/keyboard_utils"
 import {
-  attachShadow_, getSelectionFocusEdge_, deepActiveEl_unsafe_, setClassName_s, compareDocumentPosition, kGCh,
+  attachShadow_, getSelectionFocusEdge_, deepActiveEl_unsafe_, setClassName_s, compareDocumentPosition, kGCh, hasTag_,
   getEditableType_, scrollIntoView_, SafeEl_not_ff_, GetParent_unsafe_, focus_, fullscreenEl_unsafe_, docEl_unsafe_,
   getSelection_, isSelected_, docSelectable_, isHTML_, createElement_, CLK, MDW, removeEl_s, appendNode_s, isNode_,
-  setDisplaying_s, findAnchor_, notSafe_not_ff_, textContent_s, modifySel, parentNode_unsafe_s, selOffset_, blur_unsafe,
-  getAccessibleSelectedNode,  INP, BU, UNL, contains_s, setOrRemoveAttr_s
+  setDisplaying_s, findAnchor_, isSafeEl_, textContent_s, modifySel, parentNode_unsafe_s, selOffset_, blur_unsafe,
+  getAccessibleSelectedNode,  INP, BU, PGH, contains_s, setOrRemoveAttr_s, singleSelectionElement_unsafe, getNodeChild_,
+  getDirectionOfNormalSelection, getComputedStyle_, textOffset_
 } from "../lib/dom_utils"
-import { wdZoom_, prepareCrop_, view_, dimSize_, selRange_, getZoom_, isSelARange, getViewBox_ } from "../lib/rect"
+import {
+  wdZoom_, prepareCrop_, view_, dimSize_, selRange_, getZoom_, isSelARange, getViewBox_, scrollWndBy_, cropRectS_,
+  setupPageLevelCrops, instantScOpt, boundingRect_, isNotInViewport
+} from "../lib/rect"
 import {
   ui_box, ui_root, getSelectionParent_unsafe, resetSelectionToDocStart, getBoxTagName_old_cr, collpaseSelection,
   createStyle, getSelectionText, checkDocSelectable, adjustUI, ensureBorder, addUIElement, getSelected, flash_,
-  getSelectionOf, getSelectionBoundingBox_, hasGetSelection
+  getSelectionOf, getSelectionBoundingBox_, hasGetSelection, focusIframeContentWnd_, maySelectRight_
 } from "./dom_ui"
 import { highlightRange, deactivate as visualDeactivate } from "./visual"
 import { keyIsDown as scroll_keyIsDown, beginScroll, onScrolls } from "./scroller"
 import { scrollToMark, setPreviousMarkPosition } from "./marks"
 import { hudHide, hud_box, hudTip, hud_opacity, toggleOpacity as hud_toggleOpacity } from "./hud"
-import { post_, send_, runFallbackKey } from "./port"
+import { post_, send_, runFallbackKey, runtimeConnect, runtime_port } from "./port"
 import { insert_Lock_, raw_insert_lock, setupSuppress } from "./insert"
-import { lastHovered_, set_lastHovered_, select_ } from "./async_dispatcher"
-import { checkKey, checkKeyOnTop, currentKeys, set_isCmdTriggered } from "./key_handler"
+import { lastHovered_, set_lastHovered_, set_lastBubbledHovered_, select_ } from "./async_dispatcher"
+import {
+  checkKey, checkKeyOnTop, currentKeys, noopHandler, set_isCmdTriggered, maybeEscIsHidden_ff, set_maybeEscIsHidden_ff
+} from "./key_handler"
+import { removeFlash, set_removeFlash } from "./link_actions"
 
 export declare const enum FindAction {
   PassDirectly = -1,
   DoNothing = 0, Exit, ExitNoAnyFocus, ExitNoFocus, ExitUnexpectedly,
   MaxExitButNoWork = ExitUnexpectedly, MinExitAndWork,
   ExitForEsc = MinExitAndWork, ExitForEnter,
-  MinNotExit, CtrlDelete = MinNotExit, ResumeFind, ConsumedByHost,
+  MinNotExit, CtrlDelete = MinNotExit, ResumeFind, CopySel, ConsumedByHost,
 }
-interface ExecuteOptions extends Partial<Pick<CmdOptions[kFgCmd.findMode], "c">> {
+interface ExecuteOptions extends Partial<Pick<CmdOptions[kFgCmd.findMode], "c" | "t">> {
   /** highlight */ h?: [number, number, Rect[]] | false;
   /** ignore$hasResult */ i?: 1;
   /** just inputted */ j?: 1;
@@ -44,14 +51,14 @@ interface ExecuteOptions extends Partial<Pick<CmdOptions[kFgCmd.findMode], "c">>
   caseSensitive?: boolean;
 }
 
-let isActive = false
+let isActive: BOOL = 0
 let query_ = ""
 let query0_ = ""
 let parsedQuery_ = ""
 let parsedRegexp_: RegExpG | null = null
 let lastInputTime_ = 0
 let historyIndex = 0
-let notEmpty = false
+let notEmpty: boolean
 let isQueryRichText_ = true
 let isRegex: boolean | null = null
 let ignoreCase: boolean | null = null
@@ -62,6 +69,7 @@ let matchCount = 0
 let latest_options_: CmdOptions[kFgCmd.findMode]
 let coords: null | MarksNS.ScrollInfo = null
 let initialRange: Range | null = null
+let hasInitialRange: BOOL | 2 | undefined
 let activeRegexIndex = 0
 let regexMatches: string[] | null = null
 let root_: ShadowRoot | null = null
@@ -79,13 +87,16 @@ let styleInHUD: HTMLStyleElement | null = null
 let onUnexpectedBlur: ((this: unknown, event?: Event) => void) | null = null
 let doesCheckAlive: BOOL = 0
 let highlighting: (() => void) | undefined | 0
-let isSmall = false
+let isSmall: boolean
 let postLock: Element | null = null
 let cachedInnerText: { /** innerText */ i: string, /** timestamp */ t: number, n: boolean } | null | undefined
 let deactivate: (i: FindAction) => void
+let canvas: HTMLCanvasElement | null
+let delayedScrollIntoViewTick_ = 0
+const kIT = "insertText"
 
 export { findCSS, query_ as find_query, hasResults as find_hasResults, box_ as find_box, styleSelectable,
-    styleInHUD, styleSelColorIn, styleSelColorOut, input_ as find_input, deactivate }
+    styleInHUD, styleSelColorIn, styleSelColorOut, input_ as find_input, deactivate, kIT as kInsertText }
 export function set_findCSS (_newFindCSS: FindCSS): void { findCSS = _newFindCSS }
 
 export const activate = (options: CmdOptions[kFgCmd.findMode]): void => {
@@ -98,15 +109,24 @@ export const activate = (options: CmdOptions[kFgCmd.findMode]): void => {
           || OnFirefox && Build.MinFFVer >= FirefoxBrowserVer.MinEnsuredShadowDOMV1
           || !OnEdge && ui_box !== ui_root ? createStyle(css) : sin
   }
-  const initStartPoint = (keep?: BOOL): void => {
-    if (initialRange = selRange_(getSelected())) {
+  const initStartPoint = (keep?: BOOL | 2): void => {
+    const sel = getSelected()
+    if (initialRange = selRange_(sel)) {
+      hasInitialRange = options.t && (1 + +maySelectRight_(sel)) as 1 | 2
       keep ? initialRange = initialRange.cloneRange() :
       collpaseSelection(getSelection_()) // `range.collapse` doesn't work when inside a ShadowRoot (C72)
     } else {
-      (initialRange = doc.createRange()).setStart(doc.body || docEl_unsafe_()!, 0)
+      (initialRange = doc.createRange()).setStart(doc.body || docEl_unsafe_()!, hasInitialRange = 0)
     }
-    initialRange.collapse(!0)
+    hasInitialRange || initialRange.collapse(!0)
     if (options.r) { coords = [scrollX, scrollY] }
+  }
+  const focusFocusEdge = (evenIfEditable: boolean | BOOL): void => {
+    const el = getSelectionFocusEdge_(getSelected())
+    if (el && (evenIfEditable || !getEditableType_(el))) {
+      flash_(el)
+      hasTag_("label", el) && el.control && el.tabIndex < 0 || focus_(el)
+    }
   }
   /** return an element if no <a> else null */
   const focusFoundLinkIfAny = (): SafeElement | null | void => {
@@ -116,6 +136,7 @@ export const activate = (options: CmdOptions[kFgCmd.findMode]): void => {
     return link ? focus_(link) : cur
   }
   const setFirstQuery = (query: string): void => {
+    hudHide(TimerType.noTimer) // delay hudHide, so that avoid flicker on Firefox
     doFocus()
     query0_ = ""
     query_ || setQuery(query)
@@ -123,22 +144,6 @@ export const activate = (options: CmdOptions[kFgCmd.findMode]): void => {
     notEmpty = !!query_
     notEmpty && execCommand("selectAll")
   }
-  // @see https://bugs.chromium.org/p/chromium/issues/detail?id=594613
-/** ScrollIntoView to notify it's `<tab>`'s current target since Min$ScrollIntoView$SetTabNavigationNode (C51)
- * https://chromium.googlesource.com/chromium/src/+/0bb887b20c70582eeafad2a58ac1650b7159f2b6
- *
- * Tracking:
- * https://cs.chromium.org/chromium/src/third_party/blink/renderer/core/dom/element.cc?q=ScrollIntoViewNoVisualUpdate&g=0&l=717
- * https://cs.chromium.org/chromium/src/third_party/blink/renderer/core/dom/document.cc?q=SetSequentialFocusNavigationStartingPoint&g=0&l=4773
- *
- * Firefox seems to have "focused" it
- */
-  const fixTabNav_cr_old = OnChrome && Build.MinCVer < BrowserVer.MinScrollIntoViewOptions
-      ? (el: Element): void => {
-    let oldPos: MarksNS.ScrollInfo | 0 = chromeVer_ < BrowserVer.MinScrollIntoViewOptions ? [scrollX, scrollY] : 0
-    scrollIntoView_(el)
-    oldPos && scrollToMark(oldPos)
-  } : 0 as never
   const setQuery = (query: string | 1): void => {
     if (query === query0_ || !innerDoc_) { /* empty */ }
     else if (!query && historyIndex > 0) { --historyIndex }
@@ -146,7 +151,7 @@ export const activate = (options: CmdOptions[kFgCmd.findMode]): void => {
       suppressOnInput_ = 1
       if (query !== 1) {
         execCommand("selectAll")
-        execCommand("insertText", 0, query) // "\xa0" is not needed, because of `white-space: pre;`
+        execCommand(kIT, 0, query) // "\xa0" is not needed, because of `white-space: pre;`
       } else {
         execCommand("undo")
       }
@@ -156,13 +161,12 @@ export const activate = (options: CmdOptions[kFgCmd.findMode]): void => {
     }
   }
   const postActivate = (): void => {
-    const postExit = (skip?: boolean | Event): void => {
+    const postExit = (skip?: Event | void): void => {
       // safe if destroyed, because `el.onblur = Exit`
-      if (skip && skip !== !!skip
-          && (!OnChrome || Build.MinCVer >= BrowserVer.Min$Event$$IsTrusted
+      if (skip && (!OnChrome || Build.MinCVer >= BrowserVer.Min$Event$$IsTrusted
               ? !skip.isTrusted : skip.isTrusted === false)) { return }
       postLock && setupEventListener(postLock, BU, postExit, 1)
-      if (!postLock || skip === true) { return }
+      if (!postLock) { return }
       postLock = null
       setupEventListener(0, CLK, postExit, 1)
       removeHandler_(kHandler.postFind)
@@ -172,11 +176,12 @@ export const activate = (options: CmdOptions[kFgCmd.findMode]): void => {
     if (!el) { postExit(); return }
     whenNextIsEsc_(kHandler.postFind, kModeId.Find, postExit)
     if (el === postLock) { return }
-    if (!postLock) {
+    if (postLock) {
+      setupEventListener(postLock, BU, postExit, 1)
+    } else {
       setupEventListener(0, CLK, postExit)
       setupSuppress(postExit)
     }
-    postExit(true)
     postLock = el
     setupEventListener(el, BU, postExit)
   }
@@ -206,7 +211,7 @@ export const activate = (options: CmdOptions[kFgCmd.findMode]): void => {
       updateQuery(query)
       if (suppressOnInput_) { showCount(1); return }
       restoreSelection()
-      executeFind(!isRegex ? parsedQuery_ : regexMatches ? regexMatches[0] : "", { j: 1 })
+      executeFind(!isRegex ? parsedQuery_ : regexMatches ? regexMatches[0] : "", { j: 1, c: options.d, t: options.t })
       showCount(1)
       lastInputTime_ = getTime()
       highlightTimeout_ = options.m ? highlightTimeout_ || timeout_(highlightMany, 200) : 0
@@ -228,7 +233,7 @@ export const activate = (options: CmdOptions[kFgCmd.findMode]): void => {
     const sel = getSelectionOf(OnChrome ? Build.MinCVer >= BrowserVer.MinShadowDOMV0 ? root_! : root_ || innerDoc_
         : root_ && hasGetSelection(root_) ? root_ : innerDoc_)!
     if (action > 2) {
-      if (sel + "" === input_.innerText) { collpaseSelection(sel, VisualModeNS.kDir.right) }
+      if (sel + "" === input_.innerText) { collpaseSelection(sel, VisualModeNS.kDir.right, 1) }
       else { historyIndex++ }
     } else if (action) {
       const node = getAccessibleSelectedNode(sel, 1)
@@ -250,27 +255,26 @@ export const activate = (options: CmdOptions[kFgCmd.findMode]): void => {
   }
   const highlightMany = (): void => {
     const oldActiveRegexIndex = activeRegexIndex
-    const arr: Rect[] = [], opt: ExecuteOptions = { h: [scrollX, scrollY, arr], i: 1, c: options.m }
+    const arr: Rect[] = [], opt: ExecuteOptions = { h: [scrollX, scrollY, arr], i: 1, c: options.m || 20 }
     const sel = getSelected()
-    let newAnchor: Node | null
-    if (hasResults && (OnFirefox || (newAnchor = getAccessibleSelectedNode(sel, 1))
-        && !(isNode_(newAnchor, kNode.ELEMENT_NODE) && selOffset_(sel) === selOffset_(sel, 1) ))) {
-      prepareCrop_(1)
-      const range = selRange_(sel), viewBox = getViewBox_()
+    if (hasResults && (OnFirefox || !singleSelectionElement_unsafe(sel))) {
+      prepareCrop_()
+      const range = selRange_(sel), viewBox = getViewBox_(1)
       highlightTimeout_ && toggleStyle(0)
-    range && collpaseSelection(sel)
+      range && collpaseSelection(sel)
       executeFind("", opt)
-    if (range) {
-      resetSelectionToDocStart(sel, range)
-      activeRegexIndex = oldActiveRegexIndex
-      opt.c = -options.m
-      executeFind("", opt)
-    }
+      if (range) {
+        resetSelectionToDocStart(sel, range)
+        activeRegexIndex = oldActiveRegexIndex
+        opt.c = -opt.c!
+        executeFind("", opt)
+      }
       insert_Lock_() && blur_unsafe(raw_insert_lock!)
-    highlighting && highlighting()
-      const cbs = arr.map(cr => flash_(null, cr, -1, " Sel SelH", viewBox))
-    activeRegexIndex = oldActiveRegexIndex
-    range ? resetSelectionToDocStart(sel, range) : restoreSelection()
+      highlighting && highlighting()
+      /*#__INLINE__*/ setupPageLevelCrops(viewBox)
+      const cbs = arr.map(cropRectS_).map(cr => cr ? flash_(null, cr, -1, " Sel SelH", viewBox) : noopHandler)
+      activeRegexIndex = oldActiveRegexIndex
+      range ? resetSelectionToDocStart(sel, range) : restoreSelection()
       highlighting = (): void => { highlighting = 0; clearTimeout_(clearTimeout); cbs.map(callFunc) }
       const clearTimeout = highlightTimeout_ || arr.length && timeout_(highlighting, 2400)
       highlightTimeout_ && timeout_(hookSel, 0)
@@ -287,7 +291,7 @@ export const activate = (options: CmdOptions[kFgCmd.findMode]): void => {
     (initial_query.length > 99 || initial_query.includes("\n")) && (initial_query = "")
     isQueryRichText_ = !initial_query
     initial_query || (initial_query = options.q)
-    isActive || initial_query === query_ && options.l || setPreviousMarkPosition()
+    isActive || initial_query === query_ && options.l || setPreviousMarkPosition(1)
     checkDocSelectable();
     ensureBorder()
 
@@ -296,33 +300,36 @@ export const activate = (options: CmdOptions[kFgCmd.findMode]): void => {
    * * a host script has removed all ranges
    */
   deactivate = deactivate || ((i: FindAction): void => {
-    const sin = styleSelColorIn, styleSheet = sin && sin.sheet, knownHasResults = hasResults
+    const styleSheet = styleSelColorIn && styleSelColorIn.sheet, knownHasResults = hasResults
     const knownOptions = latest_options_
     const maxNotRunPost = knownOptions.p ? FindAction.ExitForEsc - 1 : FindAction.ExitForEnter - 1
     let el: SafeElement | null | undefined, el2: Element | null
-    lastInputTime_ = 0
+    lastInputTime_ = isActive = 0
     i === FindAction.ExitNoAnyFocus ? hookSel(1) : focus()
     coords && scrollToMark(coords)
-    hasResults = isActive = isSmall = notEmpty = wholeWord = false
+    hasResults = isSmall = notEmpty = wholeWord = false
     wrapAround = true
     removeHandler_(kHandler.find)
     outerBox_ && removeEl_s(outerBox_)
     highlighting && highlighting()
-    highlightTimeout_ && clearTimeout_(highlightTimeout_)
-    if (box_ === deref_(lastHovered_)) { set_lastHovered_(null) }
+    clearTimeout_(highlightTimeout_)
+    if (box_ === deref_(lastHovered_)) { set_lastHovered_(set_lastBubbledHovered_(null)) }
+    if (knownOptions.t) {
+       extendToCurRange(initialRange!, hasInitialRange!, i !== FindAction.ExitForEnter, styleSheet)
+    } else {
+      if (i > FindAction.MaxExitButNoWork) {
+        focusFocusEdge(i > FindAction.ExitForEnter - 1 && knownHasResults)
+      }
+      if ((i === FindAction.ExitForEsc || !knownHasResults || visualDeactivate) && styleSheet) {
+        toggleStyle(1)
+        restoreSelection(1)
+      }
+    }
     parsedQuery_ = query_ = query0_ = ""
-    historyIndex = matchCount = doesCheckAlive = 0;
+    historyIndex = matchCount = doesCheckAlive = hasInitialRange = 0
     styleInHUD = onUnexpectedBlur = outerBox_ = isRegex = ignoreCase =
-    box_ = innerDoc_ = root_ = input_ = countEl = parsedRegexp_ =
+    box_ = innerDoc_ = root_ = input_ = countEl = parsedRegexp_ = canvas =
     deactivate = vApi.n = latest_options_ = initialRange = regexMatches = coords = cachedInnerText = null as never
-    if (i > FindAction.MaxExitButNoWork) {
-      el = getSelectionFocusEdge_(getSelected())
-      el && (i > FindAction.ExitForEnter - 1 && knownHasResults || !getEditableType_(el)) && focus_(el)
-    }
-    if ((i === FindAction.ExitForEsc || !knownHasResults || visualDeactivate) && styleSheet) {
-      toggleStyle(1)
-      restoreSelection(1)
-    }
     if (visualDeactivate) {
       visualDeactivate!(2)
       return;
@@ -330,7 +337,7 @@ export const activate = (options: CmdOptions[kFgCmd.findMode]): void => {
     if (i > FindAction.MaxExitButNoWork && knownHasResults && (!el || el !== insert_Lock_())) {
       let container = focusFoundLinkIfAny()
       if (container && i === FindAction.ExitForEsc && (el2 = deepActiveEl_unsafe_())
-          && getEditableType_<0>(el2) > EditableType.TextBox - 1 && contains_s(container, el2)) {
+          && getEditableType_<0>(el2) > EditableType.MaxNotEditableElement && contains_s(container, el2)) {
         prepareCrop_();
         void select_(el2 as LockableElement).then((): void => {
           toggleSelectableStyle()
@@ -339,7 +346,11 @@ export const activate = (options: CmdOptions[kFgCmd.findMode]): void => {
         return
       } else if (el) {
         // always call scrollIntoView if only possible, to keep a consistent behavior
-        OnChrome && Build.MinCVer < BrowserVer.MinScrollIntoViewOptions ? fixTabNav_cr_old(el) : scrollIntoView_(el)
+        const pos: MarksNS.ScrollInfo | false = OnChrome && Build.MinCVer < BrowserVer.MinScrollIntoViewOptions
+            && chromeVer_ < BrowserVer.MinScrollIntoViewOptions && [scrollX, scrollY]
+        // ScrollIntoView to notify it's `<tab>`'s current target since Min$ScrollIntoView$SetTabNavigationNode (C51)
+        OnChrome && Build.MinCVer < BrowserVer.MinScrollIntoViewOptions ? scrollIntoView_(el, pos) : scrollIntoView_(el)
+        pos && scrollToMark(pos)
       }
     }
     toggleSelectableStyle()
@@ -392,14 +403,11 @@ export const activate = (options: CmdOptions[kFgCmd.findMode]): void => {
         }
       }
       runFallbackKey(options, !initial_query ? kTip.noOldQuery : hasResults ? 0 : kTip.noMatchFor, initial_query)
-      return
-  }
-  if (isActive) {
-      hudHide(TimerType.noTimer);
+  } else if (isActive) {
     setFirstQuery(initial_query)
     // not reinstall keydown handler - make code smaller
   } else {
-    initStartPoint()
+    initStartPoint(options.t)
     parsedQuery_ = query_ = ""
     parsedRegexp_ = regexMatches = null
     activeRegexIndex = 0
@@ -457,8 +465,8 @@ const onLoad2 = (): void => {
         && (Build.MinFFVer >= FirefoxBrowserVer.MinContentEditableInShadowOfBodyRefuseShortcuts
             || firefoxVer_ > FirefoxBrowserVer.MinContentEditableInShadowOfBodyRefuseShortcuts - 1
             || Build.MinFFVer < FirefoxBrowserVer.MinContentEditableInShadowSupportIME
-            && firefoxVer_ < FirefoxBrowserVer.MinContentEditableInShadowSupportIME
-            || Build.OS & (1 << kOS.unixLike) && os_ === kOS.unixLike)
+               && firefoxVer_ < FirefoxBrowserVer.MinContentEditableInShadowSupportIME
+            || Build.OS & kBOS.LINUX_LIKE && (Build.OS === kBOS.LINUX_LIKE as number || os_ === kOS.linuxLike))
         ? addElement("div") as HTMLDivElement & SafeHTMLElement : body as HTMLBodyElement & SafeHTMLElement,
     root = OnEdge || OnFirefox
         && (Build.MinFFVer < FirefoxBrowserVer.MinContentEditableInShadowSupportIME
@@ -506,9 +514,10 @@ const onLoad2 = (): void => {
     }
     setDisplaying_s(outerBox_, 1)
     replaceOrSuppressMost_(kHandler.find, onHostKeydown)
-    // delay hudHide, so that avoid flicker on Firefox
-    hudHide(TimerType.noTimer);
     setFirstQuery(query0_)
+    // fix that: Ctrl+F, "a", focus content, press `/` to enter find mode, then activeElement is indeed the <span ce>
+    // but it's not in "input mode" and no characters can be typed
+    OnChrome && timeout_(doFocus, 100)
 }
 
 const onIframeFocus = function (this: Window, event: Event): void {
@@ -548,20 +557,24 @@ const onMousedown = function (this: Window | HTMLDivElement | HTMLBodyElement, e
 const onPaste_not_cr = !OnChrome ? (event: ClipboardEvent & ToPrevent): void => {
     const d = event.clipboardData, text = d && isTY(d.getData, kTY.func) ? d.getData("text/plain") : "";
     prevent_(event);
-    text && execCommand("insertText", 0, text)
+    text && execCommand(kIT, 0, text)
 } : 0 as never as null
 
 const onIFrameKeydown = (event: KeyboardEventToPrevent): void => {
-    const n = event.keyCode, isUp = event.type === "keyup" && !set_isCmdTriggered(0)
     Stop_(event)
     if ((!OnChrome || Build.MinCVer >= BrowserVer.Min$Event$$IsTrusted
         ? !event.isTrusted : event.isTrusted === false) && (event as UserTrustedKeyboardEvent).z !== fgCache) { return }
-    if (!n || n === kKeyCode.ime || scroll_keyIsDown && onScrolls(event) || isUp) {
+    const n = event.keyCode
+    const eventWrapper: HandlerNS.Event = {c: kChar.INVALID, e: event, i: n, v: ""}
+    let isUp: boolean | 0 = event.type[3] > kChar.e && !set_isCmdTriggered(0)
+    const isEscDownUp = OnFirefox && n === maybeEscIsHidden_ff && isUp && n && !keydownEvents_[n]
+        && event.key === "Escape"
+    if (!n || n === kKeyCode.ime || scroll_keyIsDown && onScrolls(eventWrapper) || isUp && !isEscDownUp) {
       if (isUp && keydownEvents_[n]) { keydownEvents_[n] = 0; prevent_(event) }
       return
     }
-    const eventWrapper: HandlerNS.Event = {c: kChar.INVALID, e: event, i: n, v: ""},
-    consumedByHost = currentKeys && checkKeyOnTop(eventWrapper),
+    OnFirefox && n === kKeyCode.esc && !isUp && set_maybeEscIsHidden_ff(0)
+    const consumedByHost = currentKeys && checkKeyOnTop(eventWrapper),
     key = getMappedKey(eventWrapper, kModeId.Find), keybody = keybody_(key);
     const i: FindAction | KeyStat = consumedByHost ? FindAction.ConsumedByHost
       : key.includes("a-") && event.altKey ? FindAction.DoNothing
@@ -570,12 +583,14 @@ const onIFrameKeydown = (event: KeyboardEventToPrevent): void => {
           : suppressOnInput_ && key === ENTER ? FindAction.ResumeFind
           : (query0_ && post_({ H: kFgReq.findQuery, q: query0_ }), FindAction.ExitForEnter)
       : keybody !== DEL && keybody !== BSP
-        ? isEscape_(key) ? FindAction.ExitForEsc : FindAction.DoNothing
+        ? isEscape_(key) ? FindAction.ExitForEsc
+        : (<RegExpOne> /^[cm]-s-c$/).test(key) ? FindAction.CopySel : FindAction.DoNothing
       : OnFirefox && key[0] === "c" ? FindAction.CtrlDelete
-      : query_ || (n === kKeyCode.deleteKey && (Build.OS & ~(1 << kOS.mac) && Build.OS & (1 << kOS.mac) ? os_
-          : !!(Build.OS & ~(1 << kOS.mac))) || event.repeat) ? FindAction.PassDirectly
+      : query_ || (n === kKeyCode.deleteKey && Build.OS !== kBOS.MAC as number && (!(Build.OS & kBOS.MAC) || os_)
+                    || isRepeated_(eventWrapper)) ? FindAction.PassDirectly
       : FindAction.Exit;
     let h = HandlerResult.Prevent, scroll: number;
+    if (Build.NDEBUG && Build.Mangle || Build.MV3) { runtime_port || runtimeConnect() }
     if (i < FindAction.PassDirectly + 1) { h = HandlerResult.Suppress }
       else if (i || eventWrapper.v && (checkKey(eventWrapper, eventWrapper.v), 1)) { /* empty */ }
       else if (keybody !== key) {
@@ -583,8 +598,8 @@ const onIFrameKeydown = (event: KeyboardEventToPrevent): void => {
           prepareCrop_();
           highlightRange(getSelected())
         }
-        else if (key < "c-" || key > "m-") { h = HandlerResult.Suppress; }
-        else if (scroll = keyNames_.indexOf(keybody), scroll > 2 && scroll & 5 ^ 5) {
+        else if (key < "c" || key > "n") { h = HandlerResult.Suppress; }
+        else if (scroll = keyNames_.indexOf(keybody), scroll > 2 && scroll - 5) {
           beginScroll(eventWrapper, key, keybody);
         }
         else if (keybody === kChar.j || keybody === kChar.k) { // not use `> kChar.i` in case of keys like `<c-j123>`
@@ -596,8 +611,7 @@ const onIFrameKeydown = (event: KeyboardEventToPrevent): void => {
       else if (key === kChar.f2) {
         OnFirefox && blur_unsafe(box_)
         focus()
-        const el = hasResults && getSelectionFocusEdge_(getSelected())
-        el && focus_(el)
+        hasResults && focusFocusEdge(1)
       }
       else if (key === kChar.up || key === kChar.down) {
         scroll = historyIndex + (key < "u" ? -1 : 1)
@@ -607,10 +621,13 @@ const onIFrameKeydown = (event: KeyboardEventToPrevent): void => {
         }
       }
       else { h = HandlerResult.Suppress; }
-    h > HandlerResult.Prevent - 1 && (prevent_(event), keydownEvents_[n] = 1)
+    h > HandlerResult.Prevent - 1 && (prevent_(event), consumeKey_mac(n, event))
+    if (i < FindAction.DoNothing + 1) { /* empty */ }
     if (i < FindAction.DoNothing + 1) { /* empty */ }
     else if (i === FindAction.ResumeFind) {
       setQuery(input_.innerText.replace("\\0", ""))
+    } else if (i === FindAction.CopySel) {
+      post_({ H: kFgReq.copy, s: "" + getSelection_() })
     } else if (OnFirefox && i === FindAction.CtrlDelete) {
       const sel = getSelectionOf(innerDoc_)!
       // on Chrome 79 + Win 10 / Firefox 69 + Ubuntu 18, delete a range itself
@@ -620,6 +637,7 @@ const onIFrameKeydown = (event: KeyboardEventToPrevent): void => {
     } else {
       i < FindAction.MinNotExit && deactivate(i)
     }
+    if (OnFirefox && isEscDownUp && keydownEvents_[n]) { keydownEvents_[n] = 0; prevent_(event) }
 }
 
 const onHostKeydown = (event: HandlerNS.Event): HandlerResult => {
@@ -634,7 +652,7 @@ const onHostKeydown = (event: HandlerNS.Event): HandlerResult => {
     else if (key.length > 4) {
       highlightMany()
     } else {
-      executeFind("", { c: -(keybody > kChar.j), i: 1 })
+      executeFind("", { c: -(keybody > kChar.j), i: 1, t: options.t })
       if (options.m && !highlighting) { highlightTimeout_ ||= timeout_(highlightMany, 200) }
     }
     return HandlerResult.Prevent
@@ -679,23 +697,23 @@ const onHostKeydown = (event: HandlerNS.Event): HandlerResult => {
   f("keyup", onIFrameKeydown, t)
   f(INP, onInput, t)
   OnChrome || f("paste", onPaste_not_cr!, t)
-  f(UNL, /*#__NOINLINE__*/ onIframeUnload, t)
+  f(PGH, onIframeUnload, t)
   options.m && f("compositionstart", (): void => { clearTimeout_(highlightTimeout_) }, t)
   if (OnChrome) {
     f("compositionend", onInput, t)
   }
-  suppressCommonEvents(wnd, CLK);
+  suppressCommonEvents(wnd, CLK) // no `<a>`, so no `auxclick` events
   f(BU, onUnexpectedBlur = (event): void => {
     const delta = getTime() - now
     if (event && isActive && delta < 500 && delta > -99 && event.target === wnd) {
-      wnd.closed || timeout_((): void => { isActive && doFocus(); }, tick++ * 17)
+      wnd.closed || timeout_(doFocus, tick++ * 17)
     } else {
       setupEventListener(wnd, BU, onUnexpectedBlur, 1, 1)
       onUnexpectedBlur = null
     }
   }, t);
-  f("focus", /*#__NOINLINE__*/ onIframeFocus, t)
-  f("blur", /*#__NOINLINE__*/ onIframeFocus, t)
+  f("focus", onIframeFocus, t)
+  f("blur", onIframeFocus, t)
 
   box_.onload = later ? null as never : (e): void => {
     (e.target as typeof box_).onload = null as never; isActive && onLoad2()
@@ -706,20 +724,21 @@ const onHostKeydown = (event: HandlerNS.Event): HandlerResult => {
     replaceOrSuppressMost_(kHandler.find)
     styleSelColorOut || initSelColors(AdjustType.NotAdjust)
     toggleSelectableStyle(1)
-    isActive = true
+    isActive = 1
     appendNode_s(outerBox, box_)
     addUIElement(outerBox, AdjustType.DEFAULT, hud_box)
   }
 }
 
 const doFocus = (): void => {
+  if (!isActive) { return }
   doesCheckAlive = 0
   // fix that: search for "a" in VFind, Ctrl+F, "a", Esc, select any normal text using mouse - then `/` can not refocus
   if (OnChrome && (Build.MinCVer >= BrowserVer.MinShadowDOMV0 ? root_! : root_ || innerDoc_).activeElement === input_) {
     input_.blur()
   }
   !OnFirefox && (!OnChrome || Build.MinCVer >= BrowserVer.MinFocusIframeDirectlyWithout$wnd$$focus
-      || chromeVer_ < BrowserVer.MinFocusIframeDirectlyWithout$wnd$$focus) && box_.contentWindow.focus()
+      || chromeVer_ > BrowserVer.MinFocusIframeDirectlyWithout$wnd$$focus - 1) || focusIframeContentWnd_(box_)
   focus_(input_)
   doesCheckAlive = 1
 }
@@ -739,6 +758,7 @@ export const updateQuery = (query: string): void => {
   }
   const WB = "\\b"
   let ww = suppressOnInput_ = !1, isRe: boolean | null = null, matches: string[] | null = null, delta: number
+  let text: HTMLElement["innerText"] | undefined
   query_ = query0_ = query
   wrapAround = !0
   ignoreCase = null as boolean | null
@@ -756,21 +776,21 @@ export const updateQuery = (query: string): void => {
   if (isQueryRichText_) {
     if (isRe === null && !ww) {
       isRe = fgCache.r;
-      const info = 2 * +query.startsWith(WB) + +query.endsWith(WB);
-      if (info === 3 && !isRe && query.length > 3) {
+      delta = 2 * +query.startsWith(WB) + +query.endsWith(WB)
+      if (delta === 3 && !isRe && query.length > 3) {
         query = query.slice(2, -2);
         ww = true;
-      } else if (info && info < 3) {
+      } else if (delta && delta < 3) {
         isRe = true;
       }
     }
+    text = query.replace(<RegExpG & RegExpSearchable<0>> /\\\\/g, "\\")
     if (OnChrome ? ww && isRe : ww) {
-      query = WB + escapeAllForRe(query.replace(<RegExpG & RegExpSearchable<0>> /\\\\/g, "\\")) + WB
+      query = WB + escapeAllForRe(text) + WB
       ww = false;
       isRe = true;
     }
-    query = isRe ? query !== "\\b\\b" && query !== WB ? query : ""
-        : query.replace(<RegExpG & RegExpSearchable<0>> /\\\\/g, "\\");
+    query = isRe ? query !== "\\b\\b" && query !== WB ? query : "" : text
   }
   parsedQuery_ = query
   isRegex = !!isRe
@@ -780,7 +800,6 @@ export const updateQuery = (query: string): void => {
   const didNorm = !isRe && !!latest_options_.n
   isRe || (query = isActive ? escapeAllForRe(didNorm ? normLetters(query) : query) : "")
 
-  let text: HTMLElement["innerText"] | undefined
   let re: RegExpG | null = query && tryCreateRegExp(ww ? WB + query + WB : query, (ignoreCase ? "gim" : "gm") as "g")
       || null
   if (re && !suppressOnInput_) {
@@ -808,7 +827,7 @@ export const updateQuery = (query: string): void => {
   matchCount = matches ? matches.length : 0
 }
 
-export const executeFind = (query: string | null, options: ExecuteOptions): void => {
+export const executeFind = (query: string | null, options: Readonly<ExecuteOptions>): void => {
 /**
  * According to https://cs.chromium.org/chromium/src/third_party/blink/renderer/core/editing/editor.cc?q=FindRangeOfString&g=0&l=815 ,
  * the range to find is either `[selection..docEnd]` or `[docStart..selection]`,
@@ -821,9 +840,10 @@ export const executeFind = (query: string | null, options: ExecuteOptions): void
         return reflectApply_not_cr!(window.find, window, arguments)
       } catch { return false; }
     } as Window["find"] : 0 as never as null
+    const focusHUD = OnFirefox && isActive && innerDoc_.hasFocus()
     let el: LockableElement | null, highlight = safer(options).h, noColor = highlight || options.noColor
       , newRange: Range | null
-      , newAnchor: false | Node | null, posChange: false | kNode | null
+      , newAnchor: false | Node | null | void | Element | 0, posChange: false | kNode | null
       , found: boolean, count = (options.c! | 0) || 1, back = count < 0
       , par: Element | 0 | null | undefined, timesRegExpNotMatch = 0
       , q: string, notSens = ignoreCase && !options.caseSensitive
@@ -837,7 +857,6 @@ export const executeFind = (query: string | null, options: ExecuteOptions): void
     noColor || toggleStyle(0)
     back && (count = -count);
     const isRe = isRegex, pR = parsedRegexp_
-    const focusHUD = OnFirefox && isActive && innerDoc_.hasFocus()
     const wndSel = getSelection_()
     let regexpNoMatchLimit = 9 * count, dedupID = count + 1, oldReInd: number, selNone: boolean
     let oldAnchor = !options.j && wrapAround && getAccessibleSelectedNode(getSelected()), curSel: Selection
@@ -867,13 +886,14 @@ export const executeFind = (query: string | null, options: ExecuteOptions): void
           && timesRegExpNotMatch++ < regexpNoMatchLimit) {
         activeRegexIndex = oldReInd
       } else if (highlight) {
-        scrollTo(highlight[0], highlight[1])
+        const sx = highlight[0] - scrollX, sy = highlight[1] - scrollY
+        ; (sx || sy) && scrollWndBy_(sx, sy)
         curSel = getSelected()
-        const rect = getSelectionBoundingBox_(curSel)
+        let rect = getSelectionBoundingBox_(curSel)
+        rect = sx || sy ? rect : rect && cropRectS_(rect)
         if (rect) { back ? highlight[2].unshift(rect) : highlight[2].push(rect) }
         else if (!OnFirefox && (newAnchor = getAccessibleSelectedNode(curSel, 1))
-            && isNode_(newAnchor, kNode.ELEMENT_NODE) && !notSafe_not_ff_!(newAnchor)) {
-          newAnchor = ((newAnchor as SafeElement).childNodes as NodeList)[selOffset_(curSel, 1)]
+            && (newAnchor = getNodeChild_(newAnchor, curSel, 1))) {
           newRange = selRange_(curSel, 1).cloneRange()
           back ? newRange.setEndBefore(newAnchor) : newRange.setStartAfter(newAnchor)
           newRange.collapse(!back)
@@ -890,19 +910,136 @@ export const executeFind = (query: string | null, options: ExecuteOptions): void
       }
     }
     if (found! && !highlight && (par = par || getSelectionParent_unsafe(curSel = getSelected()))) {
-      newAnchor = oldAnchor && getAccessibleSelectedNode(curSel!)
-      posChange = newAnchor && compareDocumentPosition(oldAnchor as Node, newAnchor)
-      !OnFirefox && notSafe_not_ff_!(par) || view_(par as SafeElement)
+      newAnchor = getAccessibleSelectedNode(curSel!)
+      posChange = oldAnchor && newAnchor && compareDocumentPosition(oldAnchor, newAnchor)
+      newAnchor = newAnchor && (isNode_(newAnchor, kNode.TEXT_NODE) ? parentNode_unsafe_s(newAnchor)!
+          : getNodeChild_(newAnchor, curSel!))
+      scrollSelectionAfterFind(par, newAnchor && isNode_(newAnchor, kNode.ELEMENT_NODE) ? newAnchor : 0, curSel!)
       if (posChange && /** go back */ !!(posChange & kNode.DOCUMENT_POSITION_PRECEDING) !== back) {
         hudTip(kTip.wrapWhenFind, 1, VTr(back ? kTip.atStart : kTip.atEnd))
       }
     }
+    found! && options.t && extendToCurRange(initialRange!, hasInitialRange!)
     noColor || timeout_(hookSel, 0);
     (el = insert_Lock_()) && !isSelected_() && el.blur();
     OnFirefox && focusHUD && doFocus()
     if (!options.i) {
       hasResults = found!
     }
+}
+
+const scrollSelectionAfterFind = (par: Element, newAnchor: Element | 0, sel: Selection): void => {
+  type TextStyleArr = readonly [font: string, lineHeight: number, clientWidth: number, clientHeight: number
+      , fontSize: number, borderInlineStart: number, paddingInlineStart: number, textOffsetTop: number
+      , whiteSpace: string]
+  const kMayInTextBox = !OnFirefox
+  const kHasInlineStart = !OnEdge && (!OnChrome || Build.MinCVer >= BrowserVer.MinCSSBlockInlineStartEnd)
+      const newStyle = newAnchor && getComputedStyle_(newAnchor)
+      const specialFixForTransparent = newStyle && newStyle.color!.includes("(0, 0, 0")
+      const px2int = (s: string) => +s.slice(0, -2)
+      const ltr = newStyle && newStyle.direction !== "rtl"
+      const textStyle: TextStyleArr | BOOL = !kMayInTextBox || !newStyle
+          || getEditableType_<0>(newAnchor) < EditableType.MaxNotTextBox + 1 ? 0
+          : (newStyle.writingMode as "hor*" | "vert*" | "side*" | /** < C48 */ "lr*" | "rl*" | "tb*")[0] > "s"
+          ? 1
+          : [newStyle.font!, px2int(newStyle.lineHeight!),
+              dimSize_(newAnchor as TextElement, kDim.elClientW),
+              dimSize_(newAnchor as TextElement, kDim.elClientH),
+              px2int(newStyle.fontSize!),
+              px2int(kHasInlineStart ? (newStyle as any).borderInlineStartWidth
+                  : ltr ? newStyle.borderLeftWidth! : newStyle.borderRightWidth!),
+              px2int(kHasInlineStart ? (newStyle as any).paddingInlineStart
+                  : ltr ? newStyle.paddingLeft! : newStyle.paddingRight!),
+              px2int(newStyle.paddingTop!) + px2int(newStyle.borderTopWidth!),
+              newStyle.whiteSpace!
+              ] satisfies TextStyleArr as TextStyleArr
+  const scrollManually = OnChrome && latest_options_ && latest_options_.u
+  let context: CanvasRenderingContext2D, widthOrEnd: number
+  // `window.find()` may auto make a target scroll into view smoothly, but a manual `scrollBy` breaks the animation
+  const oldInvisibility = isSafeEl_(par) && (!OnChrome || kMayInTextBox && isTY(textStyle, kTY.obj) || scrollManually
+      ? view_(par) : isNotInViewport(par))
+  let selRect: Rect | undefined | null
+  const flashOutline = (): void => {
+    if (selRect = textStyle ? selRect : getSelectionBoundingBox_(sel, 1)) {
+      removeFlash && removeFlash()
+      set_removeFlash(flash_(null, selRect, +oldInvisibility && (800 + GlobalConsts.DefaultRectFlashTime), " Sel"))
+    }
+  }
+  const tick = ++delayedScrollIntoViewTick_
+  if (kMayInTextBox && isTY(textStyle, kTY.obj)) {
+        context = (canvas = canvas || createElement_("canvas")).getContext("2d")!
+        const full = (newAnchor as TextElement).value.slice(0
+            , textOffset_(newAnchor as TextElement, VisualModeNS.kDir.right)!)
+        let offset = textOffset_(newAnchor as TextElement)!
+        const strArrBefore = full.slice(0, offset).split("\n"), lineStrBefore = strArrBefore.pop()!
+        const getWidth = (s: string): number =>
+            s.length < 400 ? context.measureText(s).width : s.length * textStyle[4] / 2
+        context.font = textStyle[0]
+    const has_neg_sc_pos = !OnEdge && (!OnChrome || Build.MinCVer >= BrowserVer.MinEnsuredNegativeScrollPosIfRTL
+        || chromeVer_ > BrowserVer.MinEnsuredNegativeScrollPosIfRTL - 1)
+    const max_width = textStyle[2]
+    const baseScPosX = has_neg_sc_pos || ltr ? 0 : dimSize_(newAnchor as TextElement, kDim.scrollW) - max_width
+    let start = getWidth(lineStrBefore), top = strArrBefore.length
+    if (getEditableType_<0>(newAnchor as Element) < EditableType.TextArea + 1
+        && textStyle[8] !== "pre" && textStyle[8] !== "nowrap") {
+      widthOrEnd = max_width / textStyle[4] * 2
+      top = strArrBefore.reduce((old, x): number => old + math.ceil(x.length / widthOrEnd), 0)
+          + ((start / max_width) | 0)
+      start %= max_width
+    }
+    top *= textStyle[1]
+    const scX = (ltr ? 1 : -1) * max_(0, start - max_width / 2) + baseScPosX
+    const scY = max_(0, top - (textStyle[3] - textStyle[1]) / 2)
+    if (OnChrome && Build.MinCVer < BrowserVer.Min$ScrollBehavior$$Instant$InScrollIntoView
+        && oldInvisibility && isNotInViewport(newAnchor as TextElement)) { /* empty */ }
+    else if ((OnChrome ? Build.MinCVer >= BrowserVer.MinEnsuredCSS$ScrollBehavior : !OnEdge)
+        || (newAnchor as Element).scrollTo) {
+      (newAnchor as TextElement).scrollTo(instantScOpt(scX, scY))
+    } else {
+      ; (newAnchor as TextElement).scrollLeft = scX
+      ; (newAnchor as TextElement).scrollTop = scY
+    }
+    if (OnChrome && Build.MinCVer < BrowserVer.MinNoSelectionColorOnTextBoxWhenFindModeHUDIsFocused
+        && chromeVer_ < BrowserVer.MinNoSelectionColorOnTextBoxWhenFindModeHUDIsFocused) {
+      /** empty */
+    } else {
+      selRect = boundingRect_(newAnchor as TextElement)
+      widthOrEnd = max_(4, getWidth(full.slice(offset).split("\n", 1)[0]))
+      offset = dimSize_(newAnchor as TextElement, kDim.scPosX)
+      offset = ltr ? offset : max_(0, has_neg_sc_pos ? -offset : baseScPosX - offset)
+      start = max_(0, textStyle[6] + min_(start - offset, max_width))
+      widthOrEnd = min_(start + widthOrEnd, max_width)
+      offset = ltr ? selRect.l + textStyle[5] : selRect.r - textStyle[5]
+      top += selRect.t + textStyle[7] - dimSize_(newAnchor as TextElement, kDim.scPosY)
+      selRect = {
+        l: ltr ? offset + start : offset - widthOrEnd, t: top,
+        r: ltr ? offset + widthOrEnd : offset - start, b: top + textStyle[1]
+      }
+      flashOutline()
+    }
+    isActive || (canvas = null)
+  } else if (OnChrome && oldInvisibility && !scrollManually) {
+    selRect = boundingRect_(newAnchor as SafeElement)
+    timeout_(() => {
+      const hasScrolled = (rect2: Rect, threshold: number): boolean =>
+          abs_(rect2.t - selRect!.t) > threshold || abs_(rect2.l - selRect!.l) > threshold
+      if (tick !== delayedScrollIntoViewTick_) { /** empty */ }
+      else if (hasScrolled(boundingRect_(newAnchor as SafeElement), 2)) {
+        timeout_((): void => {
+          if (tick === delayedScrollIntoViewTick_) {
+            hasScrolled(boundingRect_(newAnchor as SafeElement), 15) || view_(newAnchor as SafeElement)
+            flashOutline()
+          }
+        }, 200)
+      } else {
+        view_(newAnchor as SafeElement)
+        flashOutline()
+      }
+    }, 50)
+  } else {
+    flashOutline()
+  }
+  specialFixForTransparent && (styleSelColorOut!.disabled = !0)
 }
 
 const hookSel = (t?: TimerType.fake | 1): void => {
@@ -939,4 +1076,21 @@ export const toggleSelectableStyle = (enable?: 1): void => {
   !enable || docSelectable_ && !findCSS.s.includes("\n")
   ? styleSelectable && (removeEl_s(styleSelectable), styleSelectable = null)
   : appendNode_s(ui_box!, styleSelectable = createStyle(findCSS.s, styleSelectable))
+}
+
+export const extendToCurRange = (range: Range, hasRange: 0 | 1 | 2, abortCur?: boolean
+    , hasStyle?: StyleSheet | null): void => {
+  const sel = getSelected(), focused = getAccessibleSelectedNode(sel, 1), focusedOffset = selOffset_(sel, 1),
+  anchor = (!OnFirefox || focused) && getAccessibleSelectedNode(sel), anchorOffset = selOffset_(sel),
+  isCurLeft = abortCur || !!focused && !getDirectionOfNormalSelection(sel, anchor, focused)
+  hasStyle && toggleStyle(1)
+  if (hasRange && (abortCur || focused && getEditableType_<0>(singleSelectionElement_unsafe(sel) || docEl_unsafe_()!
+        ) < EditableType.MaxNotTextBox + 1)) {
+    const { startContainer: start, startOffset, endContainer: end, endOffset } = range
+    const isLeft = abortCur ? hasRange < 2 : anchor && (start === focused ? focusedOffset < startOffset
+        : compareDocumentPosition(start, focused!) & kNode.DOCUMENT_POSITION_PRECEDING)
+    getSelection_().setBaseAndExtent(isLeft ? end : start, isLeft ? endOffset : startOffset
+        , abortCur ? isLeft ? start : end : isLeft !== isCurLeft ? anchor! : focused!
+        , abortCur ? isLeft ? startOffset : endOffset : isLeft !== isCurLeft ? anchorOffset : focusedOffset)
+  }
 }

@@ -16,7 +16,7 @@ var VimiumInjector: VimiumInjectorTy | undefined | null
   const old = VimiumInjector, cur: VimiumInjectorTy = {
     id: "", alive: -1, host: "", version: "", cache: null,
     clickable: undefined, eval: null, reload: null as never, checkIfEnabled: null as never,
-    $: null as never, $h: "", $m: null as never, $r: null as never, $g: null,
+    $: null as never, $h: null as never, $m: null as never, $r: null as never, $g: null,
     getCommandCount: null as never, callback: null, destroy: null
   };
   if (old) {
@@ -30,7 +30,7 @@ var VimiumInjector: VimiumInjectorTy | undefined | null
 })();
 
 (function (_a0: 1, injectorBuilder: (scriptSrc: string) => VimiumInjectorTy["reload"]): void {
-const MayChrome = !!(Build.BTypes & BrowserType.Chrome), MayNotChrome = !!(Build.BTypes & ~BrowserType.Chrome)
+const MayChrome = !!(Build.BTypes & BrowserType.Chrome), MayNotChrome = Build.BTypes !== BrowserType.Chrome as number
 const MayEdge = !!(Build.BTypes & BrowserType.Edge)
 const mayBrowser_ = MayChrome && MayNotChrome
     && typeof browser === "object" && !("tagName" in (browser as unknown as Element))
@@ -42,11 +42,18 @@ const curEl = document.currentScript as HTMLScriptElement, scriptSrc = curEl.src
 const confBlockFocus = curEl.dataset.blockFocus
 let onIdle = MayChrome && Build.MinCVer < BrowserVer.MinEnsured$requestIdleCallback || MayEdge
     ? window.requestIdleCallback : requestIdleCallback
-let tick = 1, extID = scriptSrc.slice(i0, scriptSrc.indexOf("/", i0));
+let tick = 1, extHost = scriptSrc.slice(i0, scriptSrc.indexOf("/", i0)), extID = extHost;
 if (!MayChrome || MayNotChrome && extID.indexOf("-") > 0) {
   extID = curEl.dataset.vimiumId || BuildStr.FirefoxID;
 }
 extID = curEl.dataset.extensionId || extID;
+if (Build.BTypes & ~(BrowserType.Firefox | BrowserType.Edge) && extID === extHost
+    && (!(Build.BTypes & BrowserType.Firefox) || location.protocol.startsWith("moz-"))) {
+  if (((runtime.getManifest() || {}).manifest_version || 3) >= 3) {
+    alert("Require [data-extension-id] on <script> of vimium-c/injector.js")
+    return
+  }
+}
 VimiumInjector.id = extID;
 if (MayChrome && Build.MinCVer < BrowserVer.MinEnsured$requestIdleCallback || MayEdge) {
   onIdle = typeof onIdle !== "function" || "tagName" in (onIdle as unknown as Element) ? null as never : onIdle
@@ -84,6 +91,7 @@ function handler(this: void, res: ExternalMsgs[kFgReq.inject]["res"] | undefined
     _old.destroy(true);
   }
 
+  const verHash = res ? res.h : ""
   const newInjector = VimiumInjector = {
     id: extID,
     alive: 0,
@@ -95,7 +103,7 @@ function handler(this: void, res: ExternalMsgs[kFgReq.inject]["res"] | undefined
     reload: injectorBuilder(scriptSrc),
     checkIfEnabled: null as never,
     $: null as never,
-    $h: res ? res.h : "",
+    $h (stat_num) { return PortNameEnum.Prefix + stat_num + verHash },
     $m (task): void { VimiumInjector && VimiumInjector.$r(typeof task === "object" ? task.t : task); },
     $r (): void { /* empty */ },
     $g: confBlockFocus != null ? (confBlockFocus === "" || confBlockFocus.toLowerCase() === "true") : null,

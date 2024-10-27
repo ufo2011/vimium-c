@@ -1,17 +1,19 @@
 import {
-  fgCache, clearTimeout_, timeout_, isAlive_, Stop_ as stopEvent, Lower, OnChrome, OnEdge, getTime, OnFirefox, abs_, os_
+  fgCache, clearTimeout_, timeout_, isAlive_, Stop_, Lower, OnChrome, OnEdge, getTime, OnFirefox, abs_, os_, chromeVer_,
+  keydownEvents_, isAsContent
 } from "./utils"
 
 const DEL = kChar.delete, BSP = kChar.backspace, SP = kChar.space
-const ENT = kChar.enter
-export { ENT as ENTER }
+const ENT = kChar.enter, MDF = kChar.Modifier
+export { ENT as ENTER, MDF as MODIFIER }
+/** readonly kChar[9] */
 const keyNames_: readonly kChar[] = [SP, kChar.pageup, kChar.pagedown, kChar.end, kChar.home,
     kChar.left, kChar.up, kChar.right, kChar.down]
 let keyIdCorrectionOffset_old_cr_ = OnChrome && Build.MinCVer < BrowserVer.MinEnsured$KeyboardEvent$$Key
-    ? Build.OS & ~(1 << kOS.mac) ? 185 as const : 300 as const : 0 as never as null
+    ? Build.OS !== kBOS.MAC as number ? 185 as const : 300 as const : 0 as never as null
 const _codeCorrectionMap = ["Semicolon", "Equal", "Comma", "Minus", "Period", "Slash", "Backquote",
     "BracketLeft", "Backslash", "BracketRight", "Quote", "IntlBackslash"]
-const kCrct = OnChrome && Build.MinCVer < BrowserVer.MinEnsured$KeyboardEvent$$Key
+const kCrct = OnChrome && Build.MinCVer < BrowserVer.MinEnsured$KeyboardEvent$$Key || Build.OS & kBOS.MAC
     ? kChar.CharCorrectionList : 0 as never as null
 const _modifierKeys: SafeEnum = {
     __proto__: null as never,
@@ -30,19 +32,23 @@ export function set_keyIdCorrectionOffset_old_cr_ (_newKeyIdCorrectionOffset: 18
 const _getKeyName = (event: Pick<KeyboardEvent, "key" | "keyCode" | "location">): kChar => {
   let i = event.keyCode, s: string | undefined
   return i > kKeyCode.space - 1 && i < kKeyCode.minNotDelete
-      ? i < kKeyCode.insert ? keyNames_[i - kKeyCode.space] : i > kKeyCode.insert ? DEL : kChar.insert
+      ? i < kKeyCode.minNotDown
+        ? i < kKeyCode.space + 1 && (Build.MinCVer < BrowserVer.MinEnsured$KeyboardEvent$$Key
+            && Build.BTypes & BrowserType.Chrome ? (s = event.key) && s.length > 1 : (s = event.key!).length > 1)
+          ? Lower(s!) as kChar.space | kChar.groupnext : keyNames_[i - kKeyCode.space]
+        : i > kKeyCode.insert ? DEL : i < kKeyCode.insert ? kChar.None : kChar.insert
       : i < kKeyCode.minNotDelete || i === kKeyCode.metaKey
-        || Build.OS & (1 << kOS.mac) && i === (OnFirefox ? kKeyCode.os_ff_mac : kKeyCode.osRight_mac)
-            && (!(Build.OS & ~(1 << kOS.mac)) || os_ === kOS.mac)
+        || Build.OS & kBOS.MAC && i === (OnFirefox ? kKeyCode.os_ff_mac : kKeyCode.osRight_mac)
+            && (Build.OS === kBOS.MAC as number || !os_)
       ? (i === kKeyCode.backspace ? BSP : i === kKeyCode.esc ? kChar.esc
           : i === kKeyCode.tab ? kChar.tab : i === kKeyCode.enter ? ENT
           : (i < kKeyCode.maxAcsKeys + 1 ? i > kKeyCode.minAcsKeys - 1 : i > kKeyCode.maxNotMetaKey)
             && fgCache.l > kKeyLayout.MapModifierStart - 1
-            && (fgCache.l >> kKeyLayout.MapModifierOffset) === event.location ? kChar.Modifier
+            && (fgCache.l >> kKeyLayout.MapModifierOffset) === event.location ? MDF
           : kChar.None
         )
-      : i === kKeyCode.menuKey && Build.BTypes & ~BrowserType.Safari
-        && (Build.BTypes & ~BrowserType.Chrome || Build.OS & ~kOS.mac) ? kChar.Menu
+      : i === kKeyCode.menuKey && Build.BTypes !== BrowserType.Safari as number
+        && (Build.BTypes !== BrowserType.Chrome as number || Build.OS !== kBOS.MAC as number) ? kChar.Menu
       : ((s = event.key) ? (<RegExpOne> /^F\d/).test(s) : i > kKeyCode.maxNotFn && i < kKeyCode.minNotFn)
       ? (s ? Lower(s) : "f" + (i - kKeyCode.maxNotFn)) as kChar.F_num
       : s && s.length > 1 && !_modifierKeys[s] ? Lower(s) as kChar : kChar.None
@@ -61,7 +67,7 @@ const _getKeyCharUsingKeyIdentifier_old_cr = !OnChrome
           : String.fromCharCode(keyId < kCharCode.minAlphabet || shiftKey ? keyId : keyId + kCharCode.CASE_DELTA);
     } else {
       // here omits a `(...)` after the first `&&`, since there has been `keyId >= kCharCode.minNotAlphabet`
-      return Build.OS & ~(1 << kOS.mac) && keyId > keyIdCorrectionOffset_old_cr_!
+      return Build.OS !== kBOS.MAC as number && keyId > keyIdCorrectionOffset_old_cr_!
           && (keyId -= 186) < 7 || (keyId -= 26) > 6 && keyId < 11
           ? kCrct![keyId + shiftKey * 12]
           : "";
@@ -76,7 +82,7 @@ export const char_ = (eventWrapper: HandlerNS.Event, forceASCII: number): kChar 
         = eventWrapper.e
   const shiftKey = OnFirefox ? hasShift_ff!(event as KeyboardEvent) : event.shiftKey
   // on macOS, Alt+T can cause `.key === "Unidentified"` - https://github.com/gdh1995/vimium-c/issues/615
-  let mapped: number | undefined, key = event.key!, isDeadKey = !OnEdge && (key === "Dead" || key === "Unidentified")
+  let mapped: number, key = event.key!, isDeadKey = !OnEdge && (key === "Dead" || key === "Unidentified")
   if (OnChrome && Build.MinCVer < BrowserVer.MinEnsured$KeyboardEvent$$Key && !key) {
     // since Browser.Min$KeyboardEvent$MayHave$$Key and before .MinEnsured$KeyboardEvent$$Key
     // event.key may be an empty string if some modifier keys are held on
@@ -102,31 +108,53 @@ export const char_ = (eventWrapper: HandlerNS.Event, forceASCII: number): kChar 
             ? !shiftKey || code < "0" || code > "9" ? code : kChar.EnNumTrans[+code]
             : _modifierKeys[key]
             ? fgCache.l > kKeyLayout.MapModifierStart - 1
-              && (fgCache.l >> kKeyLayout.MapModifierOffset) === event.location ? kChar.Modifier : ""
+              && (fgCache.l >> kKeyLayout.MapModifierOffset) === event.location ? MDF : ""
             : key === "Escape" ? kChar.esc // e.g. https://github.com/gdh1995/vimium-c/issues/129
             // 1. an example of code is empty is https://github.com/philc/vimium/issues/3451#issuecomment-569124026
             // 2. if both `key` is long, then prefer `key` to support outside mappings (like composed-key-as-an-action).
             //    see https://github.com/gdh1995/vimium-c/issues/435
             : code.length < 2 || !isKeyShort ? key.startsWith("Arrow") && key.slice(5) || key
             : (mapped = _codeCorrectionMap.indexOf(code)) < 0 ? code
-            : (OnChrome && Build.MinCVer < BrowserVer.MinEnsured$KeyboardEvent$$Key
+            : (OnChrome && Build.MinCVer < BrowserVer.MinEnsured$KeyboardEvent$$Key || Build.OS & kBOS.MAC
                 ? kCrct! : kChar.CharCorrectionList)[mapped + 12 * +shiftKey]
     }
     key = shiftKey && key.length < 2 ? key : Lower(key)
+  } else if (key.length > 1 || key === " ") {
+    key = /*#__NOINLINE__*/ _getKeyName(event)
   } else {
-    key = key.length > 1 || key === " " ? /*#__NOINLINE__*/ _getKeyName(event)
-        : fgCache.l & kKeyLayout.ignoreCaps ? shiftKey ? key.toUpperCase() : Lower(key) : key
+    key = fgCache.l & kKeyLayout.ignoreCaps ? shiftKey ? key.toUpperCase() : Lower(key) : key
+    if (Build.OS & kBOS.MAC && (Build.OS === kBOS.MAC as number || !os_)
+        && (OnChrome || OnFirefox) && shiftKey && key < kChar.maxASCII) { // "~" is upper-case
+      mapped = getKeyStat_(event as typeof eventWrapper.e, 1)
+      const kSpecialModifier = OnChrome ? 6 : 4
+      key = !(mapped & kSpecialModifier) ? mapped & 1 || fgCache.l & kKeyLayout.ignoreCaps
+              || !(event as typeof eventWrapper.e).getModifierState("CapsLock") ? key : Lower(key)
+          : (mapped = kCrct!.indexOf(key)) >= 0 ? kCrct![(mapped % 12) + 12]
+          : key > kChar.maxNotNum && key < kChar.minNotNum ? kChar.EnNumTrans[+key]
+          : key
+    }
   }
   return forceASCII === (kKeyLayout.inCmdIgnoreIfNotASCII | 1) ? key as kChar : eventWrapper.c = key as kChar
 }
 
 export const keybody_ = (key: string): kChar => (key.slice(key.lastIndexOf("-") + 1) || key && kChar.minus) as kChar
 
-export const hasShift_ff = OnFirefox ? (event: Pick<KeyboardEvent, "shiftKey" | "key" | "getModifierState">): boolean => {
-  if (!OnFirefox) { return event.shiftKey }
+export const hasShift_ff = OnFirefox ? (
+    event: Pick<KeyboardEvent, "shiftKey" | "key" | "getModifierState" | "altKey" | "metaKey">): boolean => {
   const key = event.key!
-  // if `privacy.resistFingerprinting` && CapsLock && A-Z, then Shift is reversed
-  return key.length === 1 && event.getModifierState("CapsLock") ? key !== key.toUpperCase() : event.shiftKey
+  const lower = key.length === 1 && (Build.OS & ~kBOS.MAC || fgCache.l & kKeyLayout.inPrivResistFp_ff) ? Lower(key) : ""
+  if (lower && event.getModifierState("CapsLock") && key.toUpperCase() !== lower) {
+    // if `privacy.resistFingerprinting` && CapsLock && A-Z, then Shift is reversed
+    if (!(Build.OS & kBOS.MAC) || Build.OS & ~kBOS.MAC && os_) {
+      return key === lower
+    }
+    // try to minimize the affect that `inPrivResistFp` is not enabled correctly
+    if ((!(Build.OS & ~kBOS.MAC) || fgCache.l & kKeyLayout.inPrivResistFp_ff)
+        && !event.altKey && !event.metaKey && isAsContent) {
+      return false
+    }
+  }
+  return event.shiftKey
 } : 0 as never as null
 
 export const getKeyStat_ = (event: Pick<KeyboardEvent, "altKey" | "ctrlKey" | "metaKey" | "shiftKey">
@@ -137,6 +165,23 @@ export const getKeyStat_ = (event: Pick<KeyboardEvent, "altKey" | "ctrlKey" | "m
             (ignoreShift ? 0
               : <number> <boolean|number> (OnFirefox ? hasShift_ff!(event as KeyboardEvent) : event.shiftKey) * 8)
 
+export const isRepeated_ = (event: HandlerNS.Event): boolean => {
+  const repeat = event.e.repeat
+  if (OnChrome ? Build.MinCVer >= BrowserVer.MinCorrect$KeyboardEvent$$Repeat
+      : OnFirefox ? !(Build.OS & kBOS.LINUX_LIKE) : true) {
+    return repeat
+  }
+  return repeat || (OnChrome ? chromeVer_ < BrowserVer.MinCorrect$KeyboardEvent$$Repeat
+    : OnFirefox && (Build.OS === kBOS.LINUX_LIKE as number || os_ === kOS.linuxLike))
+      && !!(keydownEvents_[event.i] && event.i)
+}
+
+export const consumeKey_mac = (keyToConsume: kKeyCode, eventToConsume: KeyboardEvent): void => {
+  if (!(Build.OS & kBOS.MAC) || Build.OS !== kBOS.MAC as number && os_ || !eventToConsume.metaKey) {
+    keydownEvents_[keyToConsume] = 1
+  }
+}
+
 export const isEscape_ = (key: string): HandlerResult.AdvancedEsc | HandlerResult.PlainEsc | HandlerResult.Nothing => {
     return key === kChar.esc ? HandlerResult.AdvancedEsc
         : key === "c-" + kChar.bracketLeft ? HandlerResult.PlainEsc : HandlerResult.Nothing;
@@ -145,7 +190,7 @@ export const isEscape_ = (key: string): HandlerResult.AdvancedEsc | HandlerResul
 /** handler section */
 
 export const prevent_ = (event: ToPrevent): void => {
-    event.preventDefault(); stopEvent(event);
+    event.preventDefault(); Stop_(event)
 }
 
 export const replaceOrSuppressMost_ = ((id: kHandler, newHandler?: HandlerNS.Handler): void => {
@@ -176,7 +221,7 @@ export const suppressTail_ = ((timeout?: number
     , callback?: HandlerNS.VoidHandler<unknown> | 0): HandlerNS.Handler | HandlerNS.VoidHandler<HandlerResult> => {
   let timer: ValidTimeoutID = TimerID.None, now: number, func = (event?: HandlerNS.Event): HandlerResult => {
       if (!timeout) {
-        if (event!.e.repeat) { return HandlerResult.Prevent }
+        if (isRepeated_(event!)) { return HandlerResult.Prevent }
         exit()
         return HandlerResult.Nothing;
       }

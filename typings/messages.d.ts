@@ -5,20 +5,22 @@ declare const enum kTip {
   /* 17: */ frameUnloaded = 17,
   /* 20..25 */ copiedIs = 20, omniFrameFail, tooManyLinks, wrapWhenFind, atStart, atEnd,
   /* 26..31 */ nMatches, oneMatch, someMatches, noMatches, modalHints, expectKeys,
-  /* 38, 41, 43: */ findFrameFail = 39, noOldQuery = 41, selectLineBoundary = 43, // neither 41 nor 43 is in HintMode
-  /* 46..47 */ waitForEnter = 46, reDownloading,
-  /* 62..63 */ prev = 62, next,
+  /* 39, 41, 43: */ findFrameFail = 39, noOldQuery = 41, selectLineBoundary = 43, // neither 41 nor 43 is in HintMode
+  /* 46..47, 55 */ reDownloading = 47, needSel = 55,
+  /* 63 */ waitForEnter = 63,
   /* 68..70 */ START_FOR_OTHERS = 68, OFFSET_VISUAL_MODE = 67, visual, line, caret,
   /* 71: */ noLinks, exitForIME, linkRemoved, notImg,
-  /* 75: */ hoverScrollable, ignorePassword, noNewToCopy, downloaded, nowGotoMark,
-  /* 80: */ nowCreateMark, noMatchFor, inVisualMode, noUsableSel, loseSel,
-  /* 85: */ needSel, forcedColors, editableSelector, removeCurScript, removeEventScript,
-  /* 90: */ notANestedFrame, cssUrl, newClickableClasses, oldClickableClasses, clickableRoles,
+  /* 75: */ hoverScrollable, ignorePassword, noNewToCopy, downloaded, paused,
+  /* 80: */ onTopNormal, noMatchFor, inVisualMode, noUsableSel, loseSel,
+  /* 85: */ isWithRel, forcedColors, editableSelector,
+      removeCurScript, removeEventScript, // also used in ../gulpfile.js#patchExtendClick
+  /* 90: */ mayNotANestedFrame, cssUrl, newClickableClasses, oldClickableClasses, clickableRoles,
   /* 95: */ invisibleHintText, notMatchedHintText, metaKeywordsForMobile, css0d01OrDPI, visibleElementsInScopeChildren,
   /* 100: */ voidJS, nonLocalhostRe, scrollable, buttonOrA, closableClasses,
   /* 105: */ highContrast_WOB, invisibleElements, imgExt, searchResults, excludeWhenGoNext,
-  /* 110..114: */ kCommonEvents, logOmniFallback, logNotWorkOnSandboxed, logGrabFocus, paused,
-  /* 115: */ onTopNormal, isWithRel,
+  /* 110: */ kCommonEvents, logOmniFallback, logNotWorkOnSandboxed, logGrabFocus, prev,
+  /* 115: */ next, ReplacedHtmlTags, DefaultDoClickOn, DefaultClickableOnHost, readOnly,
+  /* 120: */ defaultIgnoreReadonly, defaultPassEsc,
   INJECTED_CONTENT_END,
   /* 200: */ XHTML = 200,
   /** used by {@link ../Gulpfile.js} */ extendClick = 999,
@@ -42,18 +44,18 @@ interface ParsedSearch {
   /** error */ e?: string | null;
 }
 
-declare const enum kAria { hidden = 0, disabled = 1, hasPopup = 2 }
+declare const enum kAria { hidden = 0, disabled = 1, hasPopup = 2, readOnly = 3 }
 declare const enum kHidden {
-  None = 0, VisibilityHidden = 1, OverflowHidden = 2,
+  None = 0, VisibilityHidden = 1, OverflowHidden = 2, Size0 = 4,
   BASE_ARIA = 16, AriaHidden = BASE_ARIA << kAria.hidden, AriaDisabled = BASE_ARIA << kAria.disabled,
 }
 // Note: `clickable` is not used in `focusInput`
 interface CSSOptions {
   match?: "css-selector" | " " | 0 | null | undefined
   clickable?: "css-selector" | null | undefined
-  clickableOnHost?: "css-selector" | null | undefined
+  clickableOnHost?: "host-re##css-selector;..." | "host-re##css-selector"[] | null | undefined
   exclude?: "css-selector" | null | undefined
-  excludeOnHost?: "host-re##css-selector;..." | null | undefined
+  excludeOnHost?: "host-re##css-selector;..." | "host-re##css-selector"[] | null | undefined
   evenIf?: kHidden | null | undefined
   /* same as `.evenIf |= kHidden.OverflowHidden` */ scroll?: "force" | null | undefined
 }
@@ -64,11 +66,14 @@ interface OtherFilterOptions {
 interface OptionsToFindElement extends CSSOptions, OtherFilterOptions {
   direct?: boolean | "element,sel,focus,hover" | "element" | "selected" | "currentScrollable" | "DOMActivate"
       | "last-focused" | "recently-focused" | "focus" | "hovered" | "clicked" | "body"
+  target?: boolean | "element,sel,focus,hover" | "element" // alias
   directOptions?: {
     search?: "view" | "doc" | "document"
     offset?: 0 | "cur" | "current" | "end" | "last"
     index?: "count" | number
+    loop?: boolean | BOOL
   }
+  targetOptions?: object
 }
 
 interface FindCSS {
@@ -85,9 +90,9 @@ declare const enum kBgReq {
   START = 0,
   init = START, reset, injectorRun, url, msg, eval,
   settingsUpdate, focusFrame, exitGrab, keyFSM, execute,
-  createMark, showHUD, count, queryForRunKey, goToMark, suppressForAWhile, refreshPort,
-  OMNI_MIN = 42,
-  omni_init = OMNI_MIN, omni_omni, omni_parsed, omni_returnFocus,
+  showHUD, count, queryForRunKey, suppressForAWhile, refreshPort,
+  COMMON_OMNI_MIN = 42, // there're also injectorRun and showHUD
+  omni_init = COMMON_OMNI_MIN, omni_omni, omni_parsed, omni_returnFocus,
   omni_toggleStyle, omni_updateOptions, omni_refresh, omni_runTeeTask,
   END = "END", // without it, TypeScript will report errors for number indexes
 }
@@ -97,26 +102,28 @@ declare const enum kFgReq {
   searchAs, gotoSession, openUrl, onFrameFocused, checkIfEnabled,
   nextFrame, exitGrab, execInChild, initHelp, css,
   vomnibar, omni, copy, key, nextKey,
-  marks, focusOrLaunch, cmd, removeSug, openImage,
-  evalJSFallback,
-  /** can be used only with `FgCmdAcrossFrames` and when a fg command is just being called */
-  gotoMainFrame, setOmniStyle, findFromVisual, framesGoBack,
-  i18n, cssLearnt, visualMode, respondForRunKey, downloadLink, wait,
-  optionToggled, keyFromOmni, pages, showUrl,
-  omniCopy, didLocalMarkTask, recheckTee, END,
-  msg = 90, inject = 99,
+  marks, focusOrLaunch, beforeCmd, cmd, removeSug,
+  openImage, evalJSFallback, gotoMainFrame, omniToggleMedia, findFromVisual,
+  framesGoBack, i18n, cssLearnt, visualMode, respondForRunKey,
+  downloadLink, wait, optionToggled, keyFromOmni, pages,
+  showUrl, omniCopy, omniCopied, didLocalMarkTask, recheckTee,
+  afterTee, _deleted1, syncStatus, focusCurTab, END,
+  msg = 90, teeRes = 92, inject = 99,
   command = "command", id = "id", shortcut = "shortcut", focus = "focus", tip = "tip",
 }
+
+interface ConfVersionReq { /** configuration version */ v: number }
 
 interface BgReq {
   [kBgReq.init]: {
     /** flags */ f: Frames.Flags;
     /** cache (aka. payload) */ c: SettingsNS.FrontendSettingCache;
+    /** disconnected */ d: boolean;
     /** passKeys */ p: string | null;
     /** mappedKeys */ m: SafeDict<string> | null;
     /** keyFSM */ k: KeyFSM;
     /** mappedKeyTypes */ t: kMapKey;
-  };
+  } & ConfVersionReq
   [kBgReq.injectorRun]: {
     /** task */ t: InjectorTask;
   };
@@ -128,14 +135,11 @@ interface BgReq {
     /** mid */ m: number;
     /** response */ r: FgRes[keyof FgRes];
   };
-  [kBgReq.createMark]: {
-    /** markName */ n: string;
-  };
   [kBgReq.keyFSM]: {
     /** mappedKeys */ m: SafeDict<string> | null;
     /** keyMap */ k: KeyFSM | null;
     /** mappedKeyTypes */ t: kMapKey;
-  };
+  } & ConfVersionReq
   [kBgReq.showHUD]: {
     /** kTip */ k?: kTip | 0
     /** text */ t?: string;
@@ -154,10 +158,10 @@ interface BgReq {
   [kBgReq.exitGrab]: Req.baseBg<kBgReq.exitGrab>;
   [kBgReq.settingsUpdate]: {
     /** delta */ d: Partial<SelectValueType<SettingsNS.FrontendSettingsSyncingItems>>;
-  };
+  } & Partial<ConfVersionReq>
   [kBgReq.url]: {
     /** url */ u?: string;
-  } & Req.baseFg<keyof FgReq> & Partial<Req.baseBg<kBgReq.url>>;
+  } & Req.baseQueryUrl & Req.baseFg<keyof FgReq>
   [kBgReq.eval]: {
     /** url */ u: string; // a javascript: URL
     /** only $then */ f?: Req.FallbackOptions | null
@@ -165,14 +169,10 @@ interface BgReq {
   [kBgReq.count]: {
     /** cmd */ c: string | "";
     /** id */ i: number;
+    /** always resolve*/ r: boolean;
     /** message-in-confirmation-dialog */ m: string;
   };
   [kBgReq.queryForRunKey]: { n: number; c: CurrentEnvCache }
-  [kBgReq.goToMark]: {
-    /** local */ l: 0 | /** kTip.local - kTip.global */ 2
-    /** markName */ n?: string | undefined
-    /** scroll */ s: MarksNS.FgMark
-  }
   [kBgReq.suppressForAWhile]: { /** timeout */ t: number }
   [kBgReq.refreshPort]: {}
 }
@@ -194,25 +194,28 @@ interface BgVomnibarSpecialReq {
   [kBgReq.omni_init]: {
     /** secret */ s: string
     /** payload */ l: SettingsNS.VomnibarPayload;
-  };
+  } & ConfVersionReq
   [kBgReq.omni_parsed]: {
     /** id */ i: number;
     /** search */ s: FgRes[kFgReq.parseSearchUrl];
   };
   [kBgReq.omni_toggleStyle]: {
-    /** toggled */ t: string;
-    /** current */ c: boolean;
+    /** toggled, default to "dark" */ t: string | ""
+    /** broadcast */ b: boolean
   };
   [kBgReq.omni_updateOptions]: {
     /** delta */ d: Partial<SelectValueType<SettingsNS.AllVomnibarItems>>;
-  };
+  } & ConfVersionReq
   [kBgReq.omni_runTeeTask]: Pick<BaseTeeTask, "t" | "s">
-  [kBgReq.omni_refresh]: { /** destroy */ d: boolean }
+  [kBgReq.omni_refresh]: {}
 }
-type ValidBgVomnibarReq = keyof BgVomnibarSpecialReq | kBgReq.injectorRun;
+type ValidBgVomnibarReq = keyof BgVomnibarSpecialReq | kBgReq.injectorRun | /** to keep bg alive */ kBgReq.showHUD
 interface FullBgReq extends BgReq, BgVomnibarSpecialReq {}
 
-declare const enum kTeeTask { CopyImage = 1, ShowImage = 2, Paste = 3, Download = 4, Copy = 5, DrawAndCopy = 9 }
+declare const enum kTeeTask {
+  CopyImage = 1, ShowImage = 2, Paste = 3, Download = 4, Copy = 5, DrawAndCopy = 9,
+  updateMedia = 10,
+}
 interface BaseTeeTask {
   /** task enum */ t: kTeeTask
   /** serializable data */ s: any
@@ -222,16 +225,18 @@ interface BaseTeeTask {
 interface ImageToCopy { /** url for binary data */ u: string, /** text */ t: string, /** browser */ b?: BrowserType }
 interface TeeTasks {
   [kTeeTask.Copy]: { s: string, d: null }
-  [kTeeTask.Paste]: { s: null | /** permitted */ true, d: null }
+  [kTeeTask.Paste]: { /** negative means permitted */ s: number, d: null }
   [kTeeTask.CopyImage]: { s: ImageToCopy, d: Blob }
+  [kTeeTask.Download]: { s: ImageToCopy, d: null }
   [kTeeTask.DrawAndCopy]: { s: ImageToCopy, d: Blob }
+  [kTeeTask.updateMedia]: { s: string[], d: null }
 }
 
 declare const enum kBgCmd {
-  blank, goNext,
+  blank, confirm, goNext,
   // region: need cport
   insertMode, nextFrame, parentFrame,
-  performFind, toggle, showHelp, dispatchEventCmd, showVomnibar, visualMode,
+  performFind, toggle, showHelp, dispatchEventCmd, showVomnibar, marksActivate, visualMode,
   MIN_NEED_CPORT = insertMode, MAX_NEED_CPORT = visualMode,
   // endregion: need cport
   addBookmark, autoOpenFallback,
@@ -241,33 +246,33 @@ declare const enum kBgCmd {
   reloadTab, removeRightTab, removeTab, removeTabsR, reopenTab, restoreTab, runKey,
   searchInAnother, sendToExtension, showHUD,
   toggleCS, toggleMuteTab, togglePinTab, toggleTabUrl, toggleVomnibarStyle, toggleZoom,
-  visitPreviousTab, closeDownloadBar, reset, openBookmark,
+  visitPreviousTab, closeDownloadBar, reset, openBookmark, toggleWindow,
   END, ENDS = "END",
 }
 
 declare const enum kFgCmd {
-  framesGoBack, findMode, linkHints, marks, scroll, visualMode, vomnibar, insertMode, toggle,
+  callTee, findMode, linkHints, marks, scroll, visualMode, vomnibar, insertMode, toggle,
   passNextKey, goNext, autoOpen, focusInput, editText, scrollSelect, toggleStyle, dispatchEventCmd, showHelpDialog,
-  callTee,
+  framesGoBack, goToMark,
   END, ENDS = "END",
 }
 
 type FgCmdAcrossFrames = kFgCmd.linkHints | kFgCmd.scroll | kFgCmd.vomnibar | kFgCmd.goNext | kFgCmd.framesGoBack
-    | kFgCmd.insertMode | kFgCmd.dispatchEventCmd
+    | kFgCmd.insertMode | kFgCmd.dispatchEventCmd | kFgCmd.goToMark
 
 interface FgOptions extends SafeDict<any> {}
 type SelectActions = "" | "all" | "all-input" | "all-line" | "start" | "end";
 
 interface ParsedSedOpts {
-  /** sed rules, split by spaces */ r: string | boolean | null | undefined
-  /** keys */ k: string | null | undefined | object
+  /** sed rules, split by spaces */ r: string | number | boolean | null | undefined
+  /** keys */ k: string | number | null | undefined | object
 }
-type MixedSedOpts = string | boolean | ParsedSedOpts
+type MixedSedOpts = string | number | boolean | ParsedSedOpts
 interface UserSedOptions {
-  sed?: MixedSedOpts | null
+  sed?: MixedSedOpts | string[] | null
   /** only in LinkHints now */ sedIf?: "regexp-for-<a>.href" | null
-  sedKeys?: string | null
-  sedKey?: string | null
+  sedKeys?: string | number | null
+  sedKey?: string | number | null
   /** cached parsing result */ $sed?: ParsedSedOpts | null
 }
 
@@ -278,37 +283,44 @@ declare namespace HintsNS {
     /** mode */ m: HintMode
     /** hint characters */ c?: string
     action?: string;
+    action2?: "host-re##selector//<special_action:int>";
+    /** enable bubbles when hovering / unhovering */ bubbles?: boolean;
     caret?: boolean;
+    doClickOn?: "css-selector"
     download?: "" | "force"
     focus?: boolean | "css-selector"
-    then?: object | string
+    flash?: boolean
+    then?: object | string | null | void | false
+    else?: object | string | null | void | false
     ordinal?: boolean
     useFilter?: boolean;
+    onTop?: boolean | "host-re##fake-selector;..." | null
     url?: boolean;
     // access el.dataset[<json keys>] || el.attrs[key][json keys]
     // format: [<css selector>":"]<dataset-key or attr-name>[...("."<json key>)], like img:viewer.url
-    access?: string
+    access?: string | string[]
     dblclick?: boolean;
     interact?: true | "native" | false
     longPage?: boolean
+    autoChild?: boolean | "true" | "composed-css-selector" | ":root" | "html" | ":host"
+    autoParent?: "composed-css-selector"
     newtab?: null | /** only in editing mode */ boolean
-        | "force" | "force-current" | "force-mode"
+        | "force" | "force-current" | "force-mode" | "inactive"
         | "last-window" | "window" | /** Firefox-only */ "no-prevent"
     reuse?: UserReuseType
-    button?: "right";
+    button?: "right" | "auxclick" | "middle" | "auxiliary" | 0 | 1 | 2
     contextmenu?: boolean
     touch?: null | boolean | "auto";
+    pointer?: true | false;
     join?: FgReq[kFgReq.copy]["j"];
+    trim?: boolean
     decoded?: boolean;
     anyText?: boolean
-    toggle?: {
-      [selector: string]: string;
-    };
+    toggle?: { [selector in "css-selector"]: string | string[] } & { many?: 1 }
     auto?: boolean;
     /** clickElement / pageLoad is enabled by default */
     autoReload?: "clickElement" | "click" | "cl" | "pageLoad" | "lo" | "delayedListen" | "delayed" | "de" | "all"
     ctrlShiftForWindow?: boolean | null;
-    noCtrlPlusShift?: boolean;
     retainInput?: boolean
     swapCtrlAndShift?: boolean;
     showUrl?: boolean | BOOL
@@ -316,7 +328,7 @@ declare namespace HintsNS {
     hideHud?: boolean;
     hideHUD?: boolean;
     autoUnhover?: boolean | "css-selector"
-    reachable?: null | boolean // null means "in modes for mouse events and settings.mouseReachable"
+    reachable?: null | boolean | /** limits */ number // null means "use settings.mouseReachable and for mouse events"
     richText?: boolean | "safe" | "with-name" | "safe-with-name" | ""
     visual?: false;
     suppressInput?: boolean
@@ -347,10 +359,12 @@ declare const enum kScFlag { scBy = 0, INC = 1, TO = 2, toMin = 2, toMax = 3, _m
 interface CmdOptions {
   [kFgCmd.linkHints]: HintsNS.Options;
   [kFgCmd.marks]: {
-    mode?: "create" | /* all others are treated as "goto"  */ "goto" | "goTo";
-    prefix?: true | false;
-    swap?: false | true;
-  } & OpenPageUrlOptions & Req.FallbackOptions
+    /** action */ a: kMarkAction.goto | kMarkAction.create
+    /** not store a persistent mark for number keys */ n: boolean
+    /** swap shiftKey */ s: boolean
+    /** action title */ t: string
+    /** extra options */ o: OpenPageUrlOptions & Req.FallbackOptions
+  }
   [kFgCmd.scroll]: {
     /** continuous */ $c?: kKeyCode;
     axis?: "y" | "x";
@@ -363,6 +377,7 @@ interface CmdOptions {
     dir?: 1 | -1 | 0.5 | -0.5;
     offset?: number
     /** inner flags */ f?: kScFlag & number
+    outer?: number
   } & Pick<CSSOptions, "evenIf" | "scroll"> & ({
     view?: 0 | /** means 0 */ undefined | 1 | "max" | /* all others are treated as "view" */ 2 | "view";
     dest?: undefined;
@@ -381,6 +396,13 @@ interface CmdOptions {
   } & Req.FallbackOptions
   [kFgCmd.framesGoBack]: (Pick<OpenUrlOptions, "reuse" | "position"> & { r?: null }
       | { r: 1 } & ({ u: string; hard?: undefined } | { u?: undefined; hard?: boolean })) & Req.FallbackOptions
+  [kFgCmd.goToMark]: {
+    /** global */ g: boolean
+    /** scroll */ s: MarksNS.ScrollInfo
+    /** mark tip */ t: string
+    /** fallback */ f: Req.FallbackOptions
+    /** wait a while */ w: number
+  }
   [kFgCmd.vomnibar]: {
     /* vomnibar */ v: string;
     /* vomnibar2 */ i: string | null;
@@ -389,6 +411,9 @@ interface CmdOptions {
     /** <script> */ j: string;
     /** secret */ k: string
     /** exitOnClick */ e: boolean;
+    /** (maxFrameElWidth - 24) / (panelWidth := 0.8) */ m?: number;
+    /** `calc(50% - ${maxFrameElWidth >>> 1}px)` */ x?: string;
+    /** maxOutHeight without zooming and scaling */ h: number
   } & Pick<VomnibarNS.GlobalOptions, "u" | "url">
   [kFgCmd.goNext]: {
     /** rel */ r: string;
@@ -407,7 +432,7 @@ interface CmdOptions {
     /** unhover last */ u?: boolean;
     /** reset all: 2=destroying */ r: 0 | 1 | 2;
     /** insert mode */ i: boolean;
-  } & InsertModeOptions) & Req.FallbackOptions
+  } & InsertModeOptions) & Req.FallbackOptions & { /** enable bubbles when unhovering */ bubbles?: boolean }
   [kFgCmd.visualMode]: {
     /** mode */ m?: VisualModeNS.Mode.Visual | VisualModeNS.Mode.Line | VisualModeNS.Mode.Caret;
     /** find CSS */ f?: FindCSS | null
@@ -426,30 +451,34 @@ interface CmdOptions {
   } & Partial<BgCSSReq> | ShowHelpDialogOptions
   [kFgCmd.findMode]: {
     /** count */ c: number;
+    /** default search direction */ d: 1 | -1;
     /** highlight multiple times in a single direction */ m: number
     /** leave find mode */ l: BOOL
     /** query */ q: string;
     /* return to view port */ r: boolean;
     /* auto use selected text */ s: boolean;
+    /* extend selection */ t: 0 | /** left" */ 1 | /** right */ 2
     /** findCSS */ f: FindCSS | null;
     /** use post mode on esc */ p: boolean;
     /** restart finding */ e: boolean;
     /** normalize text */ n: boolean
+    /** manually scrolling */ u: boolean | BOOL
   } & Req.FallbackOptions
   [kFgCmd.autoOpen]: {
     /** for autoOpen */
     o?: 1;
     reuse?: UserReuseType;
     copy?: boolean;
+    type?: "tab-url" | "frame" | "tab-title" | "tab" | "window"
     /** for autoCopy */
     text?: string
+    trim?: boolean | "left" | "right" | "start" | "end"
     url?: boolean | "raw"
     /** for searchAs */
     s?: 1;
     /** default to true */ selected?: boolean;
-  } & {
     /** default to true */ copied?: boolean | "urls" | "any-urls";
-  } & UserSedOptions & OpenPageUrlOptions & Req.FallbackOptions
+  } & OpenPageUrlOptions & Req.FallbackOptions
   [kFgCmd.focusInput]: {
     act?: "" | "backspace" | "switch" | "last" | "last-visible";
     action?: "" | "backspace" | "switch" | "last" | "last-visible";
@@ -458,12 +487,12 @@ interface CmdOptions {
     keep?: boolean;
     passExitKey?: boolean;
     flash?: boolean;
-    reachable?: boolean; // default to true
+    reachable?: boolean | number; // default to true
     prefer?: string;
   } & CSSOptions & Req.FallbackOptions
   [kFgCmd.editText]: {
     dom?: boolean;
-    run: string;
+    run: string | string[]
   } & OptionsToFindElement & Req.FallbackOptions
   [kFgCmd.scrollSelect]: {
     position?: "begin" | "home" | "start" | "end" | "last"
@@ -491,12 +520,14 @@ interface CmdOptions {
     init?: Dict<any>
     xy?: null | HintsNS.Options["xy"]
     trust?: boolean; trusted?: boolean; isTrusted?: boolean | "force"
+    superKey?: boolean
   } & OptionsToFindElement & Req.FallbackOptions & EventInit
   [kFgCmd.callTee]: {
     /** url */ u: string
     /** className */ c: string
     /** allow */ a: string
     /** timeout */ t: number
+    /** current frame's ID */ i: number
   }
 }
 
@@ -532,6 +563,7 @@ interface FgRes {
   [kFgReq.wait]: TimerType.fake
   [kFgReq.pages]: { /** id of query array */ i: number; /** answers */ a: unknown[] } | false
   [kFgReq.recheckTee]: /** has the TEE task been used */ boolean
+  [kFgReq.afterTee]: FrameMaskType
   [kFgReq.blank]: 0
 }
 interface FgReqWithRes {
@@ -551,6 +583,7 @@ interface FgReqWithRes {
   [kFgReq.wait]: number
   [kFgReq.pages]: FgReq[kFgReq.pages]
   [kFgReq.recheckTee]: 0
+  [kFgReq.afterTee]: /** iframe id; non-positive means on error */ number
   [kFgReq.blank]: 0
 }
 
@@ -581,13 +614,13 @@ interface FgReq {
   };
   [kFgReq.gotoSession]: {
     /** sessionId */ s: CompletersNS.SessionId
-    /** active: default to true  */ a?: boolean;
+    /** action: 0: inactive; 1: active; 2: force-in-cur-wnd  */ a?: 0 | 1 | 2
   };
   [kFgReq.openUrl]: {
     // note: need to sync members to ReqH::openUrl in main.ts
     /** url */ u?: string;
     /** options */ o?: ParsedOpenPageUrlOptions | null
-    /** command options with "$" */ n?: CmdOptions[kFgCmd.autoOpen]
+    /** all command options */ n?: OpenPageUrlOptions & Req.FallbackOptions
     /** formatted-by-<a>.href */ f?: boolean;
     /** copied */ c?: boolean | "urls" | "any-urls";
     /** https */ h?: boolean | null;
@@ -598,7 +631,7 @@ interface FgReq {
     /** url */ u: string;
     /** selected text */ t: string;
     /** options for openUrl */ o?: ParsedOpenPageUrlOptions | null
-    /** command options with "$" */ n: CmdOptions[kFgCmd.autoOpen]
+    /** all command options */ n: OpenPageUrlOptions & Req.FallbackOptions
     /** copied */ c: boolean | "urls" | "any-urls" | undefined;
   };
   [kFgReq.onFrameFocused]: {};
@@ -622,14 +655,14 @@ interface FgReq {
   [kFgReq.vomnibar]: ({
     /** url */ u: string
     /** newtab */ t?: HintsNS.Options["newtab"]
-    /** forwarded options */ f: object | string | null | undefined
+    /** forwarded options */ f: object | Exclude<HintsNS.Options["then"], object>
     /** only use .keyword and sed */ o: Pick<ParsedOpenPageUrlOptions, "k" | "s">
     /** redo */ r?: undefined;
   } & WithHintModeOptions | {
     /** url */ u?: undefined
-    /** redo */ r: boolean;
+    /** redo */ r: 9;
   }) & {
-    /** inner */ i?: boolean;
+    /** inner */ i?: BOOL | boolean;
   };
   [kFgReq.omni]: {
     /** query */ q: string;
@@ -640,18 +673,22 @@ interface FgReq {
     /** [].join($j) */ j?: string | boolean | null
     u?: undefined | ""
     i?: undefined
+    /** trim */ t?: boolean
   } & Partial<WithHintModeOptions> | {
     /** url */ u: "url";
     /** data */ s?: undefined
     j?: undefined | null
     i?: undefined
+    t?: undefined
   } | {
     /** data: image URL */ i: "data:" | ""
     /** source URL */ u: string
     j?: undefined
     /** richText */ r: HintsNS.Options["richText"]
+    t?: undefined
   }) & {
     /** sed and keyword */ o?: ParsedOpenPageUrlOptions;
+    /** all command options */ n?: OpenPageUrlOptions & Req.FallbackOptions | null
     /** decode by default */ d?: boolean;
   };
   [kFgReq.key]: {
@@ -667,19 +704,22 @@ interface FgReq {
       /** wait for a while; 0 means no waiting */ w?: number | null
     }
   };
-  [kFgReq.marks]: ({ /** action */ a: kMarkAction.create } & (MarksNS.NewTopMark | MarksNS.NewMark)) | {
-    /** action */ a: kMarkAction.clear;
-    /** url */ u: string;
-  } | ({ /** action */ a: kMarkAction.goto; c: CmdOptions[kFgCmd.marks] } & MarksNS.FgQuery)
-  [kFgReq.didLocalMarkTask]: { /** remembered mark */ m?: MarksNS.FgMark | undefined, /** index */ i?: number }
+  [kFgReq.marks]: { c: kMarkAction.clear, f: Req.FallbackOptions | null; /** url */ u: string; } | ({
+      /** all command options */ c: CmdOptions[kFgCmd.marks]
+      /** forced (aka. not find another port any more) */ f?: boolean
+      /** last key */ k: kKeyCode
+  } & MarksNS.FgQuery)
+  [kFgReq.didLocalMarkTask]: { c: CmdOptions[kFgCmd.marks]; /** index */ i: number; /** no old */ n: boolean }
   /**
    * .url is guaranteed to be well formatted by frontend
    */
   [kFgReq.focusOrLaunch]: MarksNS.FocusOrLaunch;
-  [kFgReq.cmd]: Pick<BgReq[kBgReq.count], "c" | "i"> & {
+  [kFgReq.beforeCmd]: Pick<BgReq[kBgReq.count], "i">
+  [kFgReq.cmd]: {
+    /** input request */ i: BgReq[kBgReq.count]
     /** count */ n: number;
     /** confirmation-response: 0=fail, 1=cancel, 2=force1, 3=confirm */ r: 0 | 1 | 2 | 3
-  };
+  } | { i: 0 }
   [kFgReq.removeSug]: {
     /** type */ t: "tab" | "history";
     /** sessionId / tabId */ s?: CompletersNS.SessionId | null
@@ -687,6 +727,7 @@ interface FgReq {
   } | { t: "e" }
   [kFgReq.openImage]: {
     /** file */ f: string | null;
+    /** raw source without drawing */ r?: string | null
     /** url */ u: string;
     /** other options */ t?: string;
     /** options for openUrl */ o?: ParsedOpenPageUrlOptions
@@ -701,13 +742,12 @@ interface FgReq {
     /** count */ n: number;
     /** options */ a: OptionsWithForce;
   };
-  [kFgReq.setOmniStyle]: {
-    /** toggled */ t: string;
-    /** enable */ e?: boolean; /* if null, then toggle .t */
-    /** override-system-settings */ o?: 1; // `o === 1` and `b === false` should never be true in the meanwhile
-    /** broadcast, default to true */ b?: boolean;
+  [kFgReq.omniToggleMedia]: {
+    /** target style or "dark" */ t: string
+    /** broadcast, default to true */ b: boolean;
+    /** new value of darkMode */ v: boolean;
   };
-  [kFgReq.findFromVisual]: {};
+  [kFgReq.findFromVisual]: { /** command */ c: VisualAction }
   [kFgReq.framesGoBack]: {
     /** step */ s: number
     /** only use o.position */ o: PickIn<Extract<CmdOptions[kFgCmd.framesGoBack], {r?: null}>
@@ -716,7 +756,7 @@ interface FgReq {
   [kFgReq.cssLearnt]: {};
   [kFgReq.visualMode]: {
     /** caret mode */ c?: boolean
-    /** forwarded options */ f: object | string | null | undefined
+    /** forwarded options */ f: object | Exclude<HintsNS.Options["then"], object>
   };
   [kFgReq.respondForRunKey]: {
     r: BgReq[kBgReq.queryForRunKey]
@@ -734,7 +774,19 @@ interface FgReq {
   [kFgReq.pages]: { /** id of query array */ i: number; /** queries */ q: unknown[] }
   [kFgReq.showUrl]: { u: string }
   [kFgReq.omniCopy]: { /** title */ t: string, /** url */ u: string }
-  [kFgReq.recheckTee]: {}
+  [kFgReq.omniCopied]: { /** text */ t: string }
+  [kFgReq._deleted1]: {}
+  [kFgReq.syncStatus]: {
+    s: [
+      isLocked: Frames.Flags.locked | Frames.Flags.lockedAndDisabled,
+      isPassKeysReversed: boolean, passKeys: string[] | "" | null
+    ]
+  }
+  [kFgReq.focusCurTab]: {}
+}
+
+interface TeeReq {
+  [kFgReq.teeRes]: { /** response */ r: boolean | string }
 }
 
 interface CurrentEnvCache {} // eslint-disable-line @typescript-eslint/no-empty-interface
@@ -750,6 +802,7 @@ interface OpenUrlOptions extends UserSedOptions {
       | "default"
   reuse?: UserReuseType | null
   window?: boolean | "popup" | "normal" | null
+  warnFiles?: true | false | null
 }
 
 interface OpenPageUrlOptions extends OpenUrlOptions {
@@ -779,12 +832,17 @@ declare namespace Req {
     K extends keyof BgReq ? BgReq[K] & baseBg<K> :
     K extends keyof BgVomnibarSpecialReq ? BgVomnibarSpecialReq[K] & baseBg<K> :
     never;
+  type baseQueryUrl = { /** use vApi.u */ U: 0 | 1 | 2 | 3 }
+  type queryUrl<K extends kFgReq> = K extends keyof FgReq ? "u" extends keyof FgReq[K]
+      ? Omit<FgReq[K], "u"> & BgReq[kBgReq.url] & Req.baseFg<K> : never : never
+  type bgUrl<K extends kFgReq> = queryUrl<K> & baseBg<kBgReq.url>
   interface baseTee<K extends kTeeTask> extends Omit<BaseTeeTask, "t" | "s" | "d"> { t: K }
   type tee<K extends keyof TeeTasks> = Pick<TeeTasks[K], "s"> & PartialOf<TeeTasks[K], "d"> & baseTee<K>
   interface baseFg<K extends kFgReq> {
     /** handler */ H: K;
   }
   type fg<K extends keyof FgReq> = FgReq[K] & baseFg<K>;
+  type teeFg<K extends keyof TeeReq> = TeeReq[K] & baseFg<K>
 
   interface fgWithRes<K extends keyof FgRes> extends baseFg<kFgReq.msg> {
     /** msgId */ i: number;

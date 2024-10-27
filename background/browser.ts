@@ -1,6 +1,6 @@
 import {
   CurCVer_, CurFFVer_, curIncognito_, curWndId_, newTabUrls_, OnChrome, OnEdge, OnFirefox, newTabUrl_f, blank_,
-  CONST_, IsEdg_, hasGroupPermission_ff_, bgIniting_, set_installation_, Origin2_
+  CONST_, IsEdg_, hasGroupPermission_ff_, bgIniting_, set_installation_, Origin2_, runOnTee_
 } from "./store"
 import { DecodeURLPart_, deferPromise_ } from "./utils"
 
@@ -45,13 +45,13 @@ export const isTabMuted = OnChrome && Build.MinCVer < BrowserVer.MinMutedInfo &&
     ? (maybe_muted: Tab): boolean => maybe_muted.muted!
     : OnEdge ? (_tab: Tab) => false : (maybe_muted: Tab): boolean => maybe_muted.mutedInfo.muted
 
-export const getCurTab = Tabs_.query.bind(null, { active: true, currentWindow: true }
+export const getCurTab = Tabs_.query.bind(null, { active: true, lastFocusedWindow: true }
   ) as (callback: (result: [Tab], _ex: FakeArg) => void) => 1
 
-export const getCurTabs = Tabs_.query.bind(null, {currentWindow: true})
+export const getCurTabs = Tabs_.query.bind(null, {lastFocusedWindow: true})
 
 export const getCurShownTabs_ = OnFirefox
-    ? Tabs_.query.bind(null, { currentWindow: true, hidden: false }) : getCurTabs
+    ? Tabs_.query.bind(null, { lastFocusedWindow: true, hidden: false }) : getCurTabs
 
 export const isNotHidden_ = OnFirefox ? (tab: Tab): boolean => !tab.hidden : () => true
 
@@ -108,7 +108,7 @@ export const Q_: {
 }) as (func: Function, ...args: any[]) => Promise<any>
 const _orNull = (result: unknown): unknown => result !== void 0 ? result : null
 
-export const R_ = (resolve: OnCmdResolved): () => void => resolve !== blank_ ? () => {
+export const R_ = (resolve: (result: boolean) => void): () => void => resolve !== blank_ ? () => {
   const error = runtimeError_()
   resolve(!error)
   return error
@@ -121,10 +121,11 @@ export const Qs_: {
   <F extends ApiTemplate<[any, any]>      > (browserApi: F, ...args: ApiParams<F>): Promise<ApiCb<F>>
   <F extends ApiTemplate<[any, any, any]> > (browserApi: F, ...args: ApiParams<F>): Promise<ApiCb<F>>
 } = (OnChrome || OnEdge ? function (func: Function): Promise<unknown> {
-  return new Promise(resolve => { func(resolve) })
+  const arr: unknown[] = [].slice.call(arguments, 1)
+  return new Promise(resolve => { arr.push(resolve); func.apply(0, arr) })
 } : function (func: Function): Promise<unknown> {
-  // eslint-disable-next-line @typescript-eslint/no-unsafe-call
-  return func()
+  const arr: unknown[] = [].slice.call(arguments, 1)
+  return func.apply(0, arr)
 }) as <F extends ApiTemplate<[]>> (browserApi: F) => Promise<ApiCb<F>>
 
 const doesIgnoreUrlField_ = (url: string, incognito?: boolean): boolean => {
@@ -135,11 +136,28 @@ const doesIgnoreUrlField_ = (url: string, incognito?: boolean): boolean => {
 export let getFindCSS_cr_: ((sender: Frames.Sender) => FindCSS) | undefined
 export const set_getFindCSS_cr_ = (newGet: typeof getFindCSS_cr_): void => { getFindCSS_cr_ = newGet }
 
+export const removeTabsOrFailSoon_ = (ids: number|number[], callback: (ok: boolean) => void): void => {
+  const returnOnce = (ok: boolean): void => {
+    const curCb = callback
+    if (curCb) {
+      callback = null as never
+      ok && clearTimeout(timer)
+      curCb && curCb(ok as boolean)
+    }
+  }
+  if (callback === runtimeError_) { Tabs_.remove(ids, callback as typeof runtimeError_); return }
+  const kTabsRemoveTimeout = 1500, timer = setTimeout(returnOnce, kTabsRemoveTimeout, false)
+  Tabs_.remove(ids, (): void => { // avoid `R_`, to reduce memory cost
+    const error = runtimeError_()
+    returnOnce(!error)
+    return error
+  })
+}
+
 //#region actions
 
-/** if `alsoWnd`, then it's safe when tab does not exist */
 export const selectTab = (tabId: number, callback?: ((tab?: Tab) => void) | null): void => {
-  tabsUpdate(tabId, {active: true}, callback)
+  tabsUpdate(tabId, { active: true }, callback)
 }
 
 export const selectWnd = (tab?: { windowId: number }): void => {
@@ -288,14 +306,13 @@ export const makeTempWindow_r = (tabId: number, incognito: boolean
   Windows_.create(options, callback)
 }
 
-export const downloadFile = (url: string, filename?: string | null, refer?: string | null
-    , onFinish?: ((succeed: boolean) => void) | null): void => {
-  if (!(OnChrome || OnFirefox)) {
-    onFinish && onFinish(false)
-    return
+export const downloadFile = (url: string, filename?: string | null, refer?: string | null): Promise<boolean> => {
+  if (Build.MV3 && url.startsWith("data:")) {
+    return runOnTee_(kTeeTask.Download, { u: url, t: filename || "" }, null).then(i => !!i)
   }
-  void Q_(browser_.permissions.contains, { permissions: ["downloads"] }).then((permitted): void => {
-    if (permitted) {
+  if (!(OnChrome || OnFirefox)) { return Promise.resolve(false) }
+  return Q_(browser_.permissions.contains, { permissions: ["downloads"] }).then((permitted): PromiseOr<boolean> => {
+      if (!permitted) { return false }
       const opts: chrome.downloads.DownloadOptions = { url }
       if (filename) {
         const extRe = <RegExpI> /\.[a-z\d]{1,4}(?=$|[?&])/i
@@ -314,10 +331,7 @@ export const downloadFile = (url: string, filename?: string | null, refer?: stri
         opts.headers = [ { name: "Referer", value: refer } ]
       }
       const q = Q_(browser_.downloads.download!, opts)
-      onFinish && q.then((): void => { onFinish(true) })
-    } else if (onFinish) {
-      onFinish(false)
-    }
+      return q.then((): true => true)
   })
 }
 
@@ -409,14 +423,14 @@ export const executeScript_ = <Args extends (number | boolean | null)[]>(tabId: 
   if (Build.MV3) {
     const toRun: chrome.scripting.ScriptInjection<Args, void> = { files: func ? void 0 : files!, func, args,
         target: frameId >= 0 ? { tabId, frameIds: [frameId] } : { tabId, allFrames: true }, injectImmediately: true }
-    OnChrome && Build.MinCVer < 102 && CurCVer_ < 102 && delete toRun.injectImmediately
+    OnChrome && Build.MinCVer < BrowserVer.MinInjectImmediatelyInMV3 && CurCVer_ < BrowserVer.MinInjectImmediatelyInMV3
+        && delete toRun.injectImmediately
     browser_.scripting.executeScript(toRun, callback || runtimeError_)
-    return
   } else {
     const toRun: chrome.tabs.InjectDetails = frameId >= 0 ? { frameId } : { allFrames: true, matchAboutBlank: true }
     toRun.runAt = "document_start"
     if (func) {
-      toRun.code = `${(func + "").split("{")[1].split("(")[0]}(${args ? args.join(",") : ""})`
+      toRun.code = `${(func + "").split("{")[1].split("(")[0].trim()}(${args ? args.join(",") : ""})`
     } else { toRun.file = files![0] }
     if (OnChrome && Build.MinCVer < BrowserVer.Min$tabs$$executeScript$hasFrameIdArg
         && CurCVer_ < BrowserVer.Min$tabs$$executeScript$hasFrameIdArg) {
@@ -439,9 +453,10 @@ export const runContentScriptsOn_ = (tabId: number): void => {
 }
 
 export const import2 = <T> (path: string): Promise<T> =>
-    Build.MV3 ? Promise.resolve(__moduleMap![path.split("/").slice(-1)[0].replace(".js", "")] as T) : import(path)
+    Build.MV3 && Build.BTypes !== BrowserType.Firefox as number
+    ? Promise.resolve(__moduleMap![path.split("/").slice(-1)[0].replace(".js", "")] as T) : import(path)
 
-//#endregion
+//#endregion actions
 
 bgIniting_ < BackendHandlersNS.kInitStat.FINISHED && set_installation_(new Promise((resolve): void => {
   const ev = browser_.runtime.onInstalled

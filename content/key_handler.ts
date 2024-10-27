@@ -1,26 +1,26 @@
 import {
-  doc, esc, os_, isEnabled_, isTop, keydownEvents_, set_esc, safer, Stop_, Lower, OnChrome, OnFirefox, timeStamp_,
-  chromeVer_, deref_, fgCache, OnEdge
+  doc, esc, os_, isEnabled_, isTop, keydownEvents_, set_esc, safer, Stop_, Lower, OnChrome, OnFirefox, timeStamp_, vApi,
+  chromeVer_, deref_, fgCache, OnEdge, set_inherited_
 } from "../lib/utils"
 import {
   set_getMappedKey, char_, getMappedKey, isEscape_, getKeyStat_, prevent_, handler_stack, keybody_, SPC, hasShift_ff,
-  replaceOrSuppressMost_, removeHandler_
+  replaceOrSuppressMost_, removeHandler_, isRepeated_, consumeKey_mac, MODIFIER
 } from "../lib/keyboard_utils"
 import {
   deepActiveEl_unsafe_, getSelection_, ElementProto_not_ff, getElDesc_, blur_unsafe, getEventPath
 } from "../lib/dom_utils"
 import { wndSize_ } from "../lib/rect"
-import { post_ } from "./port"
-import { removeSelection } from "./dom_ui"
+import { post_, runtimeConnect, runtime_port } from "./port"
+import { doExitOnClick_, removeSelection, toExitOnClick_ } from "./dom_ui"
 import {
   exitInsertMode, focusUpper, insert_global_, insert_Lock_, findNewEditable, passAsNormal, raw_insert_lock,
-  setupSuppress, suppressType,
+  setupSuppress, suppressType, readonlyFocused_,
 } from "./insert"
 import { keyIsDown as scroll_keyIsDown, onScrolls, scrollTick } from "./scroller"
 import { catchAsyncErrorSilently, evIDC_cr, lastHovered_, set_evIDC_cr, unhover_async } from "./async_dispatcher"
 import { hudHide } from "./hud"
 
-let passKeys: Set<string> | null = null
+let passKeys: Set<string> | "" | null = null
 let isPassKeysReversed = false
 let mapKeyTypes = kMapKey.NONE
 let mappedKeys: SafeDict<string> | null = null
@@ -29,9 +29,10 @@ let currentKeys: string
 let curKeyTimestamp: number
 let nextKeys: KeyFSM | ReadonlyChildKeyFSM & SafeObject | null
 
+let maybeEscIsHidden_ff: kKeyCode | 0 = kKeyCode.esc
 let isWaitingAccessKey = false
 let isCmdTriggered: kKeyCode = kKeyCode.None
-let noopEventHandler: EventListenerObject["handleEvent"] = Object.is as any
+let noopEventHandler: EventListenerObject["handleEvent"] & (() => void) = Object.is as any
 interface MouseEventListener extends EventListenerObject { handleEvent (evt: MouseEventToPrevent): ELRet }
 let anyClickHandler: MouseEventListener = { handleEvent: noopEventHandler }
 
@@ -42,9 +43,8 @@ set_esc(function<T extends Exclude<HandlerResult, HandlerResult.ExitNormalMode>>
 })
 
 export {
-  passKeys, keyFSM, mappedKeys, currentKeys,
-  isWaitingAccessKey, isCmdTriggered, anyClickHandler,
-  onPassKey, isPassKeysReversed,
+  passKeys, keyFSM, mappedKeys, mapKeyTypes, currentKeys, isWaitingAccessKey, isCmdTriggered, anyClickHandler,
+  onPassKey, isPassKeysReversed, noopEventHandler as noopHandler, maybeEscIsHidden_ff
 }
 export function set_isCmdTriggered (_newTriggerred: kKeyCode): kKeyCode { return isCmdTriggered = _newTriggerred }
 export function set_passKeys (_newPassKeys: typeof passKeys): void { passKeys = _newPassKeys }
@@ -55,8 +55,16 @@ export function set_keyFSM (_newKeyFSM: KeyFSM): KeyFSM { return keyFSM = _newKe
 export function set_mapKeyTypes (_newMapKeyTypes: kMapKey): void { mapKeyTypes = _newMapKeyTypes }
 export function set_mappedKeys (_newMappedKeys: typeof mappedKeys): void { mappedKeys = _newMappedKeys }
 export function set_currentKeys (_newCurrentKeys: string): void { currentKeys = _newCurrentKeys }
+export function set_maybeEscIsHidden_ff (_isEsc: 0): void { maybeEscIsHidden_ff = _isEsc }
 
-set_getMappedKey((eventWrapper: HandlerNS.Event, mode: kModeId): ReturnType<typeof getMappedKey> => {
+export const inheritKeyMappings = (newState: ReturnType<VApiTy["y"]>): void => {
+  if (newState.m[3]) {
+    [keyFSM, mappedKeys, mapKeyTypes, vApi.z] = newState.m
+    set_inherited_(PortType.confInherited)
+  }
+}
+
+set_getMappedKey(((eventWrapper: HandlerNS.Event, mode: kModeId): string => {
   const char: kChar | "" = eventWrapper.v ? ""
       : !OnEdge && mode > kModeId.MIN_EXPECT_ASCII - 1 && mode < kModeId.MIN_NOT_EXPECT_ASCII
         && fgCache.l & kKeyLayout.inCmdIgnoreIfNotASCII ? char_(eventWrapper, kKeyLayout.inCmdIgnoreIfNotASCII)
@@ -72,7 +80,7 @@ set_getMappedKey((eventWrapper: HandlerNS.Event, mode: kModeId): ReturnType<type
       console.error(`Assert error: mapKey get an invalid char of "${char}" !`);
     }
     key = isLong || mod ? mod + chLower : char;
-    if (mappedKeys && mode < kModeId.NO_MAP_KEY_EVEN_MAY_IGNORE_LAYOUT) {
+    if (mappedKeys && mode < kModeId.NO_MAP_KEY_BUT_MAY_IGNORE_LAYOUT) {
       mapped = mapKeyTypes & (mode > kModeId.Insert ? kMapKey.otherMode : mode)
           && mappedKeys[key + ":" + GlobalConsts.ModeIds[mode]]
           || (mapKeyTypes & kMapKey.plain ? mappedKeys[key] : "")
@@ -85,7 +93,7 @@ set_getMappedKey((eventWrapper: HandlerNS.Event, mode: kModeId): ReturnType<type
     }
   }
   return key;
-})
+}) satisfies typeof getMappedKey)
 
 export const checkKey = ((event: HandlerNS.Event, key: string
     , /** 0 means normal; 1 means (plain) insert; 2 means on-top normal */ modeType?: BOOL
@@ -110,8 +118,9 @@ export const checkKey = ((event: HandlerNS.Event, key: string
         : modeType < 2 &&
         // insert mode: not accept a sequence of multiple keys,
         // because the simplified keyFSM can not be used when nextKeys && !nextKeys[key]
-          (keyFSM[key2 = key + ":" + GlobalConsts.InsertModeId] || (key2 = keybody_(key)
-            ) < kChar.minNotF_num && key2 > kChar.maxNotF_num && keyFSM[key2 = key]) === KeyAction.cmd
+          (keyFSM[key2 = key + ":" + GlobalConsts.InsertModeId]
+            || (key2 = keybody_(key)) < kChar.minNotF_num && key2 > kChar.maxNotF_num && keyFSM[key2 = key]
+          ) === KeyAction.cmd
         ? KeyAction.cmd : KeyAction.INVALID
     if (!j || currentKeys && passKeys
           && passKeys.has(mappedKeys ? getMappedKey(event, kModeId.NO_MAP_KEY) : key) !== isPassKeysReversed
@@ -120,24 +129,32 @@ export const checkKey = ((event: HandlerNS.Event, key: string
     }
     if (j !== KeyAction.cmd) { currentKeys = ""; }
   }
-  currentKeys += key2.length > 1 ? `<${key2}>` : key2
+  currentKeys += key2.length > 1 ? key2 = `<${key2}>` : key2
+  let result = HandlerResult.Prevent
   if (j === KeyAction.cmd) {
+    if (Build.NDEBUG && Build.Mangle || Build.MV3) {
+      prevent_(event.e)
+      runtime_port || runtimeConnect()
+    }
     post_({ H: kFgReq.key, k: currentKeys, l: event.i, e: getElDesc_(raw_insert_lock) });
     esc!(HandlerResult.Prevent);
     isCmdTriggered = event.i || kKeyCode.True
   } else {
+    curKeyTimestamp = timeStamp_(event.e)
     if (j !== KeyAction.count) {
+      nextKeys = safer(j)
       if (isVirtual) {
         replaceOrSuppressMost_(kHandler.onTopNormal, /*#__NOINLINE__*/ checkKeyOnTop)
         hudHide()
+      } else if (event.c === MODIFIER && currentKeys === key2) {
+        curKeyTimestamp -= GlobalConsts.KeySequenceTimeout - GlobalConsts.ModifierKeyTimeout
+        result = HandlerResult.Nothing
       }
-      nextKeys = safer(j)
     } else {
       nextKeys = keyFSM
     }
-    curKeyTimestamp = timeStamp_(event.e)
   }
-  return HandlerResult.Prevent;
+  return result
 }) as {
   (event: HandlerNS.Event, key: `v-${string}`): HandlerResult.Nothing | HandlerResult.Prevent
   (event: HandlerNS.Event, key: string, modeType: BOOL | 2
@@ -171,16 +188,17 @@ const checkAccessKey_cr = OnChrome ? (event: HandlerNS.Event): void => {
     getMappedKey(event, kModeId.Plain)
     if (isWaitingAccessKey !== (event.c.length === 1 || event.c === SPC)
         && getKeyStat_(event.e, 1) /* Chrome ignore .shiftKey */ ===
-            (Build.OS & ~(1 << kOS.mac) && os_ ? KeyStat.altKey : KeyStat.altKey | KeyStat.ctrlKey)
+            (!(Build.OS & kBOS.MAC) || Build.OS !== kBOS.MAC as number && os_
+              ? KeyStat.altKey : KeyStat.altKey | KeyStat.ctrlKey)
         ) {
-      resetAnyClickHandler(!isWaitingAccessKey)
+      resetAnyClickHandler_cr(!isWaitingAccessKey)
     }
   }
 } : 0 as never
 
-export const resetAnyClickHandler = (enable?: boolean): void => {
+export const resetAnyClickHandler_cr = (enable?: boolean): void => {
   isWaitingAccessKey = !!enable
-  anyClickHandler.handleEvent = enable ? /*#__NOINLINE__*/ onAnyClick_cr : noopEventHandler
+  anyClickHandler.handleEvent = enable ? onAnyClick_cr : toExitOnClick_ ? doExitOnClick_ : noopEventHandler
 }
 
 const onAnyClick_cr = OnChrome ? (event: MouseEventToPrevent): void => {
@@ -188,7 +206,7 @@ const onAnyClick_cr = OnChrome ? (event: MouseEventToPrevent): void => {
   // here has been on Chrome
   if (isWaitingAccessKey
       && (Build.MinCVer >= BrowserVer.Min$Event$$IsTrusted ? event.isTrusted : event.isTrusted !== false)
-      && !event.detail && !event.clientY /* exclude those simulated (e.g. generated by element.click()) */
+      && !event.detail && !event.clientY /* a simulated click from a keyboard event is "positionless" */
       ) {
     const path = getEventPath(event),
     t = (Build.MinCVer >= BrowserVer.Min$Event$$Path$IncludeWindowAndElementsIfListenedOnWindow
@@ -197,7 +215,7 @@ const onAnyClick_cr = OnChrome ? (event: MouseEventToPrevent): void => {
         ? path![0] as Element : event.target as Element;
     if (ElementProto_not_ff!.getAttribute.call(t, "accesskey")) {
       // if a script has modified [accesskey], then do nothing on - just in case.
-      /*#__NOINLINE__*/ resetAnyClickHandler();
+      /*#__NOINLINE__*/ resetAnyClickHandler_cr();
       prevent_(event);
       if (Build.MinCVer >= BrowserVer.MinAccessKeyCausesFocus || chromeVer_ > BrowserVer.MinAccessKeyCausesFocus - 1) {
         blur_unsafe(t)
@@ -212,22 +230,26 @@ export const onKeydown = (event: KeyboardEventToPrevent): void => {
       || (!OnChrome || Build.MinCVer >= BrowserVer.Min$Event$$IsTrusted ? !event.isTrusted
           : event.isTrusted === false) // skip checks of `instanceof KeyboardEvent` if checking `!.keyCode`
           && (event as UserTrustedKeyboardEvent).z !== fgCache
-      || !key) { return; }
+      || !key) { return; } // not only Chrome Password Saver but also AutoFill (WebFormControlElement::SetAutofillValue)
   const eventWrapper: HandlerNS.Event = {c: kChar.INVALID, e: event, i: key, v: ""}
-  if (scroll_keyIsDown && onScrolls(event)) {
+  if (scroll_keyIsDown && onScrolls(eventWrapper)) {
     OnChrome && checkAccessKey_cr(eventWrapper)
     return;
   }
-  OnChrome && isWaitingAccessKey && /*#__NOINLINE__*/ resetAnyClickHandler()
+  OnChrome && isWaitingAccessKey && /*#__NOINLINE__*/ resetAnyClickHandler_cr()
+  OnFirefox && key === kKeyCode.esc && event.type[3] < kChar.e && (maybeEscIsHidden_ff = 0)
   OnFirefox && raw_insert_lock && insert_Lock_()
   let action = HandlerResult.Nothing, keyStr: string;
-  for (let ind = handler_stack.length; 0 < ind && action === HandlerResult.Nothing; ) {
-    action = (handler_stack[ind -= 2] as HandlerNS.Handler)(eventWrapper);
+  let handler_ind = handler_stack.length
+  if ((Build.NDEBUG && Build.Mangle || Build.MV3) && handler_ind) { runtime_port || runtimeConnect() }
+  for (; 0 < handler_ind && action === HandlerResult.Nothing; ) {
+    action = (handler_stack[handler_ind -= 2] as HandlerNS.Handler)(eventWrapper);
   }
   if (eventWrapper.v) { action = checkKey(eventWrapper, eventWrapper.v) }
   if (action) { /* empty */ }
   else if (insert_global_
-      || (raw_insert_lock || /*#__NOINLINE__*/ findNewEditable()) && !suppressType && !passAsNormal) {
+      || (raw_insert_lock || /*#__NOINLINE__*/ findNewEditable()) && !suppressType && !passAsNormal
+          && readonlyFocused_ >= 0) {
     keyStr = key === kKeyCode.ime ? "" : mapKeyTypes & (insert_global_ && insert_global_.k
                 ? kMapKey.insertMode | kMapKey.plain : kMapKey.insertMode | kMapKey.plain_in_insert)
           || (insert_global_ ? insert_global_.k
@@ -245,7 +267,7 @@ export const onKeydown = (event: KeyboardEventToPrevent): void => {
     ) {
       OnChrome && checkAccessKey_cr(eventWrapper) // even if nothing will be done or `passEsc` matches
       if (!insert_global_ && (raw_insert_lock && raw_insert_lock === doc.body || !isTop && wndSize_() < 5)) {
-        event.repeat && focusUpper(key, true, event);
+        isRepeated_(eventWrapper) && focusUpper(key, true, event);
         action = /* the real is HandlerResult.PassKey; here's for smaller code */ HandlerResult.Nothing;
       } else {
         action = /*#__NOINLINE__*/ exitInsertMode(event.target as Element, eventWrapper)
@@ -262,7 +284,7 @@ export const onKeydown = (event: KeyboardEventToPrevent): void => {
       keyStr = getMappedKey(eventWrapper, currentKeys ? kModeId.Next : kModeId.Normal)
       action = keyStr ? checkKey(eventWrapper, keyStr, 0) : HandlerResult.Nothing
       if (action > HandlerResult.MaxNotEsc) {
-        action = action > HandlerResult.PlainEsc ? /*#__NOINLINE__*/ onEscDown(event, key, event.repeat)
+        action = action > HandlerResult.PlainEsc ? /*#__NOINLINE__*/ onEscDown(event, key, isRepeated_(eventWrapper))
             : HandlerResult.Nothing;
       }
       if (action === HandlerResult.Nothing && suppressType && eventWrapper.c.length === 1 && !getKeyStat_(event)) {
@@ -272,7 +294,8 @@ export const onKeydown = (event: KeyboardEventToPrevent): void => {
   }
   if (action < HandlerResult.MinStopOrPreventEvents) {
     // https://github.com/gdh1995/vimium-c/issues/390#issuecomment-894687506
-    if (Build.OS & (1 << kOS.mac) && !os_ && keydownEvents_[key] === 1 && !event.repeat) {
+    if (Build.OS & kBOS.MAC && (Build.OS === kBOS.MAC as number || !os_) &&
+        keydownEvents_[key] === 1 && !(Build.BTypes & BrowserType.Chrome ? event.repeat : isRepeated_(eventWrapper))) {
       keydownEvents_[key] = 0
     }
     return
@@ -287,7 +310,7 @@ export const onKeydown = (event: KeyboardEventToPrevent): void => {
   } else {
     Stop_(event);
   }
-  keydownEvents_[key] = 1;
+  Build.OS & kBOS.MAC ? consumeKey_mac(key, event) : (keydownEvents_[key] = 1)
 }
 
 /** @param key should be valid */
@@ -314,16 +337,19 @@ export const onKeyup = (event: KeyboardEventToPrevent): void => {
       || (!OnChrome || Build.MinCVer >= BrowserVer.Min$Event$$IsTrusted ? !event.isTrusted
           : event.isTrusted === false) // skip checks of `instanceof KeyboardEvent` if checking `!.keyCode`
           && (event as UserTrustedKeyboardEvent).z !== fgCache
-      || !key) { return; }
+  ) { return; }
+  if (OnFirefox && key === maybeEscIsHidden_ff && key && !keydownEvents_[key] && event.key === "Escape") {
+    onKeydown(event)
+  }
   if (scroll_keyIsDown && (key === isCmdTriggered || isCmdTriggered < kKeyCode.True + 1)) {
     scrollTick(0);
   }
   isCmdTriggered = kKeyCode.None
-  OnChrome && isWaitingAccessKey && /*#__NOINLINE__*/ resetAnyClickHandler()
+  OnChrome && isWaitingAccessKey && /*#__NOINLINE__*/ resetAnyClickHandler_cr()
   if (suppressType && getSelection_().type !== suppressType) {
     setupSuppress();
   }
-  if (keydownEvents_[key]) {
+  if (keydownEvents_[key] && key) {
     keydownEvents_[key] = 0;
     prevent_(event);
   } else if (onPassKey) {

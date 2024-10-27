@@ -1,10 +1,10 @@
 import {
   contentPayload_, extAllowList_, newTabUrls_, omniPayload_, OnChrome, OnEdge, OnFirefox, framesForOmni_, sync_, IsEdg_,
   settingsCache_, bgIniting_, set_bgIniting_, CurCVer_, CONST_, OnOther_, onInit_, storageCache_, searchEngines_,
-  set_hasEmptyLocalStorage_, set_newTabUrl_f, newTabUrl_f, set_vomnibarPage_f, updateHooks_,set_CurFFVer_,
-  CurFFVer_, set_os_, os_
+  set_hasEmptyLocalStorage_, set_newTabUrl_f, newTabUrl_f, set_vomnibarPage_f, updateHooks_,set_CurFFVer_, UseZhLang_,
+  CurFFVer_, set_os_, os_, contentConfVer_
 } from "./store"
-import { asyncIter_, nextTick_, safeObj_ } from "./utils"
+import { asyncIter_, nextTick_, safeObj_, nextConfUpdate } from "./utils"
 import { browser_, normalizeExtOrigin_, Qs_ } from "./browser"
 import { convertToUrl_, reformatURL_ } from "./normalize_urls"
 import { parseSearchEngines_ } from "./parse_urls"
@@ -39,7 +39,7 @@ export const ready_: Promise<number> = Promise.all([
     const os = (OnChrome ? info.os : info.os || "").toLowerCase(),
     types = !(Build.OS & (Build.OS - 1)) ? null as never : !OnChrome || Build.MinCVer >= BrowserVer.MinRuntimePlatformOs
       ? browser_.runtime.PlatformOs! : browser_.runtime.PlatformOs || { MAC: "mac", WIN: "win" },
-    osEnum = !(Build.OS & (Build.OS - 1)) || os === types.WIN ? kOS.win : os === types.MAC ? kOS.mac : kOS.unixLike
+    osEnum = !(Build.OS & (Build.OS - 1)) || os === types.WIN ? kOS.win : os === types.MAC ? kOS.mac : kOS.linuxLike
     CONST_.Platform_ = os
     if (Build.OS & (Build.OS - 1)) {
       (omniPayload_ as Writable<typeof omniPayload_>).o = (contentPayload_ as Writable<typeof contentPayload_>).o
@@ -55,7 +55,7 @@ export const ready_: Promise<number> = Promise.all([
       if (item[0] in defaults_) {
         cache[item[0] as PersistentKeys] = item[1] as string | number | boolean
       } else {
-        storageCache_.set(item[0] as SettingsNS.LocalSettingNames, item[1] + "")
+        storageCache_.set(item[0] as SettingsNS.LocalSettingNames, item[1] as string)
       }
     }
     let n = 0
@@ -109,17 +109,20 @@ export const set_ = <K extends keyof SettingsWithDefaults> (key: K, value: Setti
     }
 }
 
-export const setInLocal_ = (key: SettingsNS.LocalSettingNames, value: string | null): void => {
+export const setInLocal_ = (key: SettingsNS.LocalSettingNames
+    , value: string | number | object | null): void => {
   const old = storageCache_.get(key)
   if ((old !== undefined ? old : null) === value) { return }
   if (!toSaveCache) { toSaveCache = safeObj_(), setTimeout(saveAllLocally, 0) }
   toSaveCache[key] = value
   if (value !== null) {
-    storageCache_.set(key, value)
+    storageCache_.set(key, value as string)
   } else {
     storageCache_.delete(key)
   }
 }
+
+export const getInLocal_ = <T = unknown> (key: `${string}|${string}`): T | undefined => storageCache_.get(key) as any
 
 const saveAllLocally = (): void => {
   const toSet = toSaveCache!, toRemove: string[] = []
@@ -146,8 +149,7 @@ export const broadcast_ = <K extends kBgReq.settingsUpdate | kBgReq.url | kBgReq
     } else if ((request.d as Extract<SettingsUpdateMsg["d"], string[]>).length == null) {
       _BroadcastSettingsUpdates(request)
     } else {
-      let cur = request.d as Extract<SettingsUpdateMsg["d"], string[]>,
-      old = newSettingsToBroadcast_
+      let cur = request.d as Extract<SettingsUpdateMsg["d"], string[]>, old = newSettingsToBroadcast_
       if (old) {
         cur = cur.concat(old)
       } else {
@@ -160,7 +162,8 @@ export const broadcast_ = <K extends kBgReq.settingsUpdate | kBgReq.url | kBgReq
 
 const _BroadcastSettingsUpdates = <K extends keyof BgReq> (
       request: K extends kBgReq.settingsUpdate ? SettingsUpdateMsg : Req.bg<K>): void => {
-    if (request.N === kBgReq.settingsUpdate && !request.d) {
+    const reqName = request.N
+    if (reqName === kBgReq.settingsUpdate && !(request.d as typeof request.d | null)) {
       const obj = newSettingsToBroadcast_!
       const d: BgReq[kBgReq.settingsUpdate]["d"] = (request as Req.bg<kBgReq.settingsUpdate>).d = {}
       for (const key of obj) {
@@ -168,26 +171,30 @@ const _BroadcastSettingsUpdates = <K extends keyof BgReq> (
       }
       newSettingsToBroadcast_ = null
     }
-    asyncIterFrames_(request.N === kBgReq.url ? Frames.Flags.UrlUpdated
-          : request.N === kBgReq.keyFSM ? Frames.Flags.KeyMappingsUpdated | (request.k ? Frames.Flags.KeyFSMUpdated : 0)
+    const needConfVer = reqName === kBgReq.keyFSM || kBgReq.settingsUpdate
+    asyncIterFrames_(reqName === kBgReq.url ? Frames.Flags.UrlUpdated
+          : reqName === kBgReq.keyFSM ? Frames.Flags.KeyMappingsUpdated | (request.k ? Frames.Flags.KeyFSMUpdated : 0)
           : Frames.Flags.SettingsUpdated
         , (frames: Frames.Frames): void => {
+      needConfVer && ((request as Req.bg<kBgReq.keyFSM | kBgReq.settingsUpdate>).v = contentConfVer_)
       for (const port of frames.ports_) {
         port.postMessage(request as Req.baseBg<K> as Req.bg<K>)
       }
     })
 }
 
-export const broadcastOmni_ = <K extends ValidBgVomnibarReq> (request: Req.bg<K>): void => {
+export const broadcastOmniConf_ = (payload: BgVomnibarSpecialReq[kBgReq.omni_updateOptions]["d"]): void => {
+  const msg: Req.bg<kBgReq.omni_updateOptions> = { N: kBgReq.omni_updateOptions, d: payload, v: nextConfUpdate(1) }
   asyncIter_(framesForOmni_.slice(0), (frame): number => {
-    framesForOmni_.includes(frame) && frame.postMessage(request)
+    framesForOmni_.includes(frame) && frame.postMessage(msg)
     return 1
   })
 }
 
 const loadLegacyKeyLayout_ = (): kKeyLayout => {
-  const ikl = storageCache_.get(kSettingsToUpgrade_[0]), icl = storageCache_.get(kSettingsToUpgrade_[1]),
+  let ikl = storageCache_.get(kSettingsToUpgrade_[0]), icl = storageCache_.get(kSettingsToUpgrade_[1]),
   mm = storageCache_.get(kSettingsToUpgrade_[2])
+  ikl !== void 0 && (ikl = ikl + ""), icl !== void 0 && (icl = icl + ""), mm !== void 0 && (mm = mm + "")
   let kl = kKeyLayout.DefaultFromOld
   if (ikl !== void 0 || icl !== void 0 || mm !== void 0) {
     kl = ikl == null ? kKeyLayout.inCmdIgnoreIfNotASCII : ikl === "2" || ikl === "true" ? kKeyLayout.alwaysIgnore
@@ -210,6 +217,8 @@ export const reloadFromLegacy_ = (changed: number): void => {
   }
 }
 
+const RemoveComment = (i: string) => i.startsWith("# ") ? "" : i.split("//", 1)[0].trim()
+
   /** @argument value may come from `LinkHints.*::characters` and `kBgCmd.toggle::value` */
 export const updatePayload_ = function (shortKey: keyof SettingsNS.FrontendComplexSyncingItems, value: any
       , obj?: Partial<SettingsNS.FrontendSettingCache>
@@ -220,16 +229,21 @@ export const updatePayload_ = function (shortKey: keyof SettingsNS.FrontendCompl
     case "c": case "n": value = (value as ValType<"c" | "n">).toLowerCase().toUpperCase(); break
     case "l":
       value = (value & kKeyLayout.FgMask) | (value & kKeyLayout.ignoreCapsOnMac
-          && (!(Build.OS & ~(1 << kOS.mac)) || !!(Build.OS & (1 << kOS.mac)) && !os_) ? kKeyLayout.ignoreCaps : 0)
+          && Build.OS & kBOS.MAC && (Build.OS === kBOS.MAC as number || !os_) ? kKeyLayout.ignoreCaps : 0)
       break
     case "d": value = value ? " D" : ""; break
+    case "p":
+      value = value.replace("[aria-controls],[role=combobox],#kw.s_ipt", GlobalConsts.kCssDefault) // migration
+      // no break;
+    case "y":
+      value = value.split("\n").map(RemoveComment).join("")
+      break
     default: if (0) { shortKey satisfies never } break // lgtm [js/unreachable-statement]
     }
     return obj ? (obj as Generalized<SettingsNS.FrontendSettingCache>)[shortKey] = value : value
 } as <T extends keyof (SettingsNS.FrontendSettingsSyncingItems)> (shortKey: T
       , value: T extends keyof SettingsNS.AutoSyncedItems ? SettingsWithDefaults[SettingsNS.AutoSyncedItems[T][0]]
-          : T extends keyof SettingsNS.ManuallySyncedItems
-            ? T extends "d" ? SettingsWithDefaults["autoDarkMode"] : SettingsNS.ManuallySyncedItems[T][1]
+          : T extends keyof SettingsNS.ManuallySyncedItems ? boolean
           : never
       , obj?: Partial<SettingsNS.FrontendSettingCache>
 ) => (SettingsNS.FrontendSettingsSyncingItems)[T][1]
@@ -249,7 +263,7 @@ Object.assign<typeof updateHooks_, { [key in SettingsNS.DeclaredUpdateHooks]: Se
     grabBackFocus (value: SettingsWithDefaults["grabBackFocus"]): void { contentPayload_.g = value },
     keyLayout (value): void {
       omniPayload_.l = contentPayload_.l
-      broadcastOmni_({ N: kBgReq.omni_updateOptions, d: { l: contentPayload_.l } })
+      broadcastOmniConf_({ l: contentPayload_.l })
       if (needToUpgradeSettings_ & 1 && !(value & kKeyLayout.fromOld)) {
         const hasInLocal = needToUpgradeSettings_ & 2
         needToUpgradeSettings_ &= ~(1 | 2)
@@ -268,16 +282,17 @@ Object.assign<typeof updateHooks_, { [key in SettingsNS.DeclaredUpdateHooks]: Se
     searchEngines (): void {
       searchEngines_.map.clear()
       searchEngines_.keywords = null
-      searchEngines_.rules = parseSearchEngines_("~:" + settingsCache_.searchUrl + "\n" + settingsCache_.searchEngines
-          , searchEngines_.map).reverse()
+      searchEngines_.rules = parseSearchEngines_("~:" + settingsCache_.searchUrl
+          + "\n\n_browser: vimium://b-search-at/new-tab/$s re= Browser default search\n"
+          + settingsCache_.searchEngines, searchEngines_.map).reverse()
     },
     searchUrl (str): void {
       const map = searchEngines_.map
       if (str) {
-        parseSearchEngines_("~:" + str, map)
+        map.get("~")?.complex_ || parseSearchEngines_("~:" + str, map)
       } else {
         map.clear()
-        map.set("~", { name_: "~", blank_: "", url_: settingsCache_.searchUrl.split(" ", 1)[0] })
+        map.set("~", { name_: "~", url_: settingsCache_.searchUrl.split(" ", 1)[0], blank_: "", complex_: false })
         searchEngines_.rules = []
         set_newTabUrl_f(storageCache_.get("newTabUrl_f") || "")
         if (newTabUrl_f) { return }
@@ -346,6 +361,11 @@ saladict@crimx.com`
     filterLinkHints: false,
     grabBackFocus: false,
     hideHud: false,
+    ignoreReadonly: GlobalConsts.kCssDefault as const
+        || "#read-only-cursor-text-area" // GitHub source file content
+        + ",.monaco-mouse-cursor-text[aria-autocomplete=none]" // Monaco editor >= ~0.42.0-dev-20230901
+        + ",.CodeMirror>div>textarea[readonly=''][style]" // Code Mirror 5
+        ,
     keyLayout: kKeyLayout.Default,
     keyboard: [560, 33],
     keyupTime: 120,
@@ -357,23 +377,34 @@ saladict@crimx.com`
     /** mutable */ newTabUrl: "",
     nextPatterns: "\u4e0b\u4e00\u5c01,\u4e0b\u9875,\u4e0b\u4e00\u9875,\u4e0b\u4e00\u7ae0,\u540e\u4e00\u9875\
 ,\u4e0b\u4e00\u5f20,next,more,newer,>,\u203a,\u2192,\xbb,\u226b,>>",
+    notifyUpdate: true,
     omniBlockList: "",
-    passEsc: "[aria-controls],[role=combobox],#kw.s_ipt", // MS Bing / Google / Baidu
+    passEsc: GlobalConsts.kCssDefault as const
+        || "[aria-controls],[role=combobox],#kw.s_ipt" // MS Bing / Google / Baidu
+        + ",input[placeholder$=\u641c\u7d22]" // some Chinese websites
+        + ",input[type=search][name=q]" // Bing search result page
+        + ",input[role=searchbox]" // Gitlab Quick Open by "/"
+        + ",.monaco-inputbox>div>textarea[style]" // Monaco find input
+        ,
+    preferBrowserSearch: true,
     previousPatterns: "\u4e0a\u4e00\u5c01,\u4e0a\u9875,\u4e0a\u4e00\u9875,\u4e0a\u4e00\u7ae0,\u524d\u4e00\u9875\
 ,\u4e0a\u4e00\u5f20,prev,previous,back,older,<,\u2039,\u2190,\xab,\u226a,<<",
     regexFindMode: false,
     scrollStepSize: 100,
-    searchUrl: (navigator.language as string).startsWith("zh") ? "https://www.baidu.com/s?ie=utf-8&wd=%s \u767e\u5ea6"
+    searchUrl: UseZhLang_ ? "https://www.baidu.com/s?ie=utf-8&wd=%s \u767e\u5ea6"
       : "https://www.google.com/search?q=%s Google",
-    searchEngines: (navigator.language as string).startsWith("zh")
+    searchEngines: UseZhLang_
 ? `b|ba|baidu|Baidu|\u767e\u5ea6: https://www.baidu.com/s?ie=utf-8&wd=%s \\
   blank=https://www.baidu.com/ \u767e\u5ea6
 bi: https://www.bing.com/search?q=$s
 bi|bing|Bing|\u5fc5\u5e94: https://cn.bing.com/search?q=%s \\
   blank=https://cn.bing.com/ \u5fc5\u5e94
-g|go|gg|google|Google|\u8c37\u6b4c: https://www.google.com/search?q=%s\\
-  www.google.com re=/^(?:\\.[a-z]{2,4})?\\/search\\b.*?[#&?]q=([^#&]*)/i\\
+g|go|gg|google|Google|\u8c37\u6b4c: https://www.google.com/search?q=%s \\
+  www.google.com re=/^(?:\\.[a-z]{2,4})?\\/search\\b.*?[#&?]q=([^#&]*)/i \\
   blank=https://www.google.com/ Google
+sogou|sougou: https://www.sogou.com/web?ie=UTF-8&query=$s \u641c\u72d7
+360so|360sou|360ss: https://www.so.com/s?ie=UTF-8&q=$s 360 \u641c\u7d22
+shenma: https://m.sm.cn/s?q=$s \u795e\u9a6c\u641c\u7d22
 br|brave: https://search.brave.com/search?q=%s Brave
 d|dd|ddg|duckduckgo: https://duckduckgo.com/?q=%s DuckDuckGo
 ec|ecosia: https://www.ecosia.org/search?q=%s Ecosia
@@ -383,7 +414,7 @@ yh|yahoo: https://search.yahoo.com/search?p=%s Yahoo
 maru|mailru|mail.ru: https://go.mail.ru/search?q=%s Mail.ru
 
 b.m|bm|map|b.map|bmap|\u5730\u56fe|\u767e\u5ea6\u5730\u56fe: \\
-  https://api.map.baidu.com/geocoder?output=html&address=%s&src=vimium-c\\
+  https://api.map.baidu.com/geocoder?output=html&address=%s&src=vimium-c \\
   blank=https://map.baidu.com/
 gd|gaode|\u9ad8\u5fb7\u5730\u56fe: https://www.gaode.com/search?query=%s \\
   blank=https://www.gaode.com
@@ -398,12 +429,12 @@ w|wiki: https://www.wikipedia.org/w/index.php?search=%s Wikipedia
 b.x|b.xs|bx|bxs|bxueshu: https://xueshu.baidu.com/s?ie=utf-8&wd=%s \\
   blank=https://xueshu.baidu.com/ \u767e\u5ea6\u5b66\u672f
 gs|g.s|gscholar|g.x|gx|gxs: https://scholar.google.com/scholar?q=$s \\
-  scholar.google.com re=/^(?:\\.[a-z]{2,4})?\\/scholar\\b.*?[#&?]q=([^#&]*)/i\\
+  scholar.google.com re=/^(?:\\.[a-z]{2,4})?\\/scholar\\b.*?[#&?]q=([^#&]*)/i \\
   blank=https://scholar.google.com/ \u8c37\u6b4c\u5b66\u672f
 
 t|tb|taobao|ali|\u6dd8\u5b9d: https://s.taobao.com/search?ie=utf8&q=%s \\
   blank=https://www.taobao.com/ \u6dd8\u5b9d
-j|jd|jingdong|\u4eac\u4e1c: https://search.jd.com/Search?enc=utf-8&keyword=%s\\
+j|jd|jingdong|\u4eac\u4e1c: https://search.jd.com/Search?enc=utf-8&keyword=%s \\
   blank=https://jd.com/ \u4eac\u4e1c
 az|amazon: https://www.amazon.com/s?k=%s \\
   blank=https://www.amazon.com/ \u4e9a\u9a6c\u900a
@@ -423,8 +454,10 @@ bi|bing: https://www.bing.com/search?q=%s \\
 b|ba|baidu|\u767e\u5ea6: https://www.baidu.com/s?ie=utf-8&wd=%s \\
   blank=https://www.baidu.com/ \u767e\u5ea6
 g|go|gg|google|Google: https://www.google.com/search?q=%s \\
-  www.google.com re=/^(?:\\.[a-z]{2,4})?\\/search\\b.*?[#&?]q=([^#&]*)/i\\
+  www.google.com re=/^(?:\\.[a-z]{2,4})?\\/search\\b.*?[#&?]q=([^#&]*)/i \\
   blank=https://www.google.com/ Google
+sg|sogou|sougou: https://www.sogou.com/web?ie=UTF-8&query=$s \u641c\u72d7
+360|360so|360sou|360ss: https://www.so.com/s?ie=UTF-8&q=$s 360 \u641c\u7d22
 br|brave: https://search.brave.com/search?q=%s Brave
 d|dd|ddg|duckduckgo: https://duckduckgo.com/?q=%s DuckDuckGo
 ec|ecosia: https://www.ecosia.org/search?q=%s Ecosia
@@ -436,12 +469,13 @@ maru|mailru|mail.ru: https://go.mail.ru/search?q=%s Mail.ru
 g.m|gm|g.map|gmap: https://www.google.com/maps?q=%s \\
   blank=https://www.google.com/maps Google Maps
 b.m|bm|map|b.map|bmap|\u767e\u5ea6\u5730\u56fe: \\
-  https://api.map.baidu.com/geocoder?output=html&address=%s&src=vimium-c
+  https://api.map.baidu.com/geocoder?output=html&address=%s&src=vimium-c \\
+  blank=https://map.baidu.com/
 y|yt: https://www.youtube.com/results?search_query=%s \\
   blank=https://www.youtube.com/ YouTube
 w|wiki: https://www.wikipedia.org/w/index.php?search=%s Wikipedia
 g.s|gs|gscholar: https://scholar.google.com/scholar?q=$s \\
-  scholar.google.com re=/^(?:\\.[a-z]{2,4})?\\/scholar\\b.*?[#&?]q=([^#&]*)/i\\
+  scholar.google.com re=/^(?:\\.[a-z]{2,4})?\\/scholar\\b.*?[#&?]q=([^#&]*)/i \\
   blank=https://scholar.google.com/ Google Scholar
 
 a|ae|ali|alie|aliexp: https://www.aliexpress.com/wholesale?SearchText=%s \\
@@ -461,21 +495,21 @@ ge|gitee: https://search.gitee.com/?type=repository&q=$s \\
 js\\:|Js: javascript:\\ $S; JavaScript`,
     showActionIcon: true,
     showAdvancedCommands: true,
-    showAdvancedOptions: true,
     showInIncognito: false,
-    notifyUpdate: true,
     smoothScroll: true,
+    titleIgnoreList: "",
+    userDefinedCss: "",
     vomnibarOptions: {
       actions: "" as never,
       maxMatches: 10,
       queryInterval: 333,
       sizes: VomnibarNS.PixelData.OthersIfEmpty + ","
           + (VomnibarNS.PixelData.OthersIfNotEmpty - VomnibarNS.PixelData.OthersIfEmpty) + ","
-          + VomnibarNS.PixelData.Item + "," + VomnibarNS.PixelData.WindowSizeX
+          + VomnibarNS.PixelData.Item + "," + VomnibarNS.PixelData.WindowSizeRatioX
+          + "," + VomnibarNS.PixelData.MaxWidthInPixel
           ,
       styles: "mono-url"
     },
-    userDefinedCss: "",
     vimSync: null,
     vomnibarPage: "front/vomnibar.html",
     waitForEnter: true
@@ -487,7 +521,7 @@ export const frontUpdateAllowed_: ReadonlyArray<keyof SettingsNS.FrontUpdateAllo
 
 export const valuesToLoad_ = {
     __proto__: null as never,
-    filterLinkHints: "f", keyLayout: "l", keyboard: "k", keyupTime: "u",
+    filterLinkHints: "f", hideHud: "h", ignoreReadonly: "y", keyLayout: "l", keyboard: "k", keyupTime: "u",
     linkHintCharacters: "c", linkHintNumbers: "n", mouseReachable: "e", passEsc: "p",
     regexFindMode: "r", smoothScroll: "s", scrollStepSize: "t", waitForEnter: "w"
 } satisfies SettingsNS.AutoSyncedNameMap & SafeObject as SettingsNS.AutoSyncedNameMap
@@ -525,7 +559,7 @@ bgIniting_ < BackendHandlersNS.kInitStat.FINISHED && ((): void => {
       ).map(i => i === kShortcutAliases.nextTab1 ? "nextTab" : i)
   obj.VerCode_ = ref.version;
   obj.VerName_ = ref.version_name || ref.version;
-  obj.OptionsPage_ = func(ref.options_page || obj.OptionsPage_);
+  obj.OptionsPage_ = func(obj.OptionsPage_);
   obj.ShowPage_ = func(obj.ShowPage_);
   obj.VomnibarPageInner_ = func(defaults_.vomnibarPage)
   obj.VomnibarScript_f_ = func(obj.VomnibarScript_);

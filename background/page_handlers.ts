@@ -1,21 +1,22 @@
 import {
   contentPayload_, evalVimiumUrl_, keyFSM_, keyToCommandMap_, mappedKeyRegistry_, newTabUrls_, restoreSettings_,
   CONST_, settingsCache_, shownHash_, substitute_, framesForTab_, curTabId_, extAllowList_, OnChrome, reqH_, OnEdge,
-  storageCache_, os_, framesForOmni_, updateHooks_, Origin2_, CurCVer_
+  storageCache_, os_, framesForOmni_, updateHooks_, Origin2_, CurCVer_, omniConfVer_
 } from "./store"
-import { deferPromise_, protocolRe_, safeObj_ } from "./utils"
-import { browserWebNav_, browser_, getCurTab, getTabUrl, Q_, runContentScriptsOn_, runtimeError_, tabsGet } from "./browser"
+import { deferPromise_, isIPHost_, protocolRe_, safeObj_, safeParseURL_ } from "./utils"
+import {
+  browserWebNav_, browser_, getCurTab, getTabUrl, Q_, runContentScriptsOn_, runtimeError_, tabsCreate, tabsGet
+} from "./browser"
 import { convertToUrl_, lastUrlType_, reformatURL_ } from "./normalize_urls"
 import { findUrlInText_, parseSearchEngines_ } from "./parse_urls"
 import * as settings_ from "./settings"
 import { indexFrame } from "./ports"
 import * as Exclusions from "./exclusions"
-import { MergeAction, mergeCSS, reloadCSS_ } from "./ui_css"
+import { MediaWatcher_, MergeAction, mergeCSS, reloadCSS_ } from "./ui_css"
 import { keyMappingErrors_ } from "./key_mappings"
 import { runNextOnTabLoaded } from "./run_commands"
-import { MediaWatcher_ } from "./tools"
 import { checkHarmfulUrl_, focusOrLaunch_ } from "./open_urls"
-import { initHelp } from "./frame_commands"
+import { focusFrame, initHelp } from "./frame_commands"
 import { kPgReq, PgReq, Req2 } from "./page_messages"
 
 import PagePort = Frames.PagePort
@@ -106,7 +107,7 @@ const pageRequestHandlers_: {
     return [url, lastUrlType_]
   },
   /** kPgReq.updateMediaQueries: */ (): PgReq[kPgReq.updateMediaQueries][1] => {
-    Build.MV3 || MediaWatcher_.RefreshAll_()
+    MediaWatcher_.RefreshAll_()
   },
   /** kPgReq.whatsHelp: */ (): PgReq[kPgReq.whatsHelp][1] => {
     const cmdRegistry = keyToCommandMap_.get("?")
@@ -150,16 +151,17 @@ const pageRequestHandlers_: {
   /** kPgReq.shownHash: */ (): PgReq[kPgReq.shownHash][1] => shownHash_ && shownHash_(),
   /** kPgReq.substitute: */ (req): PgReq[kPgReq.substitute][1] => substitute_(req[0], req[1]),
   /** kPgReq.checkHarmfulUrl: */ (url): PgReq[kPgReq.checkHarmfulUrl][1] => checkHarmfulUrl_(url),
-  /** kPgReq.popupInit: */ (): Promise<PgReq[kPgReq.popupInit][1]> => {
+  /** kPgReq.actionInit: */ (): Promise<PgReq[kPgReq.actionInit][1]> => {
     const oldRef = !(OnChrome && Build.MinCVer < BrowserVer.MinWithFrameId && CurCVer_ < BrowserVer.MinWithFrameId)
         && curTabId_ >= 0 && framesForTab_.get(curTabId_) || null
-    const oldTabId = oldRef ? curTabId_ : -1, oldFrameId = oldRef ? oldRef.cur_.s.frameId_ : 0
-    const webNav = oldFrameId && browserWebNav_() || null
+    const oldTabId = oldRef ? curTabId_ : -1, oldFrameId = oldRef ? oldRef.cur_.s.frameId_ : -1
+    const webNav = oldFrameId >= 0 && browserWebNav_() || null
     return Promise.all([
-        Q_(getCurTab).then(tabs => tabs && tabs.length ? tabs : Q_(tabsGet, oldTabId).then(i => i && [i])),
-        webNav && Q_(webNav.getFrame, { tabId: curTabId_, frameId: oldFrameId }),
+        Q_(getCurTab).then(tabs => tabs && tabs.length ? tabs : oldTabId < 0 ? null
+            : Q_(tabsGet, oldTabId).then(i => i && [i])),
+        webNav ? Q_(webNav.getFrame, { tabId: oldTabId, frameId: oldFrameId }) : null,
         restoreSettings_
-    ]).then(([_tabs, frameInfo]): PgReq[kPgReq.popupInit][1] => {
+    ]).then(([_tabs, frameInfo]): PgReq[kPgReq.actionInit][1] => {
       const tab = _tabs && _tabs[0] || null, tabId = tab ? tab.id : curTabId_
       const ref = framesForTab_.get(tabId) ?? null
       if (frameInfo && frameInfo.url && oldTabId === tabId && ref!.cur_.s.frameId_ === oldFrameId) {
@@ -171,6 +173,7 @@ const pageRequestHandlers_: {
       const notRunnable = !(ref || tab && url && tab.status === "loading" && (<RegExpOne> /^(ht|s?f)tp/).test(url))
       const unknownExt = getUnknownExt(ref)
       const runnable = !notRunnable && !unknownExt
+      let hasSubDomain: 0 | 1 | 2 = 0
       let extHost = runnable ? null : unknownExt || !url ? unknownExt
           : (url.startsWith(location.protocol) && !url.startsWith(Origin2_) ? new URL(url).host : null)
       const extStat = extHost ? extAllowList_.get(extHost) : null
@@ -184,11 +187,31 @@ const pageRequestHandlers_: {
       } else {
         extHost = null
       }
+      if (runnable && !!ref && ref.ports_.length > 1 && url.startsWith("http")) {
+        const topHost = safeParseURL_(url)?.host
+        if (!!topHost && !isIPHost_(topHost, 0)) {
+          const isTopHttp = url.startsWith("http:"), suffix = "." + topHost
+          for (const frame of ref.ports_) {
+            const iframeUrl = frame !== (ref.top_ || ref.cur_) ? frame.s.url_ : null
+            const iframeHost = iframeUrl?.startsWith("http") ? safeParseURL_(iframeUrl)?.host : null
+            if (!!iframeHost && (iframeHost.length > topHost.length && iframeHost.endsWith(suffix))) {
+              hasSubDomain = isTopHttp || iframeHost.startsWith("http:") ? 2 : 1
+              if (hasSubDomain > 1) { break }
+            }
+          }
+        }
+      }
+      const topNotSelf = sender && sender.frameId_ ? ref!.top_ : null
+      if (topNotSelf && !hasSubDomain && !(sender!.flags_ & Frames.Flags.ResReleased)) {
+        try {
+          focusFrame(ref!.cur_, true, FrameMaskType.ForcedSelf, 1)
+        } catch { /* empty */ }
+      }
       return { ver: CONST_.VerName_, runnable, url, tabId,
         frameId: ref && (sender || ref.top_) ? (sender || ref.top_!.s).frameId_ : 0,
-        topUrl: sender && sender.frameId_ && ref!.top_ ? ref!.top_.s.url_ : null, frameUrl: sender && sender.url_,
+        topUrl: topNotSelf?.s.url_, frameUrl: sender && sender.url_,
         lock: ref && ref.lock_ ? ref.lock_.status_ : null, status: sender ? sender.status_ : Frames.Status.enabled,
-        unknownExt: extHost,
+        hasSubDomain, unknownExt: extHost,
         exclusions: runnable ? {
           rules: settingsCache_.exclusionRules, onlyFirst: settingsCache_.exclusionOnlyFirstMatch,
           matchers: Exclusions.parseMatcher_(null), defaults: settings_.defaults_.exclusionRules
@@ -269,10 +292,24 @@ const pageRequestHandlers_: {
   /** kPgReq.updateOmniPayload: */ ({ key, val }, port): void => {
     const tabId = port && port.s && port.s.tabId_ || curTabId_
     const omniPort = framesForOmni_.find(i => i.s.tabId_ === tabId)
-    omniPort && omniPort.postMessage({ N: kBgReq.omni_updateOptions, d: { [key]: val } })
+    omniPort && omniPort.postMessage({ N: kBgReq.omni_updateOptions, d: { [key]: val }, v: omniConfVer_ })
   },
   /** kPgReq.saveToSyncAtOnce: */ (): void => {
     settingsCache_.vimSync && updateHooks_.vimSync!(true, "vimSync")
+  },
+  /** kPgReq.showInit: */ (): PgReq[kPgReq.showInit][1] => {
+    return { os: os_ }
+  },
+  /** kPgReq.reopenTab: */ (req: PgReq[kPgReq.reopenTab][0]): void => {
+    tabsCreate({ url: req.url })
+    browser_.tabs.remove(req.tabId)
+  },
+  /** kPgReq.checkAllowingAccess: */ (): Promise<PgReq[kPgReq.checkAllowingAccess][1]> => {
+    return Promise.all([new Promise<boolean>((resolve): void => {
+      browser_.extension.isAllowedIncognitoAccess((allowed): void => { resolve(allowed) })
+    }), OnEdge ? false : new Promise<boolean>((resolve): void => {
+      browser_.extension.isAllowedFileSchemeAccess((allowed): void => { resolve(allowed) })
+    })])
   }
 ]
 

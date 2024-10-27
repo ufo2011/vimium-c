@@ -1,9 +1,10 @@
 import {
   bgIniting_, CONST_, os_, keyFSM_, keyToCommandMap_, mappedKeyRegistry_, mappedKeyTypes_, omniPayload_,
   OnChrome, OnEdge, OnFirefox, OnOther_, set_keyFSM_, set_keyToCommandMap_, set_mappedKeyRegistry_, set_mappedKeyTypes_,
-  settingsCache_, updateHooks_, CurFFVer_
+  settingsCache_, updateHooks_, CurCVer_, CurFFVer_
 } from "./store"
 import * as BgUtils_ from "./utils"
+import { tryParse } from "./utils"
 import * as settings_ from "./settings"
 import * as Exclusions from "./exclusions"
 
@@ -27,8 +28,10 @@ type NameMetaMapEx = NameMetaMap & {
   readonly [k in keyof OtherCNamesForDebug]: OtherCNamesForDebug[k] extends keyof BgCmdOptions
       ? RawCmdDesc<kCName, OtherCNamesForDebug[k]> : never
 }
-type ValidMappingInstructions = "map" | "run" | "mapkey" | "mapKey" | "env" | "shortcut" | "command"
+type ValidMappingInstructions = "map" | "map!" | "run" | "run!" | "mapkey" | "mapKey" | "env" | "shortcut" | "command"
     | "unmap" | "unmap!" | "unmapAll" | "unmapall"
+
+const parseVal_: (slice: string) => any = tryParse
 
 const keyRe_ = <RegExpG & RegExpSearchable<0>> /<(?!<)(?:.-){0,4}.\w*?(?::i)?>|./g /* need to support "<<left>" */
 let builtinOffset_: number
@@ -38,29 +41,28 @@ let flagDoesCheck_ = true
 let errors_: null | string[][] = null
 let nonNumList_: Set<string> | null | undefined
 
-export { keyRe_, envRegistry_, shortcutRegistry_, errors_ as keyMappingErrors_ }
+export { kCxt as kCmdCxt, keyRe_, envRegistry_, shortcutRegistry_, errors_ as keyMappingErrors_ }
 
 export const stripKey_ = (key: string): string =>
     key.length > 1 ? key === "<escape>" ? kChar.esc : key.slice(1, -1) : key
 
 const wrapKey_ = (key: string): string => key.length > 1 ? `<${key}>` : key
 
-/** should never export it, to avoid `logError_` crashes */
 const getOptions_ = (line: string, start: number): CommandsNS.RawOptions | "__not_parsed__" | null => {
   return line.length <= start ? null
       : line.includes(" $", start) || line.includes(" =", start)
-      ? parseOptions_(line.slice(start + 1), line.includes(" $if={", start) ? 0 : 1)
+      ? parseOptions_(line.slice(start + 1), line.includes(" $if=", start) ? 0 : 1)
       : line.slice(start + 1) as "__not_parsed__"
 }
 
-export const parseOptions_ = ((options_line: string, fakeVal?: 0 | 1 | 2): CommandsNS.RawOptions | string | null => {
+export const parseOptions_ = ((options_line: string, type: 0 | 1 | 2 | 3): CommandsNS.RawOptions | string | null => {
   let opt: CommandsNS.RawOptions = BgUtils_.safeObj_(), hasOpt = 0
   for (let str of options_line.split(" ")) {
     const ind = str.indexOf("=")
     if ("$#/=_".includes(str[0])) {
       if (ind === 0 || str === "__proto__"
           || str[0] === "$" && !"$if=$key=$desc=$count=$then=$else=$retry=".includes(str.slice(0, ind + 1))) {
-        (fakeVal === 0 || fakeVal === 1) && logError_("%s option key:", ind === 0 ? "Missing" : "Unsupported", str)
+        type < 2 && logError_("%s option key:", ind === 0 ? "Missing" : "Unsupported", str)
         continue
       } else if (str[0] === "#" || str.startsWith("//")) { // treat the following as comment
         break
@@ -72,21 +74,14 @@ export const parseOptions_ = ((options_line: string, fakeVal?: 0 | 1 | 2): Comma
     } else {
       const val = str.slice(ind + 1)
       str = str.slice(0, ind);
-      opt[str] = typeof fakeVal === "number" ? fakeVal === 2 ? val && parseVal_limited(val) : 1 : val && parseVal_(val)
+      opt[str] = type === 2 ? val && parseVal_limited(val) : type === 1 ? 1 : val && parseVal_(val)
       hasOpt = 1
     }
   }
-  return hasOpt === 1 ? fakeVal === 1 ? options_line : opt : null
+  return hasOpt === 1 ? type === 1 ? options_line : opt : null
 }) as {
   (options_line: string, fakeVal: 0 | 1): CommandsNS.RawOptions | "__not_parsed__" | null
-  (options_line: string, lessException?: 2): CommandsNS.RawOptions | null
-}
-
-export const parseVal_ = (val: string): any => {
-    try {
-      return JSON.parse(val);
-    } catch {}
-    return val;
+  (options_line: string, lessException: 2 | 3): CommandsNS.RawOptions | null
 }
 
 const parseVal_limited = (val: string): any => {
@@ -104,7 +99,7 @@ export const normalizeCommand_ = (cmd: Writable<CommandsNS.BaseItem>, details?: 
     let opt: CommandsNS.Options | null
     opt = details.length < 4 ? null : BgUtils_.safer_(details[3]!);
     if (typeof options === "string") {
-      options = parseOptions_(options)
+      options = parseOptions_(options, 3)
     }
     if (options) {
       if ("$count" in options || "count" in options) {
@@ -121,12 +116,24 @@ export const normalizeCommand_ = (cmd: Writable<CommandsNS.BaseItem>, details?: 
         BgUtils_.extendIf_<CommandsNS.RawOptions, CommandsNS.RawOptions>(options, opt)
       }
       if (details[0] === kFgCmd.linkHints && !details[1]) {
-        const lhOpt = options as Partial<HintsNS.Options> & CommandsNS.RawLinkHintsOptions
+        if (/*#__NOINLINE__*/ normalizeLHOptions_(options, cmd)) { return true }
+      }
+    } else {
+      options = opt;
+    }
+    cmd.options_ = options
+    return true
+}
+
+const normalizeLHOptions_ = (lhOpt: Partial<HintsNS.Options> & CommandsNS.RawLinkHintsOptions
+    , cmd: Writable<CommandsNS.BaseItem>): true | void => {
         let mode = lhOpt.mode, stdMode = lhOpt.m!
         const rawChars = lhOpt.characters
         const action = lhOpt.action
+        const button = lhOpt.button
         const chars = !rawChars || typeof rawChars !== "string" ? null
             : BgUtils_.dedupChars_(settings_.updatePayload_<"c" | "n">("c", rawChars))
+        const inQueue = typeof mode === "string" && mode.endsWith(".queue")
         if (chars && chars.length < GlobalConsts.MinHintCharSetSize) {
           cmd.alias_ = kBgCmd.showHUD
           cmd.background_ = 1
@@ -140,7 +147,8 @@ export const normalizeCommand_ = (cmd: Writable<CommandsNS.BaseItem>, details?: 
         rawChars != null && delete lhOpt.characters
         "action" in lhOpt && delete lhOpt.action
         "mode" in lhOpt && delete lhOpt.mode
-        mode = action ? hintModes_[action] : typeof mode === "number" ? mode : mode ? hintModes_[mode] : null
+        mode = action ? hintModes_[action] : typeof mode === "number" ? mode : typeof mode === "string"
+            ? hintModes_[mode.split(".", 1)[0]] : null
         mode = mode != null ? mode : Math.max(0, stdMode | 0)
         if (mode > HintMode.max_mouse_events) {
           mode = mode === HintMode.EDIT_TEXT ? lhOpt.url ? HintMode.EDIT_LINK_URL : mode
@@ -149,20 +157,25 @@ export const normalizeCommand_ = (cmd: Writable<CommandsNS.BaseItem>, details?: 
               : lhOpt.join != null ? HintMode.COPY_URL | HintMode.queue | HintMode.list : HintMode.COPY_URL
             : mode > HintMode.min_disable_queue + HintMode.queue - 1 ? mode - HintMode.queue : mode;
         }
+        if (inQueue) { mode = mode < HintMode.min_disable_queue ? mode | HintMode.queue : mode }
+        if (button != null) {
+          lhOpt.button = typeof button === "string" ? button === "right" || button === "auxclick" ? 2
+              : button.startsWith("mid") || button.startsWith("aux") ? 1 : 0
+              : Math.max(0, Math.min(button | 0, 2)) as typeof button
+        }
         if (lhOpt.xy !== void 0) { lhOpt.xy = BgUtils_.normalizeXY_(lhOpt.xy) }
-        lhOpt.direct && (mode &= ~HintMode.queue)
+        if (lhOpt.direct || lhOpt.target) {
+          lhOpt.direct = lhOpt.direct || lhOpt.target, lhOpt.directOptions = lhOpt.directOptions || lhOpt.targetOptions
+          delete lhOpt.target, delete lhOpt.targetOptions
+          mode &= ~HintMode.queue
+        }
+        if (lhOpt.hideHud != null) { lhOpt.hideHUD ||= lhOpt.hideHud; delete lhOpt.hideHud }
         if (mode !== stdMode) {
           lhOpt.m = mode
         }
         if (mode > HintMode.min_disable_queue - 1) {
           cmd.repeat_ = 1
         }
-      }
-    } else {
-      options = opt;
-    }
-    cmd.options_ = options
-    return true
 }
 
 export const makeCommand_ = <T extends CommandsNS.RawOptions | "__not_parsed__" | null> (
@@ -196,31 +209,61 @@ export const normalizedOptions_ = (item: CommandsNS.ValidItem): CommandsNS.Norma
 
 const hasIfOption = (line: string, start: number): boolean => {
   let ind: number
-  return line.length > start && (ind = line.indexOf(" $if={", start)) > 0
+  return line.length > start && (ind = line.indexOf(" $if=", start)) > 0
       && !(<RegExpOne> / (#|\/\/)/).test(line.slice(start, ind + 2))
 }
 
 const doesMatchEnv_ = (options: CommandsNS.RawOptions | string | null): boolean | null => {
-    const condition = options && typeof options === "object" && options.$if
-    return condition && typeof condition === "object" ? condition.sys && condition.sys !== CONST_.Platform_
-        || !!condition.before && condition.before.replace("v", "") <= CONST_.VerCode_
-        || !!condition.browser
-          && !(condition.browser & (Build.BTypes && !(Build.BTypes & (Build.BTypes - 1))
-                ? Build.BTypes : OnOther_)) ? true : false
+  let condition = options && typeof options === "object" && options.$if
+  let resultOnMismatch = false
+  if (typeof condition === "string") {
+    condition = condition.toLowerCase()
+    condition[0] === "!" && (condition = condition.slice(1).trim() as typeof condition, resultOnMismatch = true)
+    condition = (<RegExpOne> /(?:mac|win|linux)/).test(condition) ? { sys: condition }
+        : (<RegExpOne> /(?:chrom|edg|firefox|safari)/).test(condition)
+        ? { browser: { c: BrowserType.Chrome, e: condition.includes("edge") && !condition.includes("chrom")
+            ? BrowserType.Edge : BrowserType.Chrome, f: BrowserType.Firefox, s: BrowserType.Safari }[condition[0]] }
         : null
+  }
+    return condition && typeof condition === "object" ? condition.sys && condition.sys !== CONST_.Platform_
+      || condition.browser && !(condition.browser & (Build.BTypes && !(Build.BTypes & (Build.BTypes - 1))
+          ? Build.BTypes : OnOther_))
+      || condition.before && condition.before.replace("v", "") < CONST_.VerCode_
+      ? resultOnMismatch : !resultOnMismatch : null
 }
 
+export const getNextOnIfElse_ = (lines: string[], start: number): number => {
+  let skip = true, nested = 0, next = start
+  if (lines[start].startsWith("#if")) {
+    const cond = lines[start].slice(4).trim(), ifVal = cond.startsWith("{") ? parseVal_(cond) : cond.split(/#|\/\//)[0]
+    skip = ifVal && doesMatchEnv_(BgUtils_.safer_({ $if: ifVal })) === false
+  }
+  if (skip) {
+    while (++next < lines.length) {
+      if (lines[next].startsWith("#endif")) {
+        if (--nested < 0) { break }
+      } else if (lines[next].startsWith("#if")) {
+        nested++
+      }
+    }
+  }
+  return next
+}
+
+const toKeyInInsert = (key: string) => `<${key.slice(1, -1) + ":" + GlobalConsts.InsertModeId}>`
+
 const parseKeyMappings_ = (wholeMappings: string): void => {
-    let lines: string[], mk = 0, _i = 0, key2: string | undefined
+    let lines: string[], _i = 0, key2: string | undefined
       , _len: number, details: CommandsNS.Description | undefined, tmpInt: number
       , registry = new Map<string, CommandsNS.Item>()
       , cmdMap: typeof shortcutRegistry_ = new Map(), envMap: typeof envRegistry_ = null
       , regItem: CommandsNS.Item | null, options: ReturnType<typeof getOptions_>
       , noCheck = false, builtinToAdd: string[] | null | 0 = null
-      , mkReg = BgUtils_.safeObj_<string>();
+      , mkReg: SafeDict<string> | null = null, omniMkReg: SafeDict<string> | null = null
+      , useOmniMk: boolean, curMkReg: SafeDict<string> | null
     const colorRed = "color:red", shortcutLogPrefix = 'Shortcut %c"%s"';
     nonNumList_ = null
-    lines = wholeMappings.replace(<RegExpSearchable<0>> /\\\\?\n/g, t => t.length === 3 ? "\\\n" : ""
+    lines = wholeMappings.replace(<RegExpSearchable<0>> /\\(?:\n|\\\n[^\S\n]*)/g, ""
                ).replace(<RegExpG> /[\t ]+/g, " ").split("\n");
     for (; _i < lines.length && (!lines[_i] || (key2 = lines[_i])[0] === kMappingsFlag.char0); _i++) {
       if (key2 && key2[1] === kMappingsFlag.char1) {
@@ -232,7 +275,13 @@ const parseKeyMappings_ = (wholeMappings: string): void => {
     _i >= lines.length || lines[_i] !== "unmapAll" && lines[_i] !== "unmapall" || (builtinToAdd = 0, _i++)
     for (_len = lines.length; _i < _len; _i++) {
       const line = lines[_i].trim();
-      if (line < kChar.minNotCommentHead) { continue; } // mask: /[!"#]/
+      if (line < kChar.minNotCommentHead) { // mask: /[!"#]/
+        if ((<RegExpOne> /^#(?:if|else)\b/).test(line)) {
+          _i = getNextOnIfElse_(lines, _i)
+          noCheck = false
+        }
+        continue
+      }
       const _splitLine = line.split(" ", 3);
       const cmd = _splitLine[0] as ValidMappingInstructions | "__unknown__"
       const key = _splitLine.length > 1 ? _splitLine[1] : ""
@@ -240,12 +289,16 @@ const parseKeyMappings_ = (wholeMappings: string): void => {
       const knownLen = cmd.length + key.length + val.length + 2
       let doesPass = noCheck
       switch (cmd) {
-      case "map": case "run":
-        const isRun = cmd === "run" && !(val in availableCommands_)
+      case "map": case "map!": case "run": case "run!":
+        const isRun = cmd === "run"
         details = undefined
         if (noCheck) { /* empty */
-        } else if (!key || key.length > 8 && (key === "__proto__" || key.includes("<__proto__>"))) {
+        } else if (!key || key.length > 8 && (Build.MinCVer < BrowserVer.MinEnsuredES6$ForOf$Map$SetAnd$Symbol
+            && OnChrome && key === "__proto__" || key.includes("<__proto__>"))) {
           logError_('Unsupported key sequence %c"%s"', colorRed, key || '""', `for "${val || ""}"`)
+        } else if (cmd.length === 4
+            && (key.length < 2 || key.match(keyRe_)!.length !== 1 || key.slice(-3, -2) === ":")) {
+          logError_('"map!" should only be used for a single long key without mode suffix')
         } else if (registry.has(key) && !hasIfOption(line, knownLen)) {
           logError_('Key %c"%s"', colorRed, key, "has been mapped to", registry.get(key)!.command_)
         } else if (!val) {
@@ -265,12 +318,13 @@ const parseKeyMappings_ = (wholeMappings: string): void => {
                     val.replace(<RegExpG> /"|\\/g, "\\$&")}"` + line.slice(knownLen), 0), details)
           if (regItem) { // Object.keys before C38 still yields short keys first for \d+ keys, so here is safe enough
             registry.set(key, regItem)
+            cmd.length === 4 && registry.set(toKeyInInsert(key), regItem)
           }
         }
         break
       case "unmapAll": case "unmapall":
-        registry = new Map(), cmdMap = new Map(), envMap = null, nonNumList_ = null
-        mkReg = BgUtils_.safeObj_<string>(), mk = builtinToAdd = 0
+        registry = new Map(), cmdMap = new Map()
+        envMap = nonNumList_ = mkReg = omniMkReg = null, builtinToAdd = 0
         if (errors_) {
           logError_("All key mappings is unmapped, but there %s been %c%d error%s%c before this instruction"
               , errors_.length > 1 ? "have" : "has"
@@ -278,6 +332,8 @@ const parseKeyMappings_ = (wholeMappings: string): void => {
         }
         break
       case "mapKey": case "mapkey":
+        useOmniMk = key.length > 1 && key.slice(-3, -1) === ":" + GlobalConsts.OmniModeId
+        curMkReg = useOmniMk ? omniMkReg : mkReg
         if (noCheck) { key2 = stripKey_(key) }
         else if (!val || line.length > knownLen
             && !(<RegExpOne> /^(#|\/\/|\$if=\{)/).test(line.slice(knownLen).trimLeft())) {
@@ -286,14 +342,14 @@ const parseKeyMappings_ = (wholeMappings: string): void => {
           logError_("mapKey: a source key should be a single key with an optional mode id:", line)
         } else if (val.length > 1 && !(<RegExpOne> /^<(?!<|__proto__>)([a-z]-){0,4}.\w*>$/).test(val)) {
           logError_("mapKey: a target key should be a single key:", line)
-        } else if (key2 = stripKey_(key), key2 in mkReg && mkReg[key2] !== stripKey_(val)) {
+        } else if (key2 = stripKey_(key), curMkReg && key2 in curMkReg && curMkReg[key2] !== stripKey_(val)) {
           if (nonNumList_ && nonNumList_.has(key2[0]) && key2.slice(1) === ":" + GlobalConsts.NormalModeId) {
             if (doesMatchEnv_(getOptions_(line, knownLen)) !== false) {
               logError_("`mapKey %s` and `unmap %s...` can not be used at the same time", key, key2[0])
             }
           } else if (!hasIfOption(line, knownLen)) {
             logError_('The key %c"%s"', colorRed, key, "has been mapped to another key:"
-                , mkReg[key2]!.length > 1 ? `<${mkReg[key2]!}>` : mkReg[key2]!)
+                , curMkReg![key2]!.length > 1 ? `<${curMkReg![key2]!}>` : curMkReg![key2]!)
           } else {
             doesPass = true
           }
@@ -301,8 +357,14 @@ const parseKeyMappings_ = (wholeMappings: string): void => {
           doesPass = true
         }
         if (doesPass && doesMatchEnv_(getOptions_(line, knownLen)) !== false) {
-          mkReg[key2!] = stripKey_(val)
-          mk = 1;
+          if (!curMkReg) {
+            curMkReg = BgUtils_.safeObj_<string>()
+            useOmniMk ? omniMkReg = curMkReg : mkReg = curMkReg
+          }
+          curMkReg[key2!] = stripKey_(val)
+          if (key2!.length < 2 || key2!.slice(-2, -1) !== ":") {
+            (omniMkReg || (omniMkReg = BgUtils_.safeObj_<string>()))[key2!] = stripKey_(val)
+          }
         }
         break
       case "shortcut": case "command":
@@ -329,7 +391,7 @@ const parseKeyMappings_ = (wholeMappings: string): void => {
         if (noCheck) { /* empty */ }
         else if (!val) {
           logError_("Lack conditions in env declaration:", line)
-        } else if (key === "__proto__") {
+        } else if (OnChrome && Build.MinCVer<BrowserVer.MinEnsuredES6$ForOf$Map$SetAnd$Symbol && key === "__proto__") {
           logError_('Unsupported env name %c"%s"', colorRed, key)
         } else if (envMap && envMap.has(key) && !hasIfOption(line, knownLen - 1 - val.length)) {
           logError_('The environment name %c"%s"', colorRed, key, "has been used")
@@ -344,25 +406,29 @@ const parseKeyMappings_ = (wholeMappings: string): void => {
         }
         break
       case "unmap": case "unmap!":
-        if (!key || val && val[0] !== "#") {
+        if (!key || val && !"#$".includes(val[0])) {
           logError_(`unmap: ${val ? "only " : ""}needs one mapped key:`, line)
-        } else if (registry.has(key)) {
+        } else if (doesMatchEnv_(getOptions_(line, cmd.length + key.length + 1)) === false) { /* empty */
+        } else if (tmpInt = -1, builtinToAdd !== 0
+            && (tmpInt = (builtinToAdd || (builtinToAdd = defaultKeyMappings_.split(" "))).indexOf(key)) >= 0
+            && !(tmpInt & 1) || registry.has(key) || key.length > 1 && registry.has(toKeyInInsert(key))) {
           registry.delete(key)
-        } else if (builtinToAdd !== 0
-            && (tmpInt = (builtinToAdd || (builtinToAdd = defaultKeyMappings_.split(" "))).indexOf(key)) >= 0) {
-          builtinToAdd.splice(tmpInt, 2)
-        } else if (key.length === 1 && (key >= "0" && key < kChar.minNotNum || key[0] === kChar.minus)) {
-          if (key2 = key + ":" + GlobalConsts.NormalModeId,
-              key2 in mkReg && mkReg[key2] !== GlobalConsts.ForcedMapNum + key) {
+          cmd.length === 6 && key.length > 1 && registry.delete(toKeyInInsert(key))
+          tmpInt < 0 || (builtinToAdd as Exclude<typeof builtinToAdd, 0 | null>)!.splice(tmpInt, 2)
+        } else if (key.length === 1 ? (key > kChar.maxNotNum && key < kChar.minNotNum || key[0] === kChar.minus)
+            : stripKey_(key) === kChar.esc || key === "<c-[>") {
+          if (key2 = stripKey_(key) + ":" + GlobalConsts.NormalModeId,
+              mkReg && key2 in mkReg && mkReg[key2] !== GlobalConsts.ForcedMapNum + key) {
             logError_("`unmap %s...` and `mapKey <%s>` can not be used at the same time", key, key2)
-          } else if (nonNumList_ && nonNumList_.has(key)) {
-            cmd !== "unmap!" && logError_('Number prefix: %c"%s"', colorRed, key, "has been unmapped")
+          } else if (key.length === 1 && nonNumList_ && nonNumList_.has(key)) {
+            cmd.length !== 6 && logError_('Number prefix: %c"%s"', colorRed, key, "has been unmapped")
           } else {
-            (nonNumList_ || (nonNumList_ = new Set!())).add(key)
-            mkReg[key2] = GlobalConsts.ForcedMapNum + key
-            mk = 1
+            key.length === 1 && (nonNumList_ || (nonNumList_ = new Set!())).add(key)
+            mkReg || (mkReg = BgUtils_.safeObj_<string>())
+            mkReg[key2] = GlobalConsts.ForcedMapNum + (key.length === 1 ? key : key[1] === "e" ? kChar.esc : "[")
+            key.length > 1 && (mkReg[key2.slice(0, -1) + GlobalConsts.InsertModeId] = mkReg[key2])
           }
-        } else if (cmd !== "unmap!") {
+        } else if (cmd.length !== 6) {
           logError_('Unmap: %c"%s"', colorRed, key, "has not been mapped")
         }
         break
@@ -382,18 +448,20 @@ const parseKeyMappings_ = (wholeMappings: string): void => {
       builtinOffset_ = registry.size
       builtinToAdd || (builtinToAdd = defaultKeyMappings_.split(" "))
       for (_len = builtinToAdd.length, _i = 0; _i < _len; _i += 2) {
+        registry.has(builtinToAdd[_i]) ||
         registry.set(builtinToAdd[_i], makeCommand_(builtinToAdd[_i + 1] as kCName, null))
       }
     }
     set_keyToCommandMap_(registry)
     shortcutRegistry_ = cmdMap
     envRegistry_ = envMap
-    set_mappedKeyRegistry_(omniPayload_.m = mk ? mkReg : null)
+    set_mappedKeyRegistry_(mkReg)
+    omniPayload_.m = omniMkReg
 }
 
 const setupShortcut_ = (cmdMap: NonNullable<typeof shortcutRegistry_>, key: StandardShortcutNames
       , options: CommandsNS.RawCustomizedOptions | "__not_parsed__" | null): string => {
-    options = options && typeof options === "string" ? parseOptions_(options) : options!
+    options = options && typeof options === "string" ? parseOptions_(options, 3) : options!
     let has_cmd: BOOL = 1
       , command: string = options && options.command || (has_cmd = 0, key.startsWith("user") ? "" : key)
       , regItem: CommandsNS.Item | null
@@ -434,20 +502,20 @@ const populateKeyMap_ = (value: string | null): void => {
       set_keyFSM_(errors_ = null)
       /*#__NOINLINE__*/ parseKeyMappings_(value)
     }
-    const sortedKeys = BgUtils_.keys_(keyToCommandMap_),
+    const orderedKeys = BgUtils_.keys_(keyToCommandMap_),
     doesLog = hasFoundChanges && flagDoesCheck_
     if (hasFoundChanges) {
       set_mappedKeyTypes_((mappedKeyRegistry_ ? collectMapKeyTypes_(mappedKeyRegistry_) : kMapKey.NONE)
-          | (sortedKeys.join().includes(":i>") ? kMapKey.directInsert : kMapKey.NONE))
+          | (orderedKeys.join().includes(":i>") ? kMapKey.directInsert : kMapKey.NONE))
     }
     let tmp: ChildKeyFSM | ValidChildKeyAction | undefined
-    for (let index = 0; index < sortedKeys.length; index++) {
-      const key = sortedKeys[index], arr = key.match(keyRe_)!, last = arr.length - 1
+    for (let index = 0; index < orderedKeys.length; index++) {
+      const key = orderedKeys[index], arr = key.match(keyRe_)!, last = arr.length - 1
       const key1 = stripKey_(arr[0]), val1 = ref.get(key1) as KeyAction.cmd | ChildKeyFSM | undefined
       if (index >= builtinOffset_ && val1 !== undefined // a built-in mapping can only use up to 2 keys
           && (val1 === KeyAction.cmd || last === 0 || typeof val1[arr[1]] === "object")) {
-            keyToCommandMap_.delete(key)
-            continue;
+        keyToCommandMap_.delete(key)
+        continue;
       } else if (last === 0) {
         val1 !== undefined && doesLog && logInactive_(key, val1 as ReadonlyChildKeyFSM)
         ref.set(key1, KeyAction.cmd)
@@ -470,14 +538,16 @@ const populateKeyMap_ = (value: string | null): void => {
     if (!nonNumList_) { /* empty */ }
     else if (!(Build.BTypes & BrowserType.Chrome) || Build.MinCVer >= BrowserVer.BuildMinForOf
         && Build.MinCVer >= BrowserVer.MinEnsuredES6$ForOf$Map$SetAnd$Symbol) {
-      for (var nonNumItem of nonNumList_ as unknown as string[]) {
+      for (const nonNumItem of nonNumList_ as unknown as string[]) {
         const j = ref.get(nonNumItem); j && ref.set(GlobalConsts.ForcedMapNum + nonNumItem, j)
       }
     } else {
       nonNumList_.forEach((i): void => { const j = ref.get(i); j && ref.set(GlobalConsts.ForcedMapNum + i, j) })
     }
-    ref.set("-", KeyAction.count)
-    for (let num = 0; num <= 9; num++) { ref.set("" + num, KeyAction.count) }
+    if (orderedKeys.length > 0) {
+      ref.set("-", KeyAction.count)
+      for (let num = 0; num <= 9; num++) { ref.set("" + num, KeyAction.count) }
+    }
     nonNumList_ = null
     if (!hasFoundChanges) { /* empty */ }
     else if (errors_) {
@@ -514,8 +584,7 @@ const populateKeyMap_ = (value: string | null): void => {
     })
     const refSorted: EnsuredDict<ValidKeyAction | ChildKeyFSM> = {}, keys2 = BgUtils_.keys_(ref).sort()
     for (const key of keys2) {
-      const val = ref.get(key)!, keys = typeof val === "object" ? Object.keys(val) : null
-      refSorted[key] = keys && keys.length > 1 ? JSON.parse(JSON.stringify(val, keys.sort())) : val
+      refSorted[key] = ref.get(key)!
     }
     set_keyFSM_(refSorted)
     if (value) {
@@ -541,7 +610,7 @@ const logError_ = function (): void {
 
 const AsC_ = (i: kCName): kCName => i
 const defaultKeyMappings_: string =
-  "? "     +AsC_("showHelp")            +" <a-c> "  +AsC_("previousTab")     +" <a-s-c> "+AsC_("nextTab")             +
+   "? "    +AsC_("showHelp")            +" <a-c> "  +AsC_("previousTab")     +" <a-s-c> "+AsC_("nextTab")             +
   " d "    +AsC_("scrollPageDown")      +" <c-e> "  +AsC_("scrollDown")      +" f "      +AsC_("LinkHints.activate")  +
   " <f1> " +AsC_("simBackspace")        +" <s-f1> " +AsC_("switchFocus")     +" <f2> "   +AsC_("switchFocus")         +
   " <f8> " +AsC_("enterVisualMode")     +" G "      +AsC_("scrollToBottom")  +" gf "     +AsC_("nextFrame")           +
@@ -582,7 +651,8 @@ export const availableCommands_: { readonly [key in kCName]: CommandsNS.Descript
   "LinkHints.activateEdit": [ kFgCmd.linkHints, kCxt.fg, 1, { m: HintMode.FOCUS_EDITABLE } ],
   "LinkHints.activateFocus": [ kFgCmd.linkHints, kCxt.fg, 0, { m: HintMode.FOCUS } ],
   "LinkHints.activateHover": [ kFgCmd.linkHints, kCxt.fg, 0,
-      OnFirefox ? { m: HintMode.HOVER } : { m: HintMode.HOVER, showUrl: 1 } ],
+      OnEdge || OnChrome && Build.MinCVer < BrowserVer.MinAShowHrefOnFocus && CurCVer_ < BrowserVer.MinAShowHrefOnFocus
+      ? { m: HintMode.HOVER, showUrl: 1 } : {m:HintMode.HOVER}],
   "LinkHints.activateLeave": [ kFgCmd.linkHints, kCxt.fg, 0, { m: HintMode.UNHOVER } ],
   "LinkHints.activateMode": [ kFgCmd.linkHints, kCxt.fg, 0, { m: HintMode.DEFAULT } ],
   "LinkHints.activateModeToCopyImage": [ kFgCmd.linkHints, kCxt.fg, 0, { m: HintMode.COPY_IMAGE } ],
@@ -593,12 +663,14 @@ export const availableCommands_: { readonly [key in kCName]: CommandsNS.Descript
   "LinkHints.activateModeToEdit": [ kFgCmd.linkHints, kCxt.fg, 1, { m: HintMode.FOCUS_EDITABLE } ],
   "LinkHints.activateModeToFocus": [ kFgCmd.linkHints, kCxt.fg, 1, { m: HintMode.FOCUS } ],
   "LinkHints.activateModeToHover": [ kFgCmd.linkHints, kCxt.fg, 0,
-      OnFirefox ? { m: HintMode.HOVER } : { m: HintMode.HOVER, showUrl: 1 } ],
+      OnEdge || OnChrome && Build.MinCVer < BrowserVer.MinAShowHrefOnFocus && CurCVer_ < BrowserVer.MinAShowHrefOnFocus
+      ? { m: HintMode.HOVER, showUrl: 1 } : {m:HintMode.HOVER}],
   "LinkHints.activateModeToLeave": [ kFgCmd.linkHints, kCxt.fg, 0, { m: HintMode.UNHOVER } ],
   "LinkHints.activateModeToOpenImage": [ kFgCmd.linkHints, kCxt.fg, 0, { m: HintMode.OPEN_IMAGE } ],
   "LinkHints.activateModeToOpenIncognito": [ kFgCmd.linkHints, kCxt.fg, 0, { m: HintMode.OPEN_INCOGNITO_LINK } ],
   "LinkHints.activateModeToOpenInNewForegroundTab": [ kFgCmd.linkHints, kCxt.fg, 0, {m: HintMode.OPEN_IN_NEW_FG_TAB} ],
   "LinkHints.activateModeToOpenInNewTab": [ kFgCmd.linkHints, kCxt.fg, 0, { m: HintMode.OPEN_IN_NEW_BG_TAB } ],
+  "LinkHints.activateModeToOpenUrl": [ kFgCmd.linkHints, kCxt.fg, 0, { m: HintMode.OPEN_LINK } ],
   "LinkHints.activateModeToOpenVomnibar": [ kFgCmd.linkHints, kCxt.fg, 1, { m: HintMode.EDIT_TEXT } ],
   "LinkHints.activateModeToSearchLinkText": [ kFgCmd.linkHints, kCxt.fg, 0, { m: HintMode.SEARCH_TEXT } ],
   "LinkHints.activateModeToSelect": [ kFgCmd.linkHints, kCxt.fg, 0, { m: HintMode.ENTER_VISUAL_MODE } ],
@@ -608,6 +680,7 @@ export const availableCommands_: { readonly [key in kCName]: CommandsNS.Descript
   "LinkHints.activateOpenIncognito": [ kFgCmd.linkHints, kCxt.fg, 0, { m: HintMode.OPEN_INCOGNITO_LINK } ],
   "LinkHints.activateOpenInNewForegroundTab": [ kFgCmd.linkHints, kCxt.fg, 0, {m: HintMode.OPEN_IN_NEW_FG_TAB} ],
   "LinkHints.activateOpenInNewTab": [ kFgCmd.linkHints, kCxt.fg, 0, { m: HintMode.OPEN_IN_NEW_BG_TAB } ],
+  "LinkHints.activateOpenUrl": [ kFgCmd.linkHints, kCxt.fg, 0, { m: HintMode.OPEN_LINK } ],
   "LinkHints.activateOpenVomnibar": [ kFgCmd.linkHints, kCxt.fg, 1, { m: HintMode.EDIT_TEXT } ],
   "LinkHints.activateSearchLinkText": [ kFgCmd.linkHints, kCxt.fg, 0, { m: HintMode.SEARCH_TEXT } ],
   "LinkHints.activateSelect": [ kFgCmd.linkHints, kCxt.fg, 0, { m: HintMode.ENTER_VISUAL_MODE } ],
@@ -615,11 +688,11 @@ export const availableCommands_: { readonly [key in kCName]: CommandsNS.Descript
   "LinkHints.activateWithQueue": [ kFgCmd.linkHints, kCxt.fg, 0, { m: HintMode.OPEN_WITH_QUEUE } ],
   "LinkHints.click": [ kFgCmd.linkHints, kCxt.fg, 0, { direct: true, m: HintMode.DEFAULT } ],
   "LinkHints.unhoverLast": [ kFgCmd.insertMode, kCxt.fg, 1, { u: true } ],
-  "Marks.activate": [ kFgCmd.marks, kCxt.fg, 0 ],
-  "Marks.activateCreate": [ kFgCmd.marks, kCxt.fg, 0, { mode: "create" } ],
-  "Marks.activateCreateMode": [ kFgCmd.marks, kCxt.fg, 0, { mode: "create" } ],
-  "Marks.activateGoto": [ kFgCmd.marks, kCxt.fg, 0 ],
-  "Marks.activateGotoMode": [ kFgCmd.marks, kCxt.fg, 0 ],
+  "Marks.activate": [ kBgCmd.marksActivate, kCxt.bg, 0 ],
+  "Marks.activateCreate": [ kBgCmd.marksActivate, kCxt.bg, 0, { mode: "create" } ],
+  "Marks.activateCreateMode": [ kBgCmd.marksActivate, kCxt.bg, 0, { mode: "create" } ],
+  "Marks.activateGoto": [ kBgCmd.marksActivate, kCxt.bg, 0 ],
+  "Marks.activateGotoMode": [ kBgCmd.marksActivate, kCxt.bg, 0 ],
   "Marks.clearGlobal": [ kBgCmd.clearMarks, kCxt.bg, 1 ],
   "Marks.clearLocal": [ kBgCmd.clearMarks, kCxt.bg, 1, { local: true } ],
   "Vomnibar.activate": [ kBgCmd.showVomnibar, kCxt.bg, 0 ],
@@ -638,16 +711,17 @@ export const availableCommands_: { readonly [key in kCName]: CommandsNS.Descript
   autoCopy: [ kFgCmd.autoOpen, kCxt.fg, 1, { copy: true } ],
   autoOpen: [ kFgCmd.autoOpen, kCxt.fg, 1, { o: 1 } ],
   blank: [ kBgCmd.blank, kCxt.bg, 0 ],
-  clearCS: [ kBgCmd.clearCS, kCxt.bg, 1 ],
+  captureTab: [ kBgCmd.captureTab, kCxt.bg, 1 ],
   clearContentSetting: [ kBgCmd.clearCS, kCxt.bg, 1 ],
   clearContentSettings: [ kBgCmd.clearCS, kCxt.bg, 1 ],
+  clearCS: [ kBgCmd.clearCS, kCxt.bg, 1 ],
   clearFindHistory: [ kBgCmd.clearFindHistory, kCxt.bg, 1 ],
   closeDownloadBar: [ kBgCmd.closeDownloadBar, kCxt.bg, 1, { all: 1 } ],
-  closeOtherTabs: [ kBgCmd.removeTabsR, kCxt.bg, 1, { other: true } ],
+  closeOtherTabs: [ kBgCmd.removeTabsR, kCxt.bg, 1, { other: true, mayConfirm: true } ],
   closeSomeOtherTabs: [ kBgCmd.removeTabsR, kCxt.bg, 0 ],
-  closeTabsOnLeft: [ kBgCmd.removeTabsR, kCxt.bg, 0, { $count: -1e6 } ],
-  closeTabsOnRight: [ kBgCmd.removeTabsR, kCxt.bg, 0, { $count: 1e6 } ],
-  captureTab: [ kBgCmd.captureTab, kCxt.bg, 1 ],
+  closeTabsOnLeft: [ kBgCmd.removeTabsR, kCxt.bg, 0, { $count: -1e6, mayConfirm: true } ],
+  closeTabsOnRight: [ kBgCmd.removeTabsR, kCxt.bg, 0, { $count: 1e6, mayConfirm: true } ],
+  confirm: [ kBgCmd.confirm, kCxt.bg, 0 ],
   copyCurrentTitle: [ kBgCmd.copyWindowInfo, kCxt.bg, 1, { type: "title" } ],
   copyCurrentUrl: [ kBgCmd.copyWindowInfo, kCxt.bg, 1 ],
   copyWindowInfo: [ kBgCmd.copyWindowInfo, kCxt.bg, 0, { type: "window" } ],
@@ -659,14 +733,14 @@ export const availableCommands_: { readonly [key in kCName]: CommandsNS.Descript
           : OnFirefox ? Build.MinFFVer < FirefoxBrowserVer.MinAboutDebuggingRuntimeThisFirefox
             && CurFFVer_ < FirefoxBrowserVer.MinAboutDebuggingRuntimeThisFirefox ? "about:debugging#addons"
             : "about:debugging#/runtime/this-firefox" : CONST_.OptionsPage_,
-      id_mask: "$id", url_mask: ""
+      id_mask: "$id", url_mask: false
     }],
   discardTab: [ kBgCmd.discardTab, kCxt.bg, /* 20 in all_commands.ts */ 0 ],
   dispatchEvent: [kBgCmd.dispatchEventCmd, kCxt.bg, /** only 1 / -1, in fact */ 0],
   duplicateTab: [ kBgCmd.duplicateTab, kCxt.bg, 20 as 0 ],
   editText: [ kFgCmd.editText, kCxt.fg, 0 ],
-  enableCSTemp: [ kBgCmd.toggleCS, kCxt.bg, 0, { incognito: true } ],
   enableContentSettingTemp: [ kBgCmd.toggleCS, kCxt.bg, 0, { incognito: true } ],
+  enableCSTemp: [ kBgCmd.toggleCS, kCxt.bg, 0, { incognito: true } ],
   enterFindMode: [ kBgCmd.performFind, kCxt.bg, 1, {active: true, selected: true} ],
   enterInsertMode: [ kBgCmd.insertMode, kCxt.bg, 1, { insert: true } ],
   enterVisualLineMode: [ kBgCmd.visualMode, kCxt.bg, 1, { mode: "line" } ],
@@ -734,22 +808,25 @@ export const availableCommands_: { readonly [key in kCName]: CommandsNS.Descript
   searchInAnother: [ kBgCmd.searchInAnother, kCxt.bg, 1 ],
   sendToExtension: [ kBgCmd.sendToExtension, kCxt.bg, 0 ],
   showHelp: [ kBgCmd.showHelp, kCxt.bg, 1 ],
+  showHud: [ kBgCmd.showHUD, kCxt.bg, 1 ],
   showHUD: [ kBgCmd.showHUD, kCxt.bg, 1 ],
   showTip: [ kBgCmd.showHUD, kCxt.bg, 1 ],
   simBackspace: [ kFgCmd.focusInput, kCxt.fg, 1, { action: "backspace" } ],
   simulateBackspace: [ kFgCmd.focusInput, kCxt.fg, 1, { action: "backspace" } ],
   sortTabs: [ kBgCmd.joinTabs, kCxt.bg, 0, { sort: "recency", windows: "current" } ],
   switchFocus: [ kFgCmd.focusInput, kCxt.fg, 1, { action: "switch" } ],
-  toggleCS: [ kBgCmd.toggleCS, kCxt.bg, 0 ],
   toggleContentSetting: [ kBgCmd.toggleCS, kCxt.bg, 0 ],
+  toggleCS: [ kBgCmd.toggleCS, kCxt.bg, 0 ],
   toggleLinkHintCharacters: [ kBgCmd.toggle, kCxt.bg, 1, { key: "linkHintCharacters" } ],
   toggleMuteTab: [ kBgCmd.toggleMuteTab, kCxt.bg, 1 ],
   togglePinTab: [ kBgCmd.togglePinTab, kCxt.bg, /** 30 in all_commands.ts */ 0 ],
+  toggleReaderMode: [ kBgCmd.toggleTabUrl, kCxt.bg, 1, { reader: true, reuse: ReuseType.current, opener: true } ],
   toggleStyle: [ kFgCmd.toggleStyle, kCxt.fg, 1 ],
   toggleSwitchTemp: [ kBgCmd.toggle, kCxt.bg, 1 ],
-  toggleViewSource: [ kBgCmd.toggleTabUrl, kCxt.bg, 1, { opener: true } ],
-  toggleReaderMode: [ kBgCmd.toggleTabUrl, kCxt.bg, 1, { reader: true, reuse: ReuseType.current, opener: true } ],
-  toggleVomnibarStyle: [ kBgCmd.toggleVomnibarStyle, kCxt.bg, 1, { style: "dark" } ],
+  toggleUrl: [ kBgCmd.toggleTabUrl, kCxt.bg, 1, { url_mask: true, reuse: ReuseType.current } ],
+  toggleViewSource: [ kBgCmd.toggleTabUrl, kCxt.bg, 1, { opener: true, viewSource: true } ],
+  toggleVomnibarStyle: [ kBgCmd.toggleVomnibarStyle, kCxt.bg, 1 ],
+  toggleWindow: [ kBgCmd.toggleWindow, kCxt.bg, 0 ],
   visitPreviousTab: [ kBgCmd.visitPreviousTab, kCxt.bg, 0 ],
   wait: [ kBgCmd.blank, kCxt.bg, 0, { wait: "count" } ],
   zoom: [ kBgCmd.toggleZoom, kCxt.bg, 0 ],
@@ -770,7 +847,9 @@ const hintModes_: SafeDict<HintMode> = {
   copy: HintMode.COPY_TEXT, "copy-text": HintMode.COPY_TEXT,
   "copy-list": HintMode.COPY_TEXT | HintMode.list | HintMode.queue,
   "copy-url": HintMode.COPY_URL, "copy-url-list": HintMode.COPY_URL | HintMode.list | HintMode.queue,
-  download: HintMode.DOWNLOAD_LINK, incognito: HintMode.OPEN_INCOGNITO_LINK,
+  download:HintMode.DOWNLOAD_LINK, incognito:HintMode.OPEN_INCOGNITO_LINK,"open-incognito":HintMode.OPEN_INCOGNITO_LINK,
+  "open-link": HintMode.OPEN_LINK, "open-url": HintMode.OPEN_LINK, "direct-open": HintMode.OPEN_LINK,
+  "open-directly": HintMode.OPEN_LINK, "directly-open": HintMode.OPEN_LINK, "open-direct": HintMode.OPEN_LINK,
   "copy-image": HintMode.COPY_IMAGE,
   "edit-url": HintMode.EDIT_LINK_URL, edit: HintMode.EDIT_TEXT, "edit-text": HintMode.EDIT_TEXT,
   input: HintMode.FOCUS_EDITABLE, "focus-input": HintMode.FOCUS_EDITABLE, editable: HintMode.FOCUS_EDITABLE,
@@ -799,13 +878,14 @@ export const visualKeys_: VisualModeNS.KeyMap = {
         ap: VisualAction.LexicalParagraph, "a}": VisualAction.LexicalParagraph,
 
     y: VisualAction.Yank, Y: VisualAction.YankLine, C: VisualAction.YankWithoutExit, "c-s-c": VisualAction.YankRichText,
-    p: VisualAction.YankAndOpen, P: VisualAction.YankAndNewTab,
+    p: VisualAction.YankAndNewTab, P: VisualAction.YankAndOpen,
 
+    f: VisualAction.EmbeddedFindAndExtendSelection, F: VisualAction.EmbeddedFindToPrevAndExtendSelection,
     n: VisualAction.FindNext, N: VisualAction.FindPrevious,
     f1: VisualAction.HighlightRange, "a-f1": VisualAction.HighlightRange,
 
     v: VisualAction.VisualMode, V: VisualAction.VisualLineMode, c: VisualAction.CaretMode,
-    "/": VisualAction.EmbeddedFindMode,
+    "/": VisualAction.EmbeddedFindMode, "?": VisualAction.EmbeddedFindModeToPrev,
 
     "c-e": VisualAction.ScrollDown, "c-y": VisualAction.ScrollUp,
     "c-down": VisualAction.ScrollDown, "c-up": VisualAction.ScrollUp
@@ -832,19 +912,22 @@ const upgradeKeyMappings = (value: string): void => {
 
 if (bgIniting_ & BackendHandlersNS.kInitStat.settings) {
   populateKeyMap_(settingsCache_.keyMappings)
-  if (!OnEdge && Build.OS & (1 << kOS.mac) && os_ === kOS.mac) {
+  if (!OnEdge && Build.OS & kBOS.MAC && (Build.OS === kBOS.MAC as number || !os_)) {
     visualKeys_["m-s-c"] = VisualAction.YankRichText
   }
 }
 
 updateHooks_.keyMappings = (value: string | null): void => {
-  const oldMappedKeys = mappedKeyRegistry_, oldFSM = keyFSM_
+  const oldMappedKeys = mappedKeyRegistry_, oldOmniMapKeys = omniPayload_.m, oldFSM = keyFSM_
   populateKeyMap_(value)
-  const f = JSON.stringify, curMapped = mappedKeyRegistry_,
+  const f = JSON.stringify, curMapped = mappedKeyRegistry_, curOmniMapped = omniPayload_.m,
   updatesInKeyFSM = !!oldFSM && f(keyFSM_) !== f(oldFSM),
   updatesInMappedKeys = oldMappedKeys ? !curMapped || f(oldMappedKeys) !== f(curMapped) : !!oldFSM && !!curMapped;
   (updatesInMappedKeys || updatesInKeyFSM) && settings_.broadcast_({
-    N: kBgReq.keyFSM, m: mappedKeyRegistry_, t: mappedKeyTypes_, k: updatesInKeyFSM ? keyFSM_ : null
+    N: kBgReq.keyFSM, m: mappedKeyRegistry_, t: mappedKeyTypes_, k: updatesInKeyFSM ? keyFSM_ : null,
+    v: BgUtils_.nextConfUpdate(0)
   });
-  updatesInMappedKeys && settings_.broadcastOmni_({ N: kBgReq.omni_updateOptions, d: { m: mappedKeyRegistry_ } })
+  if (oldOmniMapKeys ? !curOmniMapped || f(oldOmniMapKeys) !== f(curOmniMapped) : curOmniMapped) {
+    settings_.broadcastOmniConf_({ m: curOmniMapped })
+  }
 };

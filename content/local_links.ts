@@ -1,28 +1,29 @@
 import {
   clickable_, isJSUrl, doc, isImageUrl, fgCache, readyState_, chromeVer_, VTr, createRegExp, max_, OnChrome,
-  math, includes_, OnFirefox, OnEdge, WithDialog, safeCall, evenHidden_, set_evenHidden_, tryCreateRegExp, loc_,
-  getTime, firefoxVer_
+  math, includes_, OnFirefox, OnEdge, WithDialog, evenHidden_, set_evenHidden_, tryCreateRegExp, loc_,
+  getTime, firefoxVer_, isTY
 } from "../lib/utils"
 import {
-  isIFrameElement, uneditableInputs_, getComputedStyle_, queryChildByTag_, htmlTag_, isAriaFalse_,
-  kMediaTag, NONE, querySelector_unsafe_, isStyleVisible_, fullscreenEl_unsafe_, notSafe_not_ff_, docEl_unsafe_,
+  isIFrameElement, uneditableInputs_, getComputedStyle_, queryHTMLChild_, htmlTag_, isAriaFalse_,  joinValidSelectors,
+  kMediaTag, NONE, querySelector_unsafe_, isStyleVisible_, fullscreenEl_unsafe_, isSafeEl_, docEl_unsafe_,
   GetParent_unsafe_, unsafeFramesetTag_old_cr_, isHTML_, querySelectorAll_unsafe_, isNode_, INP, attr_s, supportInert_,
   getMediaTag, getMediaUrl, contains_s, GetShadowRoot_, parentNode_unsafe_s, testMatch, hasTag_, editableTypes_,
-  getRootNode_mounted, findSelectorByHost
+  getRootNode_mounted, findSelectorByHost, TryGetShadowRoot_
 } from "../lib/dom_utils"
 import {
   getVisibleClientRect_, getVisibleBoundingRect_, getClientRectsForAreas_, getCroppedRect_, boundingRect_,
   getBoundingClientRect_, cropRectToVisible_, bZoom_, set_bZoom_, prepareCrop_, wndSize_, isContaining_,
-  isDocZoomStrange_, docZoom_, dimSize_, ViewBox, getIFrameRect
+  isDocZoomStrange_old_cr, docZoom_, dimSize_, ViewBox, getIFrameRect
 } from "../lib/rect"
 import { find_box } from "./mode_find"
 import { omni_box } from "./omni"
 import {
-  kSafeAllSelector, coreHints, addChildFrame_, mode1_, forHover_, hintOptions, wantDialogMode_,
+  kSafeAllSelector, coreHints, addChildFrame_, mode1_, forHover_, hintOptions,
   isClickListened_, set_isClickListened_, tooHigh_, useFilter_, hintChars, hintManager
 } from "./link_hints"
-import { shouldScroll_s, getPixelScaleToScroll, scrolled, set_scrolled, suppressScroll } from "./scroller"
+import { shouldScroll_s, getPixelScaleToScroll, scrolled, suppressScroll } from "./scroller"
 import { ui_root, ui_box, helpBox, curModalElement, filterOutInert } from "./dom_ui"
+import { generateHintText } from "./hint_filters"
 
 export declare const enum ClickType {
   Default = 0, edit = 1,
@@ -35,15 +36,15 @@ type HTMLFilter<T> = (hints: T[], element: SafeHTMLElement) => void
 type Filter<T> = BaseFilter<T> | HTMLFilter<T>
 type AllowedClickTypeForNonHTML = ClickType.attrListener | ClickType.classname | ClickType.tabindex
 type HintSources = readonly SafeElement[] | NodeListOf<SafeElement>
-type NestedFrame = false | 0 | null | KnownIFrameElement
+type NestedFrame = false | 0 | null | AccessableIFrameElement
 type IterableElementSet = Pick<ElementSet, "has"> & { forEach (callback: (value: Element) => void): void }
 
 let frameNested_: NestedFrame = false
 let extraClickable_: IterableElementSet | null = null
 // let withClickableAttrs_: BareElementSet | null
 let clickTypeFilter_: ClickType = 0
-let ngEnabled: boolean | undefined
-let jsaEnabled_: boolean | undefined
+let ngEnabled_: BOOL | 2 = 2
+let jsaEnabled_: BOOL = 0
 let maxLeft_ = 0
 let maxTop_ = 0
 let maxRight_ = 0
@@ -52,7 +53,7 @@ let closableClasses_: RegExpOne
 let clickableRoles_: RegExpI
 let buttonOrATags_: RegExpOne
 
-export { frameNested_, ngEnabled, maxLeft_, maxTop_, maxRight_, closableClasses_, extraClickable_ }
+export { frameNested_, ngEnabled_, maxLeft_, maxTop_, maxRight_, closableClasses_, extraClickable_ }
 export const localLinkClear = (): 0 => { return maxLeft_ = maxTop_ = maxRight_ = 0 }
 export function set_frameNested_ (_newNestedFrame: NestedFrame): void { frameNested_ = _newNestedFrame }
 
@@ -65,15 +66,17 @@ const getClickable = (hints: Hint[], element: SafeHTMLElement): void => {
   const tag = element.localName;
   switch (tag) {
   case "a":
-    isClickable = true;
-    arr = /*#__NOINLINE__*/ getPreferredRectOfAnchor(element as HTMLAnchorElement)
+    arr = getVisibleClientRect_(element, null)
+    arr = arr && getPreferredRectOfAnchor(element as HTMLAnchorElement) || arr
+    isClickable = !!arr
     break;
   case "audio": case "video": isClickable = true; break;
   case "frame": case "iframe":
     if (isClickable = element !== find_box) {
       arr = getIFrameRect(element)
       if (element !== omni_box) {
-        isClickable = addChildFrame_ ? addChildFrame_(coreHints, element as KnownIFrameElement, arr) : !!arr
+        isClickable = addChildFrame_ && isIFrameElement(element) ? addChildFrame_(coreHints, element, arr) : !!arr
+        /*#__NOINLINE__*/ detectCloseBtn(element as KnownIFrameElement)
       } else if (arr) {
         (arr as WritableRect).l += 12; (arr as WritableRect).t += 9;
       }
@@ -84,27 +87,28 @@ const getClickable = (hints: Hint[], element: SafeHTMLElement): void => {
     // on C75, a <textarea disabled> is still focusable
     if ((element as TextElement).disabled && mode1_ < HintMode.max_mouse_events + 1) { /* empty */ }
     else if (tag > "t" || !uneditableInputs_[s = (element as HTMLInputElement).type]) {
-      isClickable = !(element as TextElement).readOnly || mode1_ > HintMode.min_job - 1
+      isClickable = (!(element as TextElement).readOnly || mode1_ > HintMode.min_job - 1)
+          && (mode1_ < HintMode.min_string || mode1_ > HintMode.max_string
+              || extraClickable_ && extraClickable_.has(element) || !!generateHintText([element as HTMLInputElement]).t)
     } else if (s !== "hidden") {
       const st = getComputedStyle_(element)
       isClickable = <number> <string | number> st.opacity > 0
-      if (isClickable || !(element as HTMLInputElement).labels.length) {
-        arr = getVisibleBoundingRect_(element as HTMLInputElement, <BOOL> +isClickable, st)
+      if (isClickable || <number> <string | number> st.zIndex > 0 || !(element as HTMLInputElement).labels.length) {
+        arr = getVisibleBoundingRect_(element, +(!isClickable satisfies boolean) as BOOL, st)
         isClickable = !!arr
       }
     }
     type = ClickType.edit
     break;
   case "details":
-    isClickable = isNotReplacedBy(queryChildByTag_(element, "summary"), hints);
+    isClickable = isNotReplacedBy(queryHTMLChild_(element, "summary") as HTMLSummaryElement | null, hints)
     break;
   case "dialog":
-    WithDialog && (element as HTMLDialogElement).open && element !== curModalElement && !wantDialogMode_
-        && (coreHints.d = 1)
+    WithDialog && (element as HTMLDialogElement).open && element !== curModalElement && (coreHints.d = 3)
     isClickable = !1
     break
   case "label":
-    isClickable = isNotReplacedBy((element as HTMLLabelElement).control as SafeHTMLElement | null);
+    isClickable = isNotReplacedBy((element as HTMLLabelElement).control as HTMLLabelableElement | null)
     break;
   case "button": case "select":
     isClickable = !(element as HTMLButtonElement | HTMLSelectElement).disabled
@@ -128,31 +132,38 @@ const getClickable = (hints: Hint[], element: SafeHTMLElement): void => {
       isClickable = true;
     }
     break;
-  case "code": mode1_ > HintMode.max_mouse_events && (isClickable = true); clientSize = 1; break
-  case "aside": case "div": case "nav": case "ol": case "pre": case "table": case "tbody": case "ul":
+  case "code": case "pre":
+    mode1_ > HintMode.max_mouse_events && (tag < "p" || getComputedStyle_(element).display === "block")
+        && !((anotherEl = GetParent_unsafe_(element, PNType.DirectElement))
+              && hints.length && hints[hints.length - 1][0] === anotherEl
+              && (hasTag_("pre", anotherEl) || hasTag_("code", anotherEl)))
+        && (isClickable = true)
+    // no break
+  case "aside": case "div": case "nav": case "ol": case "table": case "tbody": case "ul":
     clientSize = 1;
     break;
   }
   if (isClickable === null) {
     type = (s = element.contentEditable) !== "inherit" && s !== "false" ? ClickType.edit
       : (OnFirefox ? element.onclick || element.onmousedown : element.getAttribute("onclick"))
-        || (s = !(Build.BTypes & ~BrowserType.Chrome) && Build.MinCVer >= BrowserVer.MinEnsured$Element$$role
+        || (s = Build.BTypes === BrowserType.Chrome as number && Build.MinCVer >= BrowserVer.MinEnsured$Element$$role
               ? element.role as Exclude<Element["role"], undefined> : element.getAttribute("role"))
             && clickableRoles_.test(s) && (
-          !(s.startsWith("menu") && queryChildByTag_(element, "ul"))
-          || isNotReplacedBy(queryChildByTag_(element, "div"), hints)
+          !(s.startsWith("menu") && queryHTMLChild_(element, "ul"))
+          || isNotReplacedBy(queryHTMLChild_(element, "div") as HTMLDivElement | null, hints)
         )
         || extraClickable_ !== null && extraClickable_.has(element)
-        || ngEnabled && attr_s(element, "ng-click")
-        || forHover_ && attr_s(element, "onmouseover")
-        || jsaEnabled_ && (s = attr_s(element, "jsaction")) && checkJSAction(s)
+        || ngEnabled_ === 1 && attr_s(element, "ng-click")
+        || (OnFirefox ? 0 : element.getAttribute("onmousedown"))
+        || forHover_ === 1 && attr_s(element, "onmouseover")
+        || jsaEnabled_ === 1 && (s = attr_s(element, "jsaction")) && checkJSAction(s)
       ? ClickType.attrListener
       : clickable_.has(element) && isClickListened_ && /*#__NOINLINE__*/ inferTypeOfListener(element, tag)
       ? ClickType.codeListener
       : (s = element.getAttribute("tabindex")) && parseInt(s, 10) >= 0
-        && !(OnChrome ? GetShadowRoot_(element, 1) : GetShadowRoot_(element))
+        && !(OnFirefox ? element.shadowRoot : OnChrome ? GetShadowRoot_(element, 1) : GetShadowRoot_(element))
         && element !== helpBox ? ClickType.tabindex
-      : clientSize && (clientSize = element.clientHeight) > GlobalConsts.MinScrollableAreaSizeForDetection - 1
+      : clientSize !== 0 && (clientSize = element.clientHeight) > GlobalConsts.MinScrollableAreaSizeForDetection - 1
               && clientSize + 5 < element.scrollHeight ? ClickType.scrollY
       : clientSize > /* scrollbar:12 + font:9 */ 20
               && (clientSize = element.clientWidth) > GlobalConsts.MinScrollableAreaSizeForDetection - 1
@@ -161,25 +172,22 @@ const getClickable = (hints: Hint[], element: SafeHTMLElement): void => {
             && (!(anotherEl = element.parentElement)
                 || (type ? (s = htmlTag_(anotherEl), !s.includes("button") && s !== "a")
                     : clickable_.has(anotherEl) && hasTag_("ul", anotherEl) && !s.includes("active")))
-            || (!(Build.BTypes & ~BrowserType.Safari) || !(Build.BTypes & ~(BrowserType.Chrome | BrowserType.Safari))
-                && Build.MinCVer >= BrowserVer.MinCorrectAriaSelected ? element.ariaSelected !== null
+            || (Build.BTypes === BrowserType.Safari as number
+                || !(Build.BTypes & ~(BrowserType.Chrome | BrowserType.Safari))
+                   && Build.MinCVer >= BrowserVer.MinCorrectAriaSelected ? element.ariaSelected !== null
                 : element.hasAttribute("aria-selected"))
             || element.getAttribute("data-tab") ? ClickType.classname : ClickType.Default);
     isClickable = type > ClickType.Default
   }
-  if (isClickable
+  if (isClickable === true
       && (arr = tag === "img" ? getVisibleBoundingRect_(element as HTMLImageElement, 1)
-              : arr || getVisibleClientRect_(element, null))
+              : arr || getVisibleClientRect_(element, null)) !== null
       && (isAriaFalse_(element, kAria.hidden) || extraClickable_ && extraClickable_.has(element))
-      && (type < ClickType.scrollX
-        || shouldScroll_s(element
-            , (<ScrollByY> (type - ClickType.scrollX) + <0 | 2> (evenHidden_ & kHidden.OverflowHidden)) as BOOL | 2 | 3
-            , 0) > 0)
       && (mode1_ > HintMode.min_job - 1 || isAriaFalse_(element, kAria.disabled))
       && (type < ClickType.codeListener || type > ClickType.classname
           || !(s = element.getAttribute("unselectable")) || s.toLowerCase() !== "on")
       && (0 === clickTypeFilter_ || clickTypeFilter_ & (1 << type))
-  ) { hints.push([element, arr, type]); }
+  ) { hints.push([element, arr, type]) }
 }
 
 const checkJSAction = (str: string): boolean => {
@@ -208,11 +216,13 @@ export const getPreferredRectOfAnchor = (anchor: HTMLAnchorElement): Rect | null
         // use `^...$` to exclude custom tags
       ? (<RegExpOne> /^h\d$/).test(tag!) && isNotReplacedBy(el as HTMLHeadingElement & SafeHTMLElement)
         ? getVisibleClientRect_(el as HTMLHeadingElement & SafeHTMLElement) : null
-      : tag === "img" && !dimSize_(anchor, kDim.elClientH) ? getCroppedRect_(el, getVisibleBoundingRect_(el))
+      : tag === "img" && !dimSize_(anchor, kDim.elClientH) ? getVisibleBoundingRect_(el, 1)
       : null);
 }
 
-const isNotReplacedBy = (element: SafeHTMLElement | null, isExpected?: Hint[]): boolean | null => {
+const isNotReplacedBy = (element: HTMLSummaryElement | HTMLHeadingElement | HTMLLabelableElement
+      | HTMLDivElement | null
+    , isExpected?: Hint[]): boolean | null => {
   const arr2: Hint[] = [], clickListened = isClickListened_;
   if (element) {
     if (!isExpected && (element as TypeToAssert<HTMLElement, HTMLInputElement, "disabled">).disabled) { return !1; }
@@ -221,7 +231,7 @@ const isNotReplacedBy = (element: SafeHTMLElement | null, isExpected?: Hint[]): 
     set_isClickListened_(clickListened);
     if (!clickListened && isExpected && arr2.length && arr2[0][2] === ClickType.codeListener) {
       getClickable(arr2, element);
-      if (arr2.length < 2) { // note: excluded during normal logic
+      if (arr2.length < 2 || arr2[1][2] > ClickType.MaxNotBox) { // note: excluded during normal logic
         isExpected.push(arr2[0]);
       }
     }
@@ -234,8 +244,8 @@ const inferTypeOfListener = ((el: SafeHTMLElement, tag: "" | keyof HTMLElementTa
   let el2: Element | null | undefined, D = "div" as const
   return tag !== D && tag !== "li"
       ? tag === "tr"
-        ? (el2 = querySelector_unsafe_("input[type=checkbox]", el) as SafeElement | null,
-          !!(el2 && htmlTag_<1>(el2) && isNotReplacedBy(el2)))
+        ? ((el2 = el.firstElementChild as Element | null) && hasTag_("td",el2) && (el2 = queryHTMLChild_(el2, "input")),
+          !!(el2 && uneditableInputs_[(<HTMLInputElement> el2).type] === 3 && isNotReplacedBy(el2 as HTMLInputElement)))
         : tag !== "table"
       : !(el2 = el.firstElementChild as Element | null) ||
         !(!el.className && !el.id && tag === D
@@ -250,22 +260,27 @@ const inferTypeOfListener = ((el: SafeHTMLElement, tag: "" | keyof HTMLElementTa
         );
 }) as (el: SafeHTMLElement, tag: keyof HTMLElementTagNameMap) => boolean
 
-/** Note: required by {@link #kFgCmd.focusInput}, should only add LockableElement instances */
-export const getEditable = (hints: Hint[], element: SafeHTMLElement): void => {
-  let s: string = element.localName;
-  if ((s === INP || s === "textarea")
-      ? s < "t" && uneditableInputs_[(element as HTMLInputElement).type]
-        || (element as TextElement).disabled || (element as TextElement).readOnly
-      : (s = element.contentEditable) === "inherit" || s === "false") {
-    return
+const detectCloseBtn = (element: KnownIFrameElement): void => {
+  const next = element.nextElementSibling as Element | null
+  if (next && isSafeEl_(next) && next.textContent === "x") {
+    clickable_.add(next)
   }
-  getIfOnlyVisible(hints, element)
+}
+
+export const getEditable = (hints: Hint[], element: SafeHTMLElement): void => {
+  let s: string = element.localName, asClickable = extraClickable_ && extraClickable_.has(element)
+  if ((s === INP || s === "textarea")
+      ? !(s < "t" && uneditableInputs_[(element as HTMLInputElement).type]
+          || (element as TextElement).disabled || (element as TextElement).readOnly) || asClickable
+      : isSafeEl_(element) && ((s = element.contentEditable) !== "inherit" && s !== "false" || asClickable)) {
+    getIfOnlyVisible(hints, element)
+  }
 }
 
 const getIfOnlyVisible = (hints: (Hint | Hint0)[], element: SafeElement): void => {
-  let arr = hasTag_("a", element) && getPreferredRectOfAnchor(element as HTMLAnchorElement)
-      || getVisibleClientRect_(element, null)
-  arr && hints.push([element as SafeElementForMouse, arr, ClickType.Default])
+  const arr = getVisibleClientRect_(element, null)
+  arr && hints.push([element as SafeElementForMouse
+      , hasTag_("a", element) && getPreferredRectOfAnchor(element) || arr, ClickType.Default])
 }
 
 export const traverse = ((selector: string, options: CSSOptions & OtherFilterOptions, filter: Filter<Hint | Hint0>
@@ -280,7 +295,7 @@ const matchSafeElements = ((selector1: string, rootNode: Element | ShadowRoot | 
   }
   return !udSelector ? list as NodeListOf<SafeElement>
     : list && ([].filter as (this: ArrayLike<Element>, filter: (el: Element) => boolean) => SafeElement[]
-        ).call(list, el => !notSafe_not_ff_!(el))
+        ).call(list, isSafeEl_)
 }) as {
   (selector: string, rootNode: ShadowRoot | HTMLDivElement, udSelector: string | null): HintSources
   (selector: string, rootNode: Element | null, udSelector: string | null, mayBeUnsafe: 1): HintSources | void
@@ -308,18 +323,19 @@ const createElementSet = (list: NodeListOf<Element> | Element[]): IterableElemen
 
 const addExtraVisibleToHints = (hints: (Hint | Hint0)[], element: Element): void => {
   for (const hint of hints) { if (hint[0] === element) { return } }
-  !OnFirefox && notSafe_not_ff_!(element) || getIfOnlyVisible(hints, element as SafeElement)
+  isSafeEl_(element) && getIfOnlyVisible(hints, element)
 }
 
 const addChildTrees = (parts: HintSources, allNodes: NodeListOf<SafeElement>): HintSources => {
-  let prefixedShadow_cr = OnChrome && Build.MinCVer < BrowserVer.MinEnsuredUnprefixedShadowDOMV0
-                    && chromeVer_ < BrowserVer.MinEnsuredUnprefixedShadowDOMV0;
   const local_addChildFrame_ = addChildFrame_, hosts: SafeElement[] = []
+  const localNotOnEdge = !OnEdge, localOnFirefox = OnFirefox
   for (let i = 0, len = allNodes.length; i < len; i++) {
     let el = allNodes[i]
-    if (evenClosed ? GetShadowRoot_(el)
-        : (Build.BTypes & BrowserType.Chrome) && Build.MinCVer < BrowserVer.MinEnsuredUnprefixedShadowDOMV0
-          && prefixedShadow_cr ? el.webkitShadowRoot : el.shadowRoot) {
+    if (localOnFirefox ? (el as any).openOrClosedShadowRoot as ShadowRoot | null
+        : (!(Build.BTypes & BrowserType.Edge) || localNotOnEdge) && "lang" in el
+        && (Build.BTypes & BrowserType.Chrome ? GetShadowRoot_(<HTMLElement> el, noClosedShadow)
+            : GetShadowRoot_(<HTMLElement> el)) !== null
+        && isSafeEl_(el)) {
       hosts.push(el)
     } else if (isIFrameElement(el) && local_addChildFrame_) {
       if (OnChrome && Build.MinCVer >= BrowserVer.MinEnsuredShadowDOMV1 || el !== omni_box && el !== find_box) {
@@ -338,24 +354,28 @@ const addChildTrees = (parts: HintSources, allNodes: NodeListOf<SafeElement>): H
 }
 
 const isOtherClickable = (hints: Hint[], element: NonHTMLButFormattedElement | SafeElementWithoutFormat): void => {
-  const tabIndex = (element as ElementToHTMLOrForeign).tabIndex
+  const tabIndex = (element as ElementToHTMLOrForeign).tabIndex, tag = element.localName
   let arr: Rect | null | undefined, s: string | null | undefined, par: Element | null, hasTabIdx: boolean
   let type: ClickType.Default | AllowedClickTypeForNonHTML = clickable_.has(element)
-        || extraClickable_ && extraClickable_.has(element)
+        || extraClickable_ !== null && extraClickable_.has(element)
         || (hasTabIdx = tabIndex !== void 0) && (OnFirefox
             ? (element as NonHTMLButFormattedElement).onclick ||(element as NonHTMLButFormattedElement).onmousedown
             : attr_s(element, "onclick") || attr_s(element, "onmousedown"))
+        || (mode1_ > HintMode.min_string - 1 && mode1_ < HintMode.max_string + 1 && tag.endsWith("text"))
         || (s = OnChrome && Build.MinCVer >= BrowserVer.MinEnsured$Element$$role
               ? element.role : attr_s(element, "role")) && clickableRoles_.test(s)
-        || ngEnabled && attr_s(element, "ng-click")
-        || jsaEnabled_ && (s = attr_s(element, "jsaction")) && checkJSAction(s)
+        || ngEnabled_ === 1 && attr_s(element, "ng-click")
+        || jsaEnabled_ === 1 && (s = attr_s(element, "jsaction")) && checkJSAction(s)
       ? ClickType.attrListener
-      : hasTabIdx && tabIndex! >= 0 ? element.localName === "a" ? ClickType.attrListener : ClickType.tabindex
-      : (s = attr_s(element, "class")) && clickableClasses_.test(s)
+      : hasTabIdx && tabIndex! >= 0 ? tag === "a" ? ClickType.attrListener : ClickType.tabindex
+      : ((s = attr_s(element, "class")) && clickableClasses_.test(s)
+          || tag === "svg" && getComputedStyle_(element).cursor === "pointer")
           && (par = GetParent_unsafe_(element, PNType.DirectElement)) && htmlTag_<1>(par)
+          && (tag !== "svg" || getComputedStyle_(par).cursor !== "pointer")
           && !(hints.length && contains_s(hints[hints.length - 1][0], element)) ? ClickType.classname
       : ClickType.Default
-  if (type && (arr = getVisibleClientRect_(element, null))
+  if (type !== ClickType.Default && (mode1_ < HintMode.min_media || tag !== "path")
+      && (arr = getVisibleClientRect_(element, null)) !== null
       && (isAriaFalse_(element, kAria.hidden) || extraClickable_ && extraClickable_.has(element))
       && (mode1_ > HintMode.min_job - 1 || isAriaFalse_(element, kAria.disabled))
       && (0 === clickTypeFilter_ || clickTypeFilter_ & (1 << type))
@@ -369,21 +389,25 @@ const isOtherClickable = (hints: Hint[], element: NonHTMLButFormattedElement | S
   traverseRoot = !wholeDoc ? fullscreenEl_unsafe_() : !Build.NDEBUG && isInAnElement && wholeDoc || null
   let matchSelector = options.match || null,
   textFilter: OtherFilterOptions["textFilter"] | void | RegExpI | RegExpOne | false = options.textFilter,
-  matchAll = (!Build.NDEBUG && selector === "*" // for easier debugging
-      ? selector = kSafeAllSelector : selector) === kSafeAllSelector && !matchSelector,
-  evenClosed = OnFirefox || OnChrome && (Build.MinCVer >= BrowserVer.Min$dom$$openOrClosedShadowRoot
-      || chromeVer_ > BrowserVer.Min$dom$$openOrClosedShadowRoot - 1) && !!options.closedShadow,
-  clickableSelector = matchAll && options.clickable || null,
-  clickableOnHost: string | null | undefined | void | false = matchAll && options.clickableOnHost,
+  matchAll = selector === kSafeAllSelector && !matchSelector,
+  rawClosedShadow_cr = options.closedShadow,
+  noClosedShadow: BOOL = OnFirefox || OnChrome && (Build.MinCVer >= BrowserVer.Min$dom$$openOrClosedShadowRoot
+      || chromeVer_ > BrowserVer.Min$dom$$openOrClosedShadowRoot - 1) && rawClosedShadow_cr ? 0 : 1,
+  clickableSelector = joinValidSelectors(matchAll && findSelectorByHost(options.clickable)
+      , matchAll && findSelectorByHost(options.clickableOnHost) || findSelectorByHost(kTip.DefaultClickableOnHost)),
   output: Hint[] | Hint0[] = [],
-  cur_arr: HintSources | null = matchSafeElements(selector, traverseRoot, matchSelector, 1) || (matchSelector = " ", [])
+  cur_arr: HintSources | null = matchSafeElements(filter !== getEditable ? selector : (matchAll = !1,
+        selector = VTr(kTip.editableSelector) + (clickableSelector ? "," + clickableSelector : ""))
+      , traverseRoot, matchSelector, 1) || (matchSelector = " ", [])
+  const docBody_cr = OnChrome ? doc.body : null as never,
+  may_nextToBody_cr = OnChrome && matchAll && noClosedShadow && !wholeDoc && !traverseRoot && bZoom_ === 1
+      && rawClosedShadow_cr == null && docBody_cr && isSafeEl_(docBody_cr)
+      && (Build.MinCVer >= BrowserVer.Min$dom$$openOrClosedShadowRoot
+          || chromeVer_>BrowserVer.Min$dom$$openOrClosedShadowRoot-1) && docBody_cr.nextElementSibling as Element|null,
+  nextToBody_cr = OnChrome && may_nextToBody_cr
+      && (may_nextToBody_cr !== ui_box || may_nextToBody_cr.nextElementSibling) ? may_nextToBody_cr : null
   set_evenHidden_(options.evenIf! | (options.scroll === "force" ? kHidden.OverflowHidden : 0))
   initTestRegExps()
-  if (clickableOnHost && (clickableOnHost = findSelectorByHost(clickableOnHost))) {
-    clickableSelector = (clickableOnHost
-        + (clickableSelector && safeCall(querySelector_unsafe_, clickableSelector) !== void 0
-            ? "," + clickableSelector : "")) as "css-selector"
-  }
   if (wantClickable) {
     getPixelScaleToScroll(1)
     clickTypeFilter_ = options.typeFilter! | 0
@@ -391,9 +415,9 @@ const isOtherClickable = (hints: Hint[], element: NonHTMLButFormattedElement | S
   if (matchSelector) {
     wholeDoc || (filter = getIfOnlyVisible)
   } else if (matchAll) {
-    if (ngEnabled == null) {
-      ngEnabled = !!querySelector_unsafe_(".ng-scope");
-      jsaEnabled_ = !!querySelector_unsafe_("[jsaction]");
+    if (ngEnabled_ > 1) {
+      ngEnabled_ = querySelector_unsafe_(".ng-scope") ? 1 : 0
+      jsaEnabled_ = querySelector_unsafe_("[jsaction]") ? 1 : 0
     }
   }
   cur_arr = !wholeDoc && tooHigh_ && !traverseRoot
@@ -420,49 +444,55 @@ const isOtherClickable = (hints: Hint[], element: NonHTMLButFormattedElement | S
         }
         return result.length > 12 ? result : ori_list
       })(([] as SafeElement[]).slice.call(cur_arr)) : cur_arr
+  const kIframes_EdgeOnly = OnEdge ? "iframe,frame" : 0
   cur_arr = matchAll ? cur_arr : addChildTrees(cur_arr
-      , querySelectorAll_unsafe_(kSafeAllSelector, traverseRoot, 1) as NodeListOf<SafeElement>)
+      , querySelectorAll_unsafe_(kIframes_EdgeOnly || kSafeAllSelector, traverseRoot, 1) as NodeListOf<SafeElement>)
   if (!Build.NDEBUG && isInAnElement && !matchSelector) {
     // just for easier debugging
-    if (OnFirefox || !notSafe_not_ff_!(traverseRoot!)) {
-      (cur_arr = ([] as SafeElement[]).slice.call(cur_arr)).unshift(traverseRoot as SafeElement)
+    if (isSafeEl_(traverseRoot!)) {
+      (cur_arr = ([] as SafeElement[]).slice.call(cur_arr)).unshift(traverseRoot)
     }
   }
   const checkNonHTML: BaseFilter<Hint0 | Hint> | null = wantClickable
       ? matchSelector ? <typeof getIfOnlyVisible> filter : isOtherClickable as BaseFilter<Hint> as BaseFilter<Hint0>
       : acceptNonHTML ? filter as BaseFilter<Hint0 | Hint> : null
-  const prefixedShadow_cr = OnChrome && Build.MinCVer < BrowserVer.MinEnsuredUnprefixedShadowDOMV0
-      && chromeVer_ < BrowserVer.MinEnsuredUnprefixedShadowDOMV0
   // const cssClickableAttrs: string = !wantClickable ? "" : `[onclick],[tabindex],[contenteditable],[role]${
-  //     forHover_ ? ",[onmouseover]" : ""}${ngEnabled ? ",[ng-click]" : ""}${jsaEnabled_ ? ",[jsaction]" : ""
+  //     forHover_ ? ",[onmouseover]" : ""}${ngEnabled_ ? ",[ng-click]" : ""}${jsaEnabled_ ? ",[jsaction]" : ""
   //     },[aria-selected],[data-tab]`
   const tree_scopes: Array<typeof cur_scope> = [[cur_arr, 0
-      , createElementSet(clickableSelector && querySelectorAll_unsafe_(clickableSelector, traverseRoot, 1)
-          || (clickableSelector = null, [])) ]]
+      , clickableSelector && createElementSet(querySelectorAll_unsafe_(clickableSelector, traverseRoot, 1)!) ]]
+  const localBZoom = bZoom_
   let cur_scope: [HintSources, number, IterableElementSet | null] | undefined, cur_tree: HintSources, cur_ind: number
   for (; cur_scope = tree_scopes.pop(); ) {
     for ([cur_tree, cur_ind, extraClickable_] = cur_scope; cur_ind < cur_tree.length; ) {
       const el: SafeElement = cur_tree[cur_ind++]
+      if (Build.BTypes & BrowserType.Chrome && el === nextToBody_cr) {
+        noClosedShadow = 0
+        if (localBZoom !== 1 && !traverseRoot) { set_bZoom_(1); prepareCrop_(1) }
+      }
       if ("lang" in (el as ElementToHTML)) {
         filter(output, el as SafeHTMLElement)
-        const shadow = evenClosed ? GetShadowRoot_(el) : ((Build.BTypes & BrowserType.Chrome)
-            && Build.MinCVer < BrowserVer.MinEnsuredUnprefixedShadowDOMV0 && prefixedShadow_cr
-            ? el.webkitShadowRoot : el.shadowRoot) as ShadowRoot | null | undefined;
-        if (shadow) {
+        const shadow = !(Build.BTypes & BrowserType.Edge)
+            && (!(Build.BTypes & BrowserType.Chrome) || Build.MinCVer >= BrowserVer.MinEnsuredUnprefixedShadowDOMV0)
+            && (!(Build.BTypes & BrowserType.Firefox) || Build.MinFFVer >= FirefoxBrowserVer.MinEnsuredShadowDOMV1)
+            ? noClosedShadow === 1 ? (el as SafeHTMLElement).shadowRoot as ShadowRoot | null
+              : !(Build.BTypes & ~BrowserType.Firefox) ? (el as any).openOrClosedShadowRoot as ShadowRoot | null
+              : GetShadowRoot_(el as SafeHTMLElement, 0)
+            : Build.BTypes & BrowserType.Chrome ? GetShadowRoot_(el as SafeHTMLElement, noClosedShadow)
+            : GetShadowRoot_(el as SafeHTMLElement)
+        if (shadow !== null) {
           if (filter === getIfOnlyVisible) {
             const last = output.pop()
-            last && last[0] === el && testMatch(matchSelector!, last) && (output as Hint0[]).push(last)
+            last === void 0 || last[0] === el && !testMatch(matchSelector!, last[0]) || (output as Hint0[]).push(last)
           }
           tree_scopes.push([cur_tree, cur_ind, extraClickable_])
           cur_tree = matchSafeElements(selector, shadow, matchSelector)
           cur_tree = matchAll ? cur_tree : addChildTrees(cur_tree
-              , querySelectorAll_unsafe_(kSafeAllSelector, shadow) as NodeListOf<SafeElement>)
+              , querySelectorAll_unsafe_(kIframes_EdgeOnly || kSafeAllSelector, shadow) as NodeListOf<SafeElement>)
           cur_ind = 0
-          if (clickableSelector) {
-            extraClickable_ = createElementSet(querySelectorAll_unsafe_(clickableSelector, shadow)!)
-          }
+          extraClickable_ = clickableSelector && createElementSet(querySelectorAll_unsafe_(clickableSelector, shadow)!)
         }
-      } else if (checkNonHTML) {
+      } else if (checkNonHTML !== null) {
         checkNonHTML(output, el)
       }
     }
@@ -472,7 +502,8 @@ const isOtherClickable = (hints: Hint[], element: NonHTMLButFormattedElement | S
   }
   cur_scope = extraClickable_ = cur_tree = cur_arr = null as never
   set_evenHidden_(kHidden.None)
-  while (output.length && (output[0][0] === docEl_unsafe_() || !hintManager && output[0][0] === doc.body)) {
+  while (output.length
+      && (output[0][0] === docEl_unsafe_() || !hintManager && output[0][0] === (OnChrome ? docBody_cr : doc.body))) {
     output.shift()
   }
   if (Build.NDEBUG ? wholeDoc : wholeDoc && !isInAnElement) {
@@ -481,18 +512,27 @@ const isOtherClickable = (hints: Hint[], element: NonHTMLButFormattedElement | S
       console.log("Assert error: `!wantClickable if wholeDoc` in VHints.traverse_");
     }
   } else {
-  scrolled === 1 && suppressScroll();
   if (wantClickable && !matchSelector) { // deduplicate
     ((list: Hint[]): void => {
   const D = "div"
-  let i = list.length, j: number, k: ClickType, s: string, notRemoveParents: boolean;
+  let i = list.length, j: number = 0, k: ClickType, s: string, notRemoveParents: boolean;
   let element: Element | null, prect: Rect, crect: Rect | null, splice = 0
   let shadowRoot: ShadowRoot | null
+  for (; j < i; ) {
+    k = list[j][2];
+    if (k > ClickType.scrollX - 1 && shouldScroll_s(list[j][0], (<ScrollByY> (k - ClickType.scrollX)
+          + <0 | 2> (evenHidden_ & kHidden.OverflowHidden)) as BOOL | 2 | 3, 0) < 1) {
+      list.splice(j, 1), i--
+    } else {
+      j++
+    }
+  }
+  scrolled === 1 && suppressScroll()
   while (0 <= --i) {
     k = list[i][2];
     notRemoveParents = k === ClickType.classname;
     if ((notRemoveParents || k === ClickType.codeListener)
-        && (shadowRoot = OnChrome ? GetShadowRoot_(list[i][0], 1) : GetShadowRoot_(list[i][0]))
+        && (shadowRoot = OnChrome ? TryGetShadowRoot_(list[i][0], 1) : TryGetShadowRoot_(list[i][0]))
         && i + 1 < list.length && list[j = i + 1][0].parentNode === shadowRoot
         && isContaining_(list[i][1], list[j][1])
         && (querySelectorAll_unsafe_(VTr(kTip.visibleElementsInScopeChildren), shadowRoot)!).length === 1) {
@@ -504,7 +544,7 @@ const isOtherClickable = (hints: Hint[], element: NonHTMLButFormattedElement | S
         if (s = ((element = list[i][0]) as SafeHTMLElement).localName, s === "i" || s === D) {
           if (notRemoveParents
               = i > 0 && buttonOrATags_.test(list[i - 1][0].localName)
-              ? (s < "i" || !element.innerHTML.trim()) && isDescendant(element, list[i - 1][0], s < "i")
+              ? (s < "i" || !element.firstChild) && isDescendant(element, list[i - 1][0], +(s < "i") as BOOL)
               : !!(element = (element as SafeHTMLElement).parentElement)
                 && hasTag_("button", element) && element.disabled
               ) {
@@ -538,7 +578,7 @@ const isOtherClickable = (hints: Hint[], element: NonHTMLButFormattedElement | S
           && (element = list[i][0]).childElementCount === 1 && i + 1 < list.length) {
         element = element.firstElementChild as Element
         prect = list[i][1];
-        crect = OnFirefox || !notSafe_not_ff_!(element) ? getVisibleClientRect_(element as SafeElement) : null
+        crect = isSafeEl_(element) ? getVisibleClientRect_(element) : null
         if (crect && isContaining_(crect, prect) && htmlTag_<1>(element)) {
           if (parentNode_unsafe_s(list[i + 1][0]) !== element) {
             list[i] = [element, crect, ClickType.tabindex];
@@ -604,16 +644,11 @@ const isOtherClickable = (hints: Hint[], element: NonHTMLButFormattedElement | S
       })
     }
   }
-  if (!OnFirefox && !OnEdge && ui_root && !wholeDoc
-      && (OnChrome && Build.MinCVer >= BrowserVer.MinShadowDOMV0
-          || ui_root !== ui_box)
+  if (!OnFirefox && !OnEdge && ui_root && !wholeDoc && (!OnChrome || noClosedShadow === 1)
+      && (OnChrome && Build.MinCVer >= BrowserVer.MinShadowDOMV0 || ui_root !== ui_box)
       && (Build.NDEBUG && (!OnChrome || Build.MinCVer >= BrowserVer.MinEnsuredShadowDOMV1)
           ? !notWantVUI : !notWantVUI && ui_root.mode === "closed")) {
-    const bz = bZoom_, hasHookedScroll = scrolled
-    if (bz !== 1 && !traverseRoot) {
-      set_bZoom_(1)
-      prepareCrop_(1)
-    }
+    if (localBZoom !== 1 && !traverseRoot) { set_bZoom_(1); prepareCrop_(1) }
     cur_arr = querySelectorAll_unsafe_(selector, ui_root) as NodeListOf<SafeElement>
     if (OnChrome && Build.MinCVer < BrowserVer.MinEnsured$ForOf$ForDOMListTypes) {
       // eslint-disable-next-line @typescript-eslint/prefer-for-of
@@ -621,10 +656,9 @@ const isOtherClickable = (hints: Hint[], element: NonHTMLButFormattedElement | S
     } else {
       for (const i of cur_arr as ArrayLike<Element> as Element[]) { htmlTag_<1>(i) && filter(output, i) }
     }
-    set_bZoom_(bz)
-    hasHookedScroll || set_scrolled(0)
-    clickTypeFilter_ = 0
+    set_bZoom_(localBZoom)
   }
+  clickTypeFilter_ = 0
   return output
 }) as {
   (selector: string, options: CSSOptions & OtherFilterOptions, filter: Filter<Hint0>, notWantVUI: 1
@@ -633,34 +667,32 @@ const isOtherClickable = (hints: Hint[], element: NonHTMLButFormattedElement | S
       , wholeDoc?: 0, acceptNonHTML?: 1): Hint[]
 }
 
-export const excludeHints = (output: Hint0[], options: CSSOptions, wantClickable: boolean| BOOL): Hint0[] => {
-  let excludedSelector: HintsNS.Options["exclude"] | "" | false = options.exclude
-  const excl2 = findSelectorByHost(options.excludeOnHost)
+export const excludeHints = (output: Hint0[], options: CSSOptions, wantClickable: boolean | 1): Hint0[] => {
+  const excl2: "css-selector" | void | false = findSelectorByHost(options.excludeOnHost)
       || (wantClickable && mode1_ < HintMode.min_job && !options.match
-          && (<RegExpOne> /^\/s($|earch)/).test(loc_.pathname) && findSelectorByHost(kTip.searchResults)) || ""
-  excludedSelector = excludedSelector && safeCall(querySelector_unsafe_, excludedSelector) !== void 0
-      ? (excludedSelector + (excl2 && "," + excl2)) as "css-selector" : excl2
-  return excludedSelector && output.filter(hint => !testMatch(excludedSelector as "css-selector", hint)) || output
+          && (<RegExpOne> /^\/s($|earch)/).test(loc_.pathname) && findSelectorByHost(kTip.searchResults))
+  const excludedSelector = joinValidSelectors(findSelectorByHost(options.exclude), excl2)
+  return excludedSelector && output.filter(hint => !testMatch(excludedSelector as "css-selector", hint[0])) || output
 }
 
-const isDescendant = function (c: Element | null, p: Element, shouldBeSingleChild: BOOL | boolean): boolean {
+const isDescendant: (c: Element, p: Element, shouldBeSingleChild: BOOL) => boolean = (c: Element | null, p, sc) => {
   // Note: currently, not compute normal shadowDOMs / even <slot>s (too complicated)
   let i = 3, f: Node | null;
-  while (0 < i-- && c
-      && (c = OnFirefox ? c.parentElement as Element | null : GetParent_unsafe_(c, PNType.DirectElement))
+  while (0 < i-- && c !== null
+      && (c = OnFirefox ? c.parentElement as Element | null : GetParent_unsafe_(c, PNType.DirectElement)) !== null
       && !(OnChrome && Build.MinCVer < BrowserVer.MinFramesetHasNoNamedGetter
-            ? c === p || unsafeFramesetTag_old_cr_ && notSafe_not_ff_!(c) : c === p)
+            ? c === p || unsafeFramesetTag_old_cr_ !== 0 && !isSafeEl_(c) : c === p)
       ) { /* empty */ }
-  if (c !== p
-      || !shouldBeSingleChild || buttonOrATags_.test(p.localName as string)) {
+  if (c !== p || sc === 0 || buttonOrATags_.test(p.localName as string)) {
     return c === p;
   }
   for (; c.childElementCount === 1 && !(isNode_(f = c.firstChild!, kNode.TEXT_NODE) && f.data.trim()) && ++i < 3
       ; c = c.firstElementChild as Element | null as Element) { /* empty */ }
   return i > 2;
-} as (c: Element, p: Element, shouldBeSingleChild: BOOL | boolean) => boolean
+}
 
-export const filterOutNonReachable = (list: Hint[], notForAllClickable?: boolean | BOOL): void | boolean => {
+export const filterOutNonReachable = (list: Hint[], notForAllClickable?: boolean | BOOL
+    , useMatch?: HintsNS.Options["match"]): void | boolean => {
   const zoom = OnChrome ? docZoom_ * bZoom_ : 1, zoomD2 = OnChrome ? zoom / 2 : 0.5, start = getTime(),
   body = doc.body, docEl = docEl_unsafe_(),
   // note: exclude the case of `fromPoint.contains(el)`, to exclude invisible items in lists
@@ -680,11 +712,13 @@ export const filterOutNonReachable = (list: Hint[], notForAllClickable?: boolean
                 BrowserVer.Min$DocumentOrShadowRoot$$elementsFromPoint // lgtm [js/syntax-error]
               ? BrowserVer.Min$Node$$getRootNode // lgtm [js/syntax-error]
               : BrowserVer.Min$DocumentOrShadowRoot$$elementsFromPoint) // lgtm [js/syntax-error]
-      || OnChrome && isDocZoomStrange_ && docZoom_ - 1) { // lgtm [js/syntax-error]
+      || OnChrome && Build.MinCVer < BrowserVer.MinDevicePixelRatioNotImplyZoomOfDocEl
+          && isDocZoomStrange_old_cr && docZoom_ - 1) { // lgtm [js/syntax-error]
     return
   }
   initTestRegExps() // in case of `isDescendant(..., ..., 1)`
   const hasInert = OnChrome && Build.MinCVer >= BrowserVer.MinEnsured$HTMLElement$$inert ? isHTML_() : supportInert_!()
+  let hasTable: 1 | 2 | undefined
   while (0 <= --i && now - start < GlobalConsts.ElementsFromPointTakesTooSlow) {
     i & 63 || (now = getTime())
     el = list[i][0];
@@ -708,42 +742,54 @@ export const filterOutNonReachable = (list: Hint[], notForAllClickable?: boolean
     if (mediaTag === kMediaTag.img ? isDescendant(el, fromPoint!, 0)
         : tag === "area" ? fromPoint === list[i][4]
         : tag === INP ? ((OnFirefox ? !hasTag_("label", fromPoint!)
-                : !hasTag_("label", fromPoint!) && !notSafe_not_ff_!(fromPoint!)
+                : !hasTag_("label", fromPoint!) && isSafeEl_(fromPoint!)
               && fromPoint!.parentElement || fromPoint!) as MayBeLabel).control === el
           && (notForAllClickable
               || (i < 1 || list[i - 1][0] !== el) && (i + 2 > list.length || list[i + 1][0] !== el))
-        : mediaTag === kMediaTag.otherMedias) {
+        : mediaTag === kMediaTag.otherMedias || !tag && (el as ElementToSVG).ownerSVGElement) {
       continue;
     }
     if (hasInert && !editableTypes_[tag] && el.closest!("[inert]")) { continue }
+    if (tag === "label" && hasTag_(INP, fromPoint!) && (el as HTMLLabelElement).control === fromPoint!) {
+      useMatch || (list[i][0] = fromPoint! as HTMLInputElement)
+      continue
+    }
+    const small = area.r - area.l < 17 || area.b - area.t < 17
+    if (!hasTable) {
+      hasTable = OnChrome && Build.MinCVer < BrowserVer.Min$Element$$closest
+          && chromeVer_ < BrowserVer.Min$Element$$closest ? 1
+          : querySelector_unsafe_("table") ? 2 : 1
+    }
+    if ((small || hasTable === 2 && el!.closest!("table")) && isSafeEl_(fromPoint!) && !contains_s(fromPoint, el)) {
+      list.splice(i, 1)
+      continue
+    }
     now = i & 3 ? now : getTime()
     let index2 = 0
     const stack = root.elementsFromPoint(cx, cy), elPos = stack.indexOf(el)
-    if (elPos > 0 ? (index2 = stack.lastIndexOf(fromPoint!, elPos - 1)) >= 0 : elPos < 0) {
+    if (elPos < 0 && small) { list.splice(i, 1) }
+    else if (elPos < 1 ? elPos < 0 : (index2 = stack.lastIndexOf(fromPoint!, elPos - 1)) >= 0
+        || isSafeEl_(stack[0]) && contains_s(stack[0], fromPoint!) && (index2 = 0, 1)) {
       if (!OnFirefox && elPos < 0) {
         for (temp = el; (temp = GetParent_unsafe_(temp, PNType.RevealSlot)) && temp !== body && temp !== docEl; ) {
           if (getComputedStyle_(temp).zoom !== "1") { temp = el; break; }
         }
       } else {
-        while (temp = stack[index2], index2++ < elPos && (OnFirefox || !notSafe_not_ff_!(temp))
+        while (temp = stack[index2], index2++ < elPos && isSafeEl_(temp)
             && (!isAriaFalse_(temp as SafeElement, kAria.hidden)
                 || contains_s(temp as SafeElement, el))) { /* empty */ }
         temp = temp !== fromPoint && contains_s(el, temp) ? el : temp
       }
       temp === el
-      || does_hit(cx, Build.BTypes & BrowserType.Chrome ? (area.t + 2) * zoom : area.t + 2) // x=center, y=top
-      || does_hit(cx, Build.BTypes & BrowserType.Chrome ? (area.b - 4) * zoom : area.b - 4) // x=center, y=bottom
-      || does_hit(Build.BTypes & BrowserType.Chrome ? (area.l + 2) * zoom : area.l + 2, cy) // x=left, y=center
-      || does_hit(Build.BTypes & BrowserType.Chrome ? (area.r - 4) * zoom : area.r - 4, cy) // x=right, y=center
+      || !small && (does_hit(cx, Build.BTypes & BrowserType.Chrome ? (area.t+2) * zoom : area.t + 2) // x=center, y=top
+            || does_hit(cx, Build.BTypes & BrowserType.Chrome ? (area.b - 4) * zoom : area.b - 4) // x=center, y=bottom
+            || does_hit(Build.BTypes & BrowserType.Chrome ? (area.l + 2) * zoom : area.l + 2, cy) // x=left, y=center
+            || does_hit(Build.BTypes & BrowserType.Chrome ? (area.r - 4) * zoom : area.r - 4, cy)) // x=right, y=center
       || list.splice(i, 1);
     }
   }
   return i < 0
 }
-
-export type ModesWithOnlyHTMLElements = HintMode.min_link_job | HintMode.max_link_job
-    | HintMode.COPY_URL | HintMode.DOWNLOAD_LINK | HintMode.OPEN_INCOGNITO_LINK | HintMode.COPY_IMAGE
-    | HintMode.EDIT_LINK_URL | HintMode.FOCUS_EDITABLE
 
 export const getVisibleElements = (view: ViewBox): readonly Hint[] => {
   let r2 = null as Rect[] | null, subtractor: Rect, subtracted: Rect[]
@@ -810,8 +856,7 @@ export const getVisibleElements = (view: ViewBox): readonly Hint[] => {
           getIfOnlyVisible(hints, element)
         }
       })
-    : !(_i - HintMode.FOCUS_EDITABLE) ? traverse(OnFirefox ? VTr(kTip.editableSelector)
-        : VTr(kTip.editableSelector) + kSafeAllSelector, hintOptions, /*#__NOINLINE__*/ getEditable)
+    : !(_i - HintMode.FOCUS_EDITABLE) ? traverse(kSafeAllSelector, hintOptions, getEditable)
     : !(_i - HintMode.ENTER_VISUAL_MODE) || hintOptions.anyText
     // not use `":not(:empty)"`, because it will require another selectAll to collect shadow hosts
     ? traverse(OnFirefox ? ":not(:-moz-only-whitespace)" : kSafeAllSelector
@@ -823,7 +868,7 @@ export const getVisibleElements = (view: ViewBox): readonly Hint[] => {
             return
         }
         const arr = element.childNodes as NodeList
-        if (!OnChrome || Build.MinCVer >= BrowserVer.MinEnsured$ForOf$ForDOMListTypes) {
+        if (!(Build.BTypes & BrowserType.Chrome) || Build.MinCVer >= BrowserVer.MinEnsured$ForOf$ForDOMListTypes) {
           for (const node of arr as ArrayLike<Node> as Node[]) {
             if (isNode_(node, kNode.TEXT_NODE) && node.data.trim().length > 2) {
               getIfOnlyVisible(hints, element)
@@ -843,8 +888,9 @@ export const getVisibleElements = (view: ViewBox): readonly Hint[] => {
     : traverse(kSafeAllSelector, hintOptions, getClickable)
   if ((reachable != null ? reachable
         : (_i < HintMode.max_mouse_events + 1 || _i === HintMode.FOCUS_EDITABLE) && fgCache.e)
-      && visibleElements.length < GlobalConsts.MinElementCountToStopPointerDetection
-      && filterOutNonReachable(visibleElements, _i > HintMode.max_mouse_events)) { /* empty */ }
+      && visibleElements.length <=
+          (isTY(reachable, kTY.num) ? reachable : GlobalConsts.DefaultMaxElementCountToDetectPointer)
+      && filterOutNonReachable(visibleElements, _i > HintMode.max_mouse_events, hintOptions.match)) { /* empty */ }
   else {
     OnEdge || _i === HintMode.FOCUS_EDITABLE && filterOutInert(visibleElements)
   }
@@ -920,10 +966,10 @@ export const checkNestedFrame = (output?: Hint[]): void => {
   } else {
     if (output == null || clickTypeFilter_) {
       output = [];
-      for (let arr = querySelectorAll_unsafe_(VTr(kTip.notANestedFrame))! as ArrayLike<ElementToHTML>
+      initTestRegExps()
+      for (let arr = querySelectorAll_unsafe_(VTr(kTip.mayNotANestedFrame))! as ArrayLike<ElementToHTML>
               , i = arr.length; (len = output.length) < 2 && i-- > 0; ) {
-        if (arr[i].lang != null) {
-          initTestRegExps()
+        if ("lang" in arr[i]) {
           getClickable(output, arr[i] as SafeHTMLElement)
         }
       }
@@ -933,7 +979,7 @@ export const checkNestedFrame = (output?: Hint[]): void => {
           && (rect = boundingRect_(element), rect2 = boundingRect_(docEl_unsafe_()!),
               rect.t - rect2.t < 20 && rect.l - rect2.l < 20
               && rect2.r - rect.r < 20 && rect2.b - rect.b < 20)
-          && isStyleVisible_(element) ? element as KnownIFrameElement
+          && isStyleVisible_(element) ? element satisfies AccessableIFrameElement
         : null
   }
   frameNested_ = res === false && readyState_ < "i" ? null : res;

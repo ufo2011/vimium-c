@@ -1,6 +1,7 @@
 import {
   CurCVer_, CurFFVer_, OnChrome, OnEdge, OnFirefox, copy_, paste_, substitute_, set_copy_, set_paste_, set_substitute_,
-  settingsCache_, updateHooks_, searchEngines_, blank_, runOnTee_
+  settingsCache_, updateHooks_, searchEngines_, blank_, runOnTee_, innerClipboard_, framesForTab_, curTabId_,
+  readInnerClipboard_, set_readInnerClipboard_
 } from "./store"
 import * as BgUtils_ from "./utils"
 import * as Exclusions from "./exclusions"
@@ -14,14 +15,17 @@ declare const enum SedAction {
   encode = 10, encodeComp = 11, encodeAll = 12, encodeAllComp = 13,
   camel = 14, camelcase = 14, dash = 15, dashed = 15, hyphen = 15, capitalize = 16, capitalizeAll = 17,
   latin = 18, latinize = 18, latinise = 18, noaccent = 18, nodiacritic = 18, decodeAll = 19,
-  json = 20, jsonParse = 21,
+  json = 20, jsonParse = 21, virtually = 22, virtual = 22, dryRun = 22,
+  inc = 23, increase = 23, dec = 24, decrease = 24, readableJson = 25, length = 26, rows = 27,
   break = 99, stop = 99, return = 99,
 }
-interface Contexts { normal_: SedContext, extras_: kCharCode[] | null }
+type SedActions = SedAction | `${string}=${string}`
+interface Contexts { normal_: SedContext, extras_: (kCharCode | string)[] | null }
 interface ClipSubItem {
   readonly contexts_: Contexts; readonly match_: RegExp
   host_: string | ValidUrlMatchers | /** regexp is broken */ -1 | null
-  readonly retainMatched_: number; readonly actions_: SedAction[]; readonly replaced_: string
+  activeTab_: string | ValidUrlMatchers | /** regexp is broken */ -1 | null
+  readonly retainMatched_: number; readonly actions_: SedActions[]; readonly replace_: string;
 }
 
 const SedActionMap: ReadonlySafeDict<SedAction> = {
@@ -40,36 +44,47 @@ const SedActionMap: ReadonlySafeDict<SedAction> = {
   break: SedAction.return, stop: SedAction.return, return: SedAction.return,
   latin: SedAction.latin, latinize: SedAction.latin, latinise: SedAction.latin,
   noaccent: SedAction.latin, nodiacritic: SedAction.latin,
-  json: SedAction.json, jsonparse: SedAction.jsonParse,
+  json: SedAction.json, jsonparse: SedAction.jsonParse, readablejson: SedAction.readableJson,
+  virtual: SedAction.virtually, virtually: SedAction.virtually, dryrun: SedAction.virtually,
+  inc: SedAction.inc, dec: SedAction.dec, increase: SedAction.inc, decrease: SedAction.dec,
+  length: SedAction.length, rows: SedAction.rows,
 } satisfies SafeObject & {
   [key in Exclude<keyof typeof SedAction, "NONE"> as NormalizeKeywords<key>]: (typeof SedAction)[key]
 }
 
-let staticSeds_: readonly ClipSubItem[] | null = null
+const kDirectClipNameRe = <RegExpOne> /^[<>][\w\x80-\ufffd]{1,8}!?$|^[\w\x80-\ufffd]{1,8}!?>$/
+let staticSeds_: readonly ClipSubItem[] | null = null, timeoutToClearInnerClipboard_ = 0
 
 const parseSeds_ = (text: string, fixedContexts: Contexts | null): readonly ClipSubItem[] => {
   const result: ClipSubItem[] = []
   const sepReCache: Map<string, RegExpOne> = new Map()
-  for (let line of text.replace(<RegExpSearchable<0>> /\\\\?\n/g, t => t.length === 3 ? "\\\n" : "").split("\n")) {
+  for (let line of text.replace(<RegExpSearchable<0>> /\\(?:\n|\\\n[^\S\n]*)/g, "").split("\n")) {
     line = line.trim()
-    const prefix = (<RegExpOne> /^([\w\x80-\ufffd]{1,6})([^\x00- \w\\\x7f-\uffff])/).exec(line)
+    if (kDirectClipNameRe.test(line)) {
+      line = `s/^//,${line[0] === ">" ? "copy" : "paste"}=${line.endsWith(">") ? line.slice(0, -1) : line.slice(1)}`
+    }
+    const prefix = (<RegExpOne> /^([\w\x80-\ufffd]{1,8})([^\x00- \w\\\x7f-\uffff])/).exec(line)
     if (!prefix) { continue }
     let sep = prefix[2], sepRe = sepReCache.get(sep)
     if (!sepRe) {
-      const s = "\\u" + (sep.charCodeAt(0) + 0x10000).toString(16).slice(1)
+      const s = BgUtils_.encodeUnicode_(sep)
       sepRe = new RegExp(`^((?:\\\\[^]|[^${s}\\\\])+)${s}(.*)${s}([a-z]{0,9})(?:,|$)`)
       sepReCache.set(sep, sepRe)
     }
     const body = sepRe.exec(line = line.slice(prefix[0].length))
     if (!body) { continue }
-    const head = prefix[1], flags = body[3], tail = line.slice(body[0].length), actions: SedAction[] = []
-    let host: string | null = null, retainMatched: number = 0
+    const head = prefix[1], flags = body[3], tail = line.slice(body[0].length), actions: SedActions[] = []
+    let host: string | null = null, retainMatched: number = 0, activeTab: string | null = null
     for (const rawI of tail ? tail.split(",") : []) {
       const i = rawI.toLowerCase()
       if (i.startsWith("host=")) {
         host = rawI.slice(5)
+      } else if ((<RegExpOne> /^active-?tab=/).test(i)) {
+        activeTab = rawI.slice(i[9] === "=" ? 10 : 11)
       } else if (i.startsWith("match")) {
         retainMatched = Math.max(i.includes("=") && parseInt(i.split("=")[1]) || 1, 1)
+      } else if (i.includes("=")) {
+        actions.push(i as `${string}=${string}`)
       } else {
         let action = SedActionMap[i.replace(<RegExpG> /[_-]/g, "")] || SedAction.NONE
         action && actions.push(action)
@@ -77,21 +92,17 @@ const parseSeds_ = (text: string, fixedContexts: Contexts | null): readonly Clip
     }
     const matchRe = BgUtils_.makeRegexp_(body[1], retainMatched ? flags.replace(<RegExpG> /g/g, "") : flags)
     matchRe && result.push({
-      contexts_: fixedContexts || parseSedKeys_(head)!,
-      host_: host,
-      match_: matchRe,
-      retainMatched_: retainMatched,
-      actions_: actions,
-      replaced_: decodeSlash_(body[2], 1)
+      contexts_: fixedContexts || parseSedKeys_(head)!, host_: host, match_: matchRe, retainMatched_: retainMatched,
+      replace_: decodeSlash_(body[2], 1), actions_: actions, activeTab_: activeTab,
     })
   }
   return result
 }
 
 const decodeSlash_ = (text: string, numbersInRe?: 1): string =>
-    text.replace(<RegExpSearchable<1>> /\\(x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|[^])|\$0/g,
+    text.replace(<RegExpSearchable<1>> /\\(x[0-9a-fA-F]{2}|u[0-9a-fA-F]{4}|[^])|\$[0$]/g,
         (raw, s: string): string =>
-            !s ? numbersInRe ? "$&" : raw : s[0] === "x" || s[0] === "u"
+            !s ? numbersInRe && raw === "$0" ? "$&" : raw : s[0] === "x" || s[0] === "u"
             ? (s = String.fromCharCode(parseInt(s.slice(1), 16)), s === "$" ? s + s : s)
             : s === "t" ? "\t" : s === "r" ? "\r" : s === "n" ? "\n"
             : !numbersInRe ? s
@@ -173,10 +184,7 @@ const latinize = (text: string): string => {
 const jsonToEmbed = (text: string): string => {
   text = JSON.stringify(text).slice(1, -1)
   /** encode OPs in `parseKeySeq` and `parseEmbeddedOptions` from {@see ./run_keys.ts} */
-  text = text.replace(<RegExpG & RegExpSearchable<0>> /[<\s"$%&#()?:+]/g, (s): string => {
-    const hex = s.charCodeAt(0) + 0x10000
-    return "\\u" + hex.toString(16).slice(1)
-  })
+  text = text.replace(<RegExpG & RegExpSearchable<0>> /[<\s"$%&#()?:+,;]/g, BgUtils_.encodeUnicode_)
   return text
 }
 
@@ -184,24 +192,29 @@ const tryParseJSON = (text: string): string => {
   text = text[0] === '"' ? text.slice(1, text.endsWith('"') ? -1 : undefined) : text
   text = text.replace(<RegExpG & RegExpSearchable<0>> /[\r\n\0]/g, s => s < "\n" ? "\\0" : s > "\n" ? "\\r" : "\\n")
   text = `"${text}"`
-  try { text = JSON.parse(text) } catch { /* empty */ }
-  return text
+  return BgUtils_.tryParse<string>(text)
 }
 
 export const parseSedOptions_ = (sed: UserSedOptions): ParsedSedOpts | null => {
   if (sed.$sed != null) { return sed.$sed }
   let r = sed.sed, k = sed.sedKeys || sed.sedKey
-  return r == null && !k ? null
-      : !r || typeof r !== "object" ? sed.$sed = { r, k } : r.r != null || r.k ? r : null
+  return r == null && (!k && k !== 0) ? null : !r || typeof r !== "object"
+      ? sed.$sed = { r: typeof r === "number" ? r + "" : r, k: typeof k === "number" ? k + "" : k }
+      : !(r instanceof Array) && (r.r != null || r.k) ? r : null
 }
 
-const parseSedKeys_ = (keys: string | object, parsed?: ParsedSedOpts): Contexts | null => {
+const parseSedKeys_ = (keys: string | number | object, parsed?: ParsedSedOpts): Contexts | null => {
   if (typeof keys === "object") {
     return (keys as Contexts).normal_ || (keys as Contexts).extras_ ? keys as Contexts : parsed ? parsed.k = null : null
   }
-  let extras_: kCharCode[] | null = null, normal_ = SedContext.NONE
-  for (let i = 0; i < keys.length; i++) {
-    const code = keys.charCodeAt(i), ch = code & ~kCharCode.CASE_DELTA
+  let extras_: Contexts["extras_"] = null, normal_ = SedContext.NONE
+  let keysStr = typeof keys === "number" ? keys + "" : keys
+  if (keysStr[0] === "_") {
+    extras_ = [keysStr.slice(1)]
+    keysStr = ""
+  }
+  for (let i = 0; i < keysStr.length; i++) {
+    const code = keysStr.charCodeAt(i), ch = code & ~kCharCode.CASE_DELTA
     if (!(ch > kCharCode.maxNotAlphabet && ch < kCharCode.minNotAlphabet)) {
       extras_ || (extras_ = [])
       if (parsed || !extras_.includes(code)) {
@@ -240,40 +253,105 @@ export const doesNeedToSed = (context: SedContext, sed: ParsedSedOpts | null): b
 }
 
 const convertJoinedRules = (rules: string): string => {
+  rules.startsWith(",") && (rules = "s/^//" + rules)
   return rules.includes("\n") ? rules : !(Build.BTypes & ~BrowserType.ChromeOrFirefox)
   && (!(Build.BTypes & BrowserType.Chrome) || Build.MinCVer >= BrowserVer.MinEnsuredLookBehindInRegexp)
   && (!(Build.BTypes & BrowserType.Firefox) || Build.MinFFVer >= FirefoxBrowserVer.MinLookBehindInRegexp)
-  ? rules.replace(<RegExpG> /(?<!\\) ([\w\x80-\ufffd]{1,6})(?![\x00- \w\\\x7f-\uffff])/g, "\n$1")
+  ? rules.replace(<RegExpG> /(?<!\\) ([\w\x80-\ufffd]{1,8})(?![\x00- \w\\\x7f-\uffff])/g, "\n$1")
   : OnChrome && CurCVer_ > BrowserVer.MinEnsuredLookBehindInRegexp - 1
     || OnFirefox && CurFFVer_ > FirefoxBrowserVer.MinLookBehindInRegexp - 1
-  ? rules.replace(new RegExp("(?<!\\\\) ([\\w\\x80-\\ufffd]{1,6})(?![\\x00- \\w\\\\\\x7f-\\uffff])", "g")
+  ? rules.replace(new RegExp("(?<!\\\\) ([\\w\\x80-\\ufffd]{1,8})(?![\\x00- \\w\\\\\\x7f-\\uffff])", "g")
       , "\n$1")
-  : rules.replace(<RegExpG & RegExpSearchable<1>> /\\ | ([\w\x80-\ufffd]{1,6})(?![\x00- \w\\\x7f-\uffff])/g
+  : rules.replace(<RegExpG & RegExpSearchable<1>> /\\ | ([\w\x80-\ufffd]{1,8})(?![\x00- \w\\\x7f-\uffff])/g
       , (s, a): string => s[1] === " " ? s : "\n" + a)
 }
 
-set_substitute_((text: string, normalContext: SedContext, mixedSed?: MixedSedOpts | null): string => {
+export const replaceUsingClipboard = (text: string, item: ClipSubItem, lastCleanTimer: number): string => {
+  const rawReplacement = item.replace_
+  if (!rawReplacement.includes("${")) {
+    return text.replace(item.match_ as RegExpOne, rawReplacement)
+  }
+  const toCopy = new Map<string, string[]>
+  const referred = new Map<string, string>()
+  const replacement = rawReplacement.replace(<RegExpSearchable<1>> /\$(?:\$|\{([^}]*)})/g, (f, s1?: string): string => {
+    if (!s1) { return f }
+    const arr = s1.split(<RegExpOne> />(?=[\w\x80-\ufffd]{1,8}!?$)/)
+    if (arr.length > 1 && arr[0]) {
+      let key = arr[0], clipName = arr[1]
+      key = key === "0" || key === "$0" ? "&" : key[0] === "$" ? key.slice(1) : key.length === 1 ? key
+          : ({ input: "_", lastMatch: "&", lastParen: "+", leftContext: "`", rightContext: "'" })[key] || "1"
+      toCopy.has(clipName) ? toCopy.get(clipName)!.push(key) : toCopy.set(clipName, [key])
+      return "$" + key
+    }
+    const cmd = s1.replace(<RegExpOne> /^<|>$/, ""), opArr = (<RegExpOne> /\|\|=|[+\-*\/\|]=?|=/).exec(cmd)
+    let name = opArr ? cmd.slice(0, opArr.index) : cmd, value = readInnerClipboard_(name)
+    if (opArr && (value || "||=".includes(opArr[0]))) {
+      let op = opArr[0], alg = op[0], x = +cmd.slice(name.length + op.length) || 0, y = +value
+      if (!isNaN(y || x)) {
+        y = alg === "+" ? y + x : alg === "-" ? y - x : alg === "*" ? y * x : alg === "/" ? y / x
+            : op === "||=" ? y || x : alg === "|" ? y | x : x
+        value = y + ""
+        if (op.endsWith("=")) {
+          timeoutToClearInnerClipboard_ !== lastCleanTimer ? (innerClipboard_ as Map<string, string>).set(name, value)
+            : writeInnerClipboard_(name, value)
+        }
+      }
+    }
+    return value.replace(<RegExpG> /\$/g, "$$$$")
+  })
+  text = text.replace(item.match_ as RegExpOne & RegExpSearchable<0>, toCopy.size ? function (): string {
+    const args = arguments, len = args.length, index = args[len - 2]
+    return replacement.replace(<RegExpG & RegExpSearchable<1>> /\$([$1-9_&+`'])/g, (_, s): string => {
+      if (s === "$") { return "$" }
+      const value = s === "_" ? text : s === "&" ? args[0]
+          : s === "`" ? text.slice(0, index) : s === "'" ? text.slice(index + args[0].length)
+          : len - 3 <= 0 ? "" : s >= "1" && s < "9" ? +s <= len - 2 ? args[+s] : ""
+          : s === "+" ? args[len - 3] : args[1]
+      referred.set(s, value)
+      return value
+    })
+  } : replacement as never)
+  toCopy.forEach((refs, clipName): void => {
+    const value = refs.reduce((oldValue, ref) => oldValue || referred.get(ref) || "", "")
+    timeoutToClearInnerClipboard_ !== lastCleanTimer ? (innerClipboard_ as Map<string, string>).set(clipName, value)
+        : writeInnerClipboard_(clipName, value)
+  })
+  return text
+}
+
+set_substitute_(((input: string, normalContext: SedContext, mixedSed?: MixedSedOpts | null
+    , exOut?: InfoOnSed): string => {
   let rules = !mixedSed || typeof mixedSed !== "object" ? mixedSed : mixedSed.r
-  if (rules === false) { return text }
+  if (rules === false) { return input }
   let arr = staticSeds_ || (staticSeds_ = parseSeds_(settingsCache_.clipSub, null))
-  if (rules && typeof rules === "string" && rules.length <= 6 && !(<RegExpOne> /[^\w\x80-\ufffd]/).test(rules)) {
+  if (rules && (typeof rules === "number"
+      || typeof rules === "string" && rules.length <= 8 && !(<RegExpOne> /[^\w\x80-\ufffd]/).test(rules))) {
     mixedSed = { r: null, k: rules }
     rules = null
   }
-  let contexts = mixedSed && typeof mixedSed === "object" && mixedSed.k && parseSedKeys_(mixedSed.k, mixedSed)
-      || (normalContext ? { normal_: normalContext, extras_: null } : null)
+  let contexts = mixedSed && typeof mixedSed === "object" && (mixedSed.k || mixedSed.k === 0)
+      && parseSedKeys_(mixedSed.k, mixedSed) || (normalContext ? { normal_: normalContext, extras_: null } : null)
   // note: `sed` may come from options of key mappings, so here always convert it to a string
   if (rules && rules !== true) {
     contexts || (arr = [])
     arr = parseSeds_(convertJoinedRules(rules + "")
         , contexts || (contexts = { normal_: SedContext.NO_STATIC, extras_: null })).concat(arr)
   }
+  const lastCleanTimer = timeoutToClearInnerClipboard_
+  let activeTabUrl_: string | undefined
   for (const item of contexts ? arr : []) {
-    if (intersectContexts(item.contexts_, contexts!) && (!item.host_
-          || (typeof item.host_ === "string" && (item.host_ = Exclusions.createSimpleUrlMatcher_(item.host_) || -1),
-              item.host_ !== -1 && Exclusions.matchSimply_(item.host_, text))
-        )) {
+    if (intersectContexts(item.contexts_, contexts!)
+        && (!item.host_
+            || (typeof item.host_ === "string" && (item.host_ = Exclusions.createSimpleUrlMatcher_(item.host_) || -1),
+                item.host_ !== -1 && Exclusions.matchSimply_(item.host_, input)))
+        && (!item.activeTab_ || (
+            activeTabUrl_ == null && (activeTabUrl_ = framesForTab_.get(curTabId_)?.top_?.s?.url_ || ""),
+            typeof item.activeTab_ === "string"
+                && (item.activeTab_ = Exclusions.createSimpleUrlMatcher_(item.activeTab_) || -1),
+            activeTabUrl_ && item.activeTab_ !== -1 && Exclusions.matchSimply_(item.activeTab_, activeTabUrl_)
+        ))) {
       let end = -1
+      let text = input
       if (item.retainMatched_) {
         let start = 0, first_group: string | undefined, retain = item.retainMatched_
         text.replace(item.match_ as RegExpOne & RegExpSearchable<0>, function (matched_text): string {
@@ -283,20 +361,41 @@ set_substitute_((text: string, normalContext: SedContext, mixedSed?: MixedSedOpt
           return ""
         })
         if (end >= 0) {
-          const newText = text.replace(item.match_ as RegExpOne, item.replaced_)
+          const newText = replaceUsingClipboard(text, item, lastCleanTimer)
           text = newText.slice(start, newText.length - (text.length - end)) || first_group || text.slice(start, end)
         }
       } else if ((item.match_ as RegExpOne).test(text)) {
         end = (item.match_ as RegExpG).lastIndex = 0
-        text = text.replace(item.match_ as RegExpG, item.replaced_)
+        text = replaceUsingClipboard(text, item, lastCleanTimer)
       }
       if (end < 0) {
+        const elseVal = (item.actions_.find((i) => typeof i === "string" && i.startsWith("else=")
+            ) as string | undefined || "").slice(5)
+        if (elseVal) {
+          if (SedActionMap[elseVal] === SedAction.return) { break }
+          if (((<RegExpOne> /^[\w\x80-\ufffd]{1,8}$/).test(elseVal))) {
+            contexts = parseSedKeys_(elseVal)
+          }
+        }
         continue
       }
-      if (!text) { break }
       let doesReturn = false
       for (const action of item.actions_) {
-        text = action === SedAction.decodeForCopy ? BgUtils_.decodeUrlForCopy_(text)
+        if (typeof action === "string") {
+          const actionName = action.split("=")[0], actionVal = action.slice(actionName.length + 1)
+          if (actionName === "copy") { writeInnerClipboard_(actionVal, text) }
+          else if (actionName === "paste") { text = readInnerClipboard_(actionVal) }
+          else if (actionName === "keyword" && exOut) { exOut.keyword_ = actionVal }
+          else if (actionName === "act" && exOut) { exOut.actAnyway_ = actionVal !== "false" }
+          else if ((actionName === "sys-clip" || actionName === "sysclip") && exOut) {
+            exOut.noSysClip_ = (<RegExpI> /^-1$|^false$|^non?e?$|null$/i).test(actionName)
+          }
+          continue
+        }
+        if (doesReturn = action === SedAction.return) { break }
+//#region character manipulation
+        text = !text ? ""
+            : action === SedAction.decodeForCopy ? BgUtils_.decodeUrlForCopy_(text)
             : action === SedAction.decodeMaybeEscaped ? BgUtils_.decodeEscapedURL_(text)
             : action === SedAction.decodeAll ? BgUtils_.decodeEscapedURL_(text, true)
             : action === SedAction.unescape ? decodeSlash_(text)
@@ -306,10 +405,15 @@ set_substitute_((text: string, normalContext: SedContext, mixedSed?: MixedSedOpt
             : action === SedAction.encodeComp ? BgUtils_.encodeAsciiComponent_(text)
             : action === SedAction.encodeAll ? encodeURI(text)
             : action === SedAction.encodeAllComp ? encodeURIComponent(text)
-            : action === SedAction.base64Decode ? BgUtils_.DecodeURLPart_(text, "atob")
-            : action === SedAction.base64Encode ? btoa(text)
+            : action === SedAction.base64Decode ? BgUtils_.base64_(text, 1)
+            : action === SedAction.base64Encode ? BgUtils_.base64_(text)
             : action === SedAction.json ? jsonToEmbed(text)
+            : action === SedAction.readableJson ? JSON.stringify(text).slice(1, -1)
             : action === SedAction.jsonParse ? tryParseJSON(text)
+            : action === SedAction.inc ? +text + 1 + ""
+            : action === SedAction.dec ? +text - 1 + ""
+            : action === SedAction.length ? text.length + ""
+            : action === SedAction.rows ? text.split("\n").length + ""
             : (text = (action === SedAction.normalize || action === SedAction.reverseText || action === SedAction.latin)
                   && (!OnChrome || Build.MinCVer >= BrowserVer.Min$String$$Normalize
                       || text.normalize) ? text.normalize(action === SedAction.latin ? "NFD" : "NFC") : text,
@@ -317,18 +421,41 @@ set_substitute_((text: string, normalContext: SedContext, mixedSed?: MixedSedOpt
               ? (OnChrome && Build.MinCVer < BrowserVer.Min$Array$$From
                 && !Array.from ? text.split("") : Array.from(text)).reverse().join("")
               : action === SedAction.latin ? latinize(text)
-              : action === SedAction.camel || action === SedAction.dash || action === SedAction.capitalize ||
-                action === SedAction.capitalizeAll ? convertCaseWithLocale(text, action)
+              : action === SedAction.camel || action === SedAction.dash || action === SedAction.capitalize
+                || (action satisfies SedAction.NONE | SedAction.normalize | SedAction.capitalizeAll
+                    | SedAction.virtually) === SedAction.capitalizeAll ? convertCaseWithLocale(text, action)
               : text
             )
-        doesReturn = action === SedAction.return
+//#endregion
       }
-      if (doesReturn) { break }
+      if (!item.actions_.includes(SedAction.virtually)) {
+        input = text
+        if (doesReturn) { break }
+      }
     }
   }
   BgUtils_.resetRe_()
-  return text
-})
+  return input
+}) satisfies typeof substitute_)
+
+const writeInnerClipboard_ = (name: string, text: string): void => {
+  (innerClipboard_ as Map<string, string>).set(name, text)
+  if (name.endsWith("!")) { return }
+  timeoutToClearInnerClipboard_ && clearTimeout(timeoutToClearInnerClipboard_)
+  timeoutToClearInnerClipboard_ = setTimeout((): void => {
+    const keys = !(Build.BTypes & BrowserType.Chrome) || Build.MinCVer >= BrowserVer.MinTestedES6Environment
+        ? (innerClipboard_ as IterableMap<string, any>).keys() : BgUtils_.keys_(innerClipboard_)
+    for (const i of keys) {
+      i.endsWith("!") || (innerClipboard_ as Map<string, string>).delete(i)
+    }
+    timeoutToClearInnerClipboard_ = 0
+  }, Build.NDEBUG ? 20_000 : 45_000)
+}
+
+set_readInnerClipboard_(((name: string): string => {
+  const val = innerClipboard_.get(name)
+  return (val ?? innerClipboard_.get(name.endsWith("!") ? name.slice(0, -1) : name + "!")) || ""
+}) satisfies typeof readInnerClipboard_)
 
 const getTextArea_html = (): HTMLTextAreaElement => {
   const el = (globalThis as MaybeWithWindow).document!.createElement("textarea")
@@ -339,53 +466,68 @@ const getTextArea_html = (): HTMLTextAreaElement => {
   return el
 }
 
-
 const format_ = (data: string | any[], join: FgReq[kFgReq.copy]["j"] | undefined, sed: MixedSedOpts | null | undefined
-    , keyword: string | null | undefined): string => {
-  let pattern: Search.Engine | null | undefined
+    , keyword: string | null | undefined, noAutoTrim: boolean | undefined, exOut: InfoOnSed): string => {
+  const oriKeyword = keyword
   const createSearchToCopy = (data: string): string => {
-    if (pattern === void 0) { pattern = searchEngines_.map.get(keyword!) || null }
+    const pattern = searchEngines_.map.get(keyword!)
     return pattern ? createSearch_(data.trim().split(BgUtils_.spacesRe_), pattern.url_, pattern.blank_) : data
   }
+  const maySed = (!sed || typeof sed !== "object" ? sed : sed.r) !== false
   if (typeof data !== "string") {
-    data = data.map(i => substitute_(i, SedContext.paste, sed))
-    if (keyword)
-    keyword && (data = data.map(createSearchToCopy))
+    data = data.map((i): string => {
+      const exSubOut: InfoOnSed = {}, s = substitute_(i, SedContext.copy, sed, exSubOut)
+      keyword = exSubOut.keyword_ ?? oriKeyword
+      return keyword ? createSearchToCopy(s) : s
+    })
     data = typeof join === "string" && join.startsWith("json") ? JSON.stringify(data, null, +join.slice(4) || 2)
       : data.join(join !== !!join && (join as string) || "\n") +
         (data.length > 1 && (!join || join === !!join) ? "\n" : "")
-    const rules = !sed || typeof sed !== "object" ? sed : sed.r
-    if (rules !== false) {
-      data = substitute_(data, SedContext.multiline)
+    if (maySed) {
+      data = substitute_(data, SedContext.multiline, null, exOut)
     }
     return data
   }
   data = data.replace(<RegExpG> /\xa0/g, " ").replace(<RegExpG & RegExpSearchable<0>> /\r\n?/g, "\n")
   let i = data.charCodeAt(data.length - 1)
-  if (i !== kCharCode.space && i !== kCharCode.tab) { /* empty */ }
+  if (noAutoTrim || !maySed || i !== kCharCode.space && i !== kCharCode.tab) { /* empty */ }
   else if (i = data.lastIndexOf("\n") + 1) {
     data = data.slice(0, i) + data.slice(i).trimRight()
   } else if ((i = data.charCodeAt(0)) !== kCharCode.space && i !== kCharCode.tab) {
     data = data.trimRight()
   }
-  data = substitute_(data, SedContext.copy, sed)
-  data = keyword ? createSearchToCopy(data) : data
+  {
+    data = substitute_(data, SedContext.copy, sed, exOut)
+    keyword = exOut.keyword_ ?? oriKeyword
+    data = keyword ? createSearchToCopy(data) : data
+  }
   return data
 }
 
-const reformat_ = (copied: string, sed?: MixedSedOpts | null): string => {
-  if (copied) {
-  copied = copied.replace(<RegExpG> /\xa0/g, " ")
-  copied = substitute_(copied, SedContext.paste, sed)
+const reformat_ = (data: string, sed?: MixedSedOpts | null, exOut?: InfoOnSed): string => {
+  if (data) {
+    data = data.replace(<RegExpG> /\xa0/g, " ")
+    data = substitute_(data, SedContext.paste, sed, exOut)
   }
-  return copied
+  return data
 }
 
 let navClipboard: (typeof navigator.clipboard) | undefined
 
-set_copy_(((data, join, sed, keyword): string | Promise<string> => {
-  data = format_(data, join, sed, keyword)
-  if (!data) { return "" }
+const detectClipSed = (sed: MixedSedOpts | null | undefined, prefix: "<" | ">"): string | null => {
+  const singleRule = sed && (typeof sed === "string" ? sed : typeof sed === "object" && (sed.r || sed.k))
+  const clip = !singleRule || typeof singleRule !== "string" ? null
+      : (singleRule[0] === prefix || singleRule.endsWith(">")) && kDirectClipNameRe.test(singleRule)
+      ? singleRule[0] === prefix ? singleRule.slice(1) : singleRule.slice(0, -1) : null
+  return clip
+}
+
+set_copy_(((data, join, sed, keyword, noAutoTrim): string | Promise<string> => {
+  const clip = detectClipSed(sed, ">"), exOut: InfoOnSed = {}
+  if (clip) { sed = null }
+  data = format_(data, join, sed, keyword, noAutoTrim, exOut)
+  if (clip) { writeInnerClipboard_(clip, data); return data }
+  if (!data || exOut.noSysClip_) { return data }
   if (Build.MV3 || OnFirefox && (navClipboard || (navClipboard = navigator.clipboard))) {
     return (Build.MV3 ? runOnTee_(kTeeTask.Copy, data, null)
         : navClipboard!.writeText!(data).catch(blank_)).then(() => data as string)
@@ -401,11 +543,15 @@ set_copy_(((data, join, sed, keyword): string | Promise<string> => {
   }
 }) satisfies typeof copy_)
 
-set_paste_(((sed, newLenLimit?: number): string | Promise<string | null> => {
+set_paste_(((sed, newLenLimit?: number, exOut?: InfoOnSed): string | Promise<string | null> => {
+  const clip = detectClipSed(sed, "<")
+  if (clip) {
+    return reformat_(readInnerClipboard_(clip), null, exOut)
+  }
   if (Build.MV3 || OnFirefox && (navClipboard || (navClipboard = navigator.clipboard))) {
-    return (Build.MV3 ? runOnTee_(kTeeTask.Paste, null, null)
-        : navClipboard!.readText!().catch(() => null)).then(s => s && typeof s === "string"
-              ? reformat_(s.slice(0, GlobalConsts.MaxBufferLengthForPastingLongURL), sed) : null)
+    return (Build.MV3 ? runOnTee_(kTeeTask.Paste, newLenLimit || 0, null)
+        : navClipboard!.readText!().catch(() => null)).then(s => typeof s === "string"
+              ? s && reformat_(s.slice(0, GlobalConsts.MaxBufferLengthForPastingLongURL), sed, exOut) : null)
   }
   const doc = (globalThis as MaybeWithWindow).document!, textArea = getTextArea_html()
   textArea.maxLength = newLenLimit || GlobalConsts.MaxBufferLengthForPastingNormalText
@@ -420,7 +566,7 @@ set_paste_(((sed, newLenLimit?: number): string | Promise<string | null> => {
       && (value.slice(0, 5).toLowerCase() === "data:" || BgUtils_.isJSUrl_(value))) {
     return paste_(sed, GlobalConsts.MaxBufferLengthForPastingLongURL) as string
   }
-  return reformat_(value, sed)
+  return reformat_(value, sed, exOut)
 }) satisfies typeof paste_)
 
 updateHooks_.clipSub = (): void => { staticSeds_ = null }

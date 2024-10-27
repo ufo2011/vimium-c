@@ -1,7 +1,9 @@
 import { kPgReq } from "../background/page_messages"
-import { $, OnEdge, browser_, OnFirefox, OnChrome, nextTick_, CurCVer_, IsEdg_, post_, pageLangs_ } from "./async_bg"
-import { Option_, KnownOptionsDataset, oTrans_, bgSettings_, delayBinding } from "./options_base"
-import { registerClass, createNewOption, TextOption_, BooleanOption_ } from "./options_defs"
+import {
+  $, OnEdge, browser_, OnFirefox, OnChrome, nextTick_, CurCVer_, IsEdg_, post_, pageLangs_, prevent_
+} from "./async_bg"
+import { Option_, type KnownOptionsDataset, oTrans_, bgSettings_, delayBinding_ } from "./options_base"
+import { registerClass_, createNewOption_, TextOption_ } from "./options_defs"
 import kBrowserPermission = chrome.permissions.kPermission
 
 type AllowedApi = "contains" | "request" | "remove"
@@ -65,13 +67,14 @@ const placeholder = <true> !OnEdge && $<HTMLTemplateElement & EnsuredMountedHTML
 const template = <true> !OnEdge && placeholder.content.firstElementChild as HTMLElement
 const container = <true> !OnEdge && placeholder.parentElement
 const navPermissionTip = (Build.MV3 as BOOL) && OnChrome ? $<SafeHTMLElement>("#navPermissionTip") : null
+const gotoCrSC = (Build.MV3 as BOOL) && OnChrome ? $<HTMLAnchorElement>("#gotoCrSC") : null
 const shownItems: PermissionItem[] = []
-export const manifest = browser_.runtime.getManifest() as Readonly<chrome.runtime.Manifest>
-let optional_permissions = (!OnEdge && manifest.optional_permissions || []) as readonly kBrowserPermission[]
+export const manifest_ = browser_.runtime.getManifest() as Readonly<chrome.runtime.Manifest>
+let optional_permissions = (!OnEdge && manifest_.optional_permissions || []) as readonly kBrowserPermission[]
 const navNames: kNavPermissionName[] = (Build.MV3 as BOOL) && OnChrome ? [ "clipboard-read" ] : []
 
 export class OptionalPermissionsOption_ extends Option_<"nextPatterns"> {
-  override init_ (): void { delayBinding(this.element_, "change", this.onUpdated_) }
+  override init_ (): void { delayBinding_(this.element_, "change", this.onUpdated_) }
   override readValueFromElement_ (): string {
     return shownItems.map(i => i.element_.indeterminate ? "1" : i.element_.checked ? "2" : "0").join("")
   }
@@ -83,7 +86,6 @@ export class OptionalPermissionsOption_ extends Option_<"nextPatterns"> {
       shown.element_.indeterminate = value[i] === "1"
       if (Build.MV3 && shown.type_ === 2 && value[i] !== "1") {
         (shown.element_.parentElement as HTMLElement).title = navPermissionTip!.innerText
-        BooleanOption_.ToggleDisabled_(shown.element_, true)
       }
     }
   }
@@ -91,7 +93,7 @@ export class OptionalPermissionsOption_ extends Option_<"nextPatterns"> {
     const new_browser_permissions: kBrowserPermission[] = [], new_origins: kBrowserPermission[] = []
     const new_nav_permissions: kNavPermissionName[] = []
     const changed: { [key in kBrowserPermission]?: PermissionItem } = {}
-    let waiting = 1
+    let waiting = 1, gotoCrContentSettings = false
     for (let _ind = 0; _ind < shownItems.length; _ind++) {
       const i = shownItems[_ind], previous = i.previous_
       const wanted = +wanted_value[_ind] as 0 | 1 | 2
@@ -101,13 +103,22 @@ export class OptionalPermissionsOption_ extends Option_<"nextPatterns"> {
       i.previous_ = wanted
       if (OnChrome && Build.OnBrowserNativePages && i.name_ === kCrURL) {
         if (<boolean> bgSettings_.get_("allBrowserUrls") !== (wanted === 2)) {
-          void bgSettings_.set_("allBrowserUrls", wanted === 2)
+          waiting++
+          void Promise.resolve(bgSettings_.get_("allBrowserUrls")).then((allBrowserUrls): void => {
+            if (allBrowserUrls !== (wanted === 2)) {
+              bgSettings_.set_("allBrowserUrls", wanted === 2).then(tryRefreshing)
+            } else {
+              tryRefreshing()
+            }
+          })
         }
       }
       if (i.type_ === 2) {
-        if (!Build.MV3 || previous !== 1) { /* empty */ }
+        if (!Build.MV3) { /* empty */ }
         else if (wanted === 2) {
           new_nav_permissions.push(i.name_)
+        } else {
+          gotoCrContentSettings = true
         }
       } else if (wanted) {
         i.name_ === kShelf && new_browser_permissions.push("downloads");
@@ -116,10 +127,9 @@ export class OptionalPermissionsOption_ extends Option_<"nextPatterns"> {
         changed[i.name_] = i
       } else {
         waiting++
-        void browserPermissions_.remove(i.type_ === 1 ? { origins: orig2 ? [i.name_, orig2] : [i.name_] } : {
-          permissions: i.name_ === kShelf ? ["downloads", i.name_] : [i.name_]
-        }).then(([ok, err]): void => {
-          const msg1 = "Can not remove the permission %o :", msg2 = err && err.message || err;
+        void browserPermissions_.remove(i.type_ === 1 ? { origins: orig2 ? [i.name_, orig2] : [i.name_] }
+              : { permissions: i.name_ === kShelf ? ["downloads", i.name_] : [i.name_] }).then(([ok, err]): void => {
+          const msg1 = "Can not remove the permission %o : ", msg2 = err && err.message || err;
           (err || !ok) && console.log(msg1, i.name_, msg2)
           const box = i.element_.parentElement as Element as EnsuredMountedHTMLElement
           TextOption_.showError_(err ? msg1.replace("%o", i.name_) + msg2 : "", void 0, box)
@@ -135,12 +145,12 @@ export class OptionalPermissionsOption_ extends Option_<"nextPatterns"> {
           if (!item) { continue }
           item.previous_ = 0
           const box = item.element_.parentElement as Element as EnsuredMountedHTMLElement
-          if (!err) { return TextOption_.showError_("", void 0, box)  }
+          if (!err) { TextOption_.showError_("", void 0, box); continue }
           let msg = (err && err.message || JSON.stringify(err)) + ""
           if (name.startsWith("chrome://") && msg.includes("Only permissions specified in the manifest")) {
             if (name.startsWith("chrome:")) {
               msg = oTrans_("optNeedChromeUrlFirst")
-              msg = IsEdg_ ? msg.replace("chrome:", "edge:") : msg
+              msg = IsEdg_ ? msg.replace("chrome", "edge") : msg
             }
           }
           msg = oTrans_("exc") + msg
@@ -156,34 +166,31 @@ export class OptionalPermissionsOption_ extends Option_<"nextPatterns"> {
       if (waiting > 0) { return }
       void Promise.all(shownItems.map(doPermissionsContain_)).then((): void => {
         void this.fetch_()
+        if (gotoCrContentSettings) { gotoCrSC!.click() }
       })
     }
     waiting += (new_browser_permissions.length && 1) + (new_origins.length && 1)
     new_browser_permissions.length &&
         browserPermissions_.request({ permissions: new_browser_permissions }).then(cb.bind(0, new_browser_permissions))
     new_origins.length && browserPermissions_.request({ origins: new_origins }).then(cb.bind(0, new_origins))
-    for (const new_nav_name of new_nav_permissions) {
-      if (new_nav_name === "clipboard-read") {
+    if (new_nav_permissions.includes("clipboard-read")) {
         const clipboard = navigator.clipboard!
         waiting++
         clipboard.readText!().catch((): void => {}).then(tryRefreshing)
-      }
     }
     tryRefreshing()
     return Promise.resolve(wanted_value)
   }
 }
-OnEdge || registerClass("OptionalPermissions", OptionalPermissionsOption_)
+OnEdge || registerClass_("OptionalPermissions", OptionalPermissionsOption_)
 
 const initOptionalPermissions = (): void => {
   const fragment = document.createDocumentFragment()
-  if (OnFirefox && Build.OS & (1 << kOS.unixLike) && bgSettings_.os_ === kOS.unixLike) {
-    template.querySelector("input")!.classList.add("baseline")
-  }
+  let is_important = shownItems.some(i => i.name_ === "bookmarks")
   for (const shownItem of shownItems) {
     const name = shownItem.name_
     const node = document.importNode(template, true) as EnsuredMountedHTMLElement
-    const checkbox = node.querySelector("input")!
+    const checkbox = node.querySelector("input") as EnsuredMountedHTMLElement & HTMLInputElement
     const i18nKey = i18nItems[name as keyof typeof i18nItems]
     let i18nName = oTrans_(i18nKey || `opt_${name}`) || name
     let suffix = ""
@@ -191,7 +198,7 @@ const initOptionalPermissions = (): void => {
       i18nName = IsEdg_ ? i18nName.replace("chrome:", "edge:") : i18nName
       suffix = oTrans_("optOfChromeUrl").replace(IsEdg_ ? "chrome" : "edge", "edge")
     }
-    checkbox.value = name
+    checkbox.name = name
     if (OnChrome && Build.OnBrowserNativePages && name === kNTP) {
       if (OnChrome && Build.MinCVer < BrowserVer.MinChromeURL$NewTabPage
           && CurCVer_ < BrowserVer.MinChromeURL$NewTabPage) {
@@ -201,15 +208,28 @@ const initOptionalPermissions = (): void => {
         node.title = oTrans_("invalidOption", [oTrans_("beforeChromium", [BrowserVer.MinChromeURL$NewTabPage])])
       }
     }
-    node.lastElementChild.textContent = i18nName + suffix
-    if (optional_permissions.length === 1 || optional_permissions.length === 2 && pageLangs_ === "en") {
-      node.classList.add("single")
+    if (is_important) { suffix += oTrans_("rec_perm") }
+    checkbox.nextElementSibling.textContent = i18nName + suffix
+    if (name == "bookmarks" && fragment.childElementCount + 1 < shownItems.length) {
+      node.classList.add("after-importants")
+      is_important = false
     }
     fragment.appendChild(node)
     shownItem.element_ = checkbox
   }
+  if (!(optional_permissions.length === 1 || optional_permissions.length === 2 && pageLangs_ === "en")) {
+    $("#optionalPermissionsHelp").classList.add("has-many")
+    container.classList.add("has-many")
+  }
   container.appendChild(fragment)
-  delayBinding(container, "input", onInput, true)
+  delayBinding_(container, "input", onInput, true)
+  if (gotoCrSC) {
+    delayBinding_(gotoCrSC, "click", onCrUrlClick, true)
+    if (OnChrome && IsEdg_) {
+      gotoCrSC.textContent = gotoCrSC.textContent.replace("chrome:", "edge:")
+      gotoCrSC.href = gotoCrSC.href.replace("chrome:", "edge:")
+    }
+  }
 }
 
 const doPermissionsContain_ = (item: PermissionItem): Promise<void> => {
@@ -231,10 +251,16 @@ const doPermissionsContain_ = (item: PermissionItem): Promise<void> => {
   })
 }
 
-const onInput = (e: Event): void => {
+const onInput = (e: EventToPrevent): void => {
   const el = e.target as HTMLInputElement
   const item = shownItems.find(i => i.element_ === el)
-  if (!item) { return }
+  if (!item) {
+    if ((el as HTMLElement).localName === "label" || el.parentElement!.localName === "label") {
+      prevent_(e)
+      e.stopImmediatePropagation()
+    }
+    return
+  }
   const value = el.checked
   if (OnChrome && Build.OnBrowserNativePages && (item.name_ === kCrURL || item.name_ === kNTP)) {
     const isCurNTP = item.name_ === kNTP, theOtherName = isCurNTP ? kCrURL : kNTP
@@ -256,16 +282,27 @@ const onInput = (e: Event): void => {
   }
 }
 
+const onCrUrlClick = (e: EventToPrevent): void => {
+  prevent_(e)
+  void post_(kPgReq.focusOrLaunch, { u: (e.target as HTMLAnchorElement).href, p: false })
+}
+
 if (!OnEdge) {
-  const ignored: Array<kBrowserPermission | RegExpOne> = OnFirefox ? [kShelf] : ["downloads"]
+  const ignored: Array<kBrowserPermission | RegExpOne> = OnFirefox || OnChrome
+      && (Build.MinCVer >= BrowserVer.MinNoDownloadBubbleFlag || CurCVer_ > BrowserVer.MinNoDownloadBubbleFlag - 1)
+      ? [kShelf] : ["downloads"]
   OnChrome || ignored.push(<RegExpOne> /^chrome:/, "contentSettings")
   OnChrome && IsEdg_ && Build.OnBrowserNativePages && ignored.push(kNTP)
   OnFirefox || ignored.push("cookies")
+  if (Build.MV3 && (!OnChrome || Build.MinCVer >= BrowserVer.MinOptionalHostPermissionInMV3
+      || CurCVer_ > BrowserVer.MinOptionalHostPermissionInMV3 - 1)) {
+    optional_permissions = optional_permissions.concat(manifest_.optional_host_permissions || [])
+  }
   optional_permissions = optional_permissions.filter(
       i => !ignored.some(j => typeof j === "string" ? i === j : j.test(i)))
 }
 if (OnEdge || !optional_permissions.length && !(Build.MV3 && OnChrome && navNames.length)) {
-  nextTick_((): void => { $("#optionalPermissionsBox").style.display = "none" })
+  nextTick_((): void => { $("#optionalPermissionsHelp").style.display = "none" }, 9)
 } else {
   if (Build.MV3 && OnChrome) {
     for (const name of navNames) {
@@ -276,11 +313,38 @@ if (OnEdge || !optional_permissions.length && !(Build.MV3 && OnChrome && navName
     shownItems.push({ name_: name, type_: name.includes(":") ? 1 : 0, previous_: 0, element_: null as never })
   }
   Build.MV3 && navPermissionTip && nextTick_((): void => { navPermissionTip!.style.display = "" })
-  nextTick_(initOptionalPermissions)
+  nextTick_(initOptionalPermissions, 9)
   void Promise.all(shownItems.map(doPermissionsContain_)).then((): void => {
     nextTick_((): void => {
       (container.dataset as KnownOptionsDataset).model = "OptionalPermissions"
-      void createNewOption(container).fetch_()
+      void createNewOption_(container).fetch_()
     })
   })
 }
+
+nextTick_(([inIncognito, onFileUrls]): void => {
+  if (browser_.extension.isAllowedIncognitoAccess) {
+    browser_.extension.isAllowedIncognitoAccess(allowed => { inIncognito.checked = allowed })
+    if (!OnEdge || browser_.extension.isAllowedFileSchemeAccess) {
+      browser_.extension.isAllowedFileSchemeAccess(allowed => { onFileUrls.checked = allowed })
+    }
+  } else {
+    // reproduce:
+    // 1. `chrome2 dist clean 126`
+    // 2. open chrome://extensions/?id=hfjbmagddngcpeloejdejnfgbamkjaeg , and enable incognito
+    // 3. close chrome, and then `chrome2 dist 126 exp`
+    // 4. then `chrome.extension` only has `inIncognitoContext`
+    post_(kPgReq.checkAllowingAccess).then(([incognitoAccess, fileSchemeAccess]): void => {
+      inIncognito.checked = incognitoAccess
+      onFileUrls.checked = fileSchemeAccess
+    })
+  }
+  onFileUrls.onclick = inIncognito.onclick = (event: EventToPrevent): void => {
+    prevent_(event)
+    if (OnChrome) {
+      void post_(kPgReq.focusOrLaunch, { u: "chrome://extensions/?id=" + browser_.runtime.id, p: false })
+    } else if (OnFirefox) {
+      alert(oTrans_("haveToOpenManually") + "\n  about:addons")
+    }
+  }
+}, [$<HTMLInputElement>("#in-incognito"), $<HTMLInputElement>("#on-file-urls")])

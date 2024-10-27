@@ -1,4 +1,4 @@
-VApi!.e = function (cmd): void {
+VApi!.e = function (cmd, el2): void {
   const injector = VimiumInjector;
   if (cmd === kContentCmd.Destroy && injector) {
     const rEL = removeEventListener, onHashChnage = injector.checkIfEnabled
@@ -10,6 +10,8 @@ VApi!.e = function (cmd): void {
     injector.$ = injector.$r = injector.$m = null as never;
     injector.clickable = null;
     injector.callback && injector.callback(3, "destroy")
+  } else if (cmd === kContentCmd.ShowPicker_cr_mv3 && Build.BTypes & BrowserType.Chrome && Build.MV3) {
+    (el2 as HTMLInputElement).showPicker!()
   }
 };
 
@@ -22,9 +24,12 @@ VApi!.e = function (cmd): void {
         && browser && (browser as typeof chrome).runtime
         && (browser as typeof chrome).runtime.getURL("").startsWith("moz")
       ? BrowserType.Firefox : BrowserType.Chrome
-  const OnChrome = !(Build.BTypes & ~BrowserType.Chrome) || !!(_OnOther & BrowserType.Chrome)
-  const OnFirefox = !(Build.BTypes & ~BrowserType.Firefox) || !!(_OnOther & BrowserType.Firefox)
-  const OnEdge = !(Build.BTypes & ~BrowserType.Edge) || !!(_OnOther & BrowserType.Edge)
+  const OnChrome = Build.BTypes === BrowserType.Chrome as number
+      || !!(Build.BTypes & BrowserType.Chrome) && _OnOther === BrowserType.Chrome
+  const OnFirefox = Build.BTypes === BrowserType.Firefox as number
+      || !!(Build.BTypes & BrowserType.Firefox) && _OnOther === BrowserType.Firefox
+  const OnEdge = Build.BTypes === BrowserType.Edge as number
+      || !!(Build.BTypes & BrowserType.Edge) && _OnOther === BrowserType.Edge
 
   const thisApi = VApi!
   const injector = VimiumInjector!
@@ -42,7 +47,7 @@ VApi!.e = function (cmd): void {
   let jsEvalPromise: Promise<void> | undefined
   const tryEval = (code: string): unknown => {
     const injector1 = VimiumInjector!
-    if (injector1.eval) { const ret = injector1.eval(code); if (ret !== code) { return ret } }
+    if (injector1.eval) { const ret2 = injector1.eval(code); if (ret2 !== code) { return ret2 } }
     jsEvalPromise = jsEvalPromise || new Promise((resolve): void => {
       const script = document.createElement("script")
       script.src = `${location.protocol}//${injector1.host || injector1.id}/lib/simple_eval.js`
@@ -114,7 +119,8 @@ VApi!.e = function (cmd): void {
         livingCheckTimer = setTimeout(onTimeout, GlobalConsts.FirefoxFocusResponseTimeout);
         return;
       case InjectorTask.reportLiving:
-        clearTimeout(livingCheckTimer);
+        livingCheckTimer && clearTimeout(livingCheckTimer)
+        livingCheckTimer = 0
         return;
       }
     }

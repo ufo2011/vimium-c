@@ -1,24 +1,25 @@
 import {
-  CurCVer_, OnChrome, OnFirefox, $, $$, nextTick_, post_, enableNextTick_, kReadyInfo, toggleReduceMotion, OnEdge,
-  CurFFVer_, OnSafari
+  CurCVer_, OnChrome, OnFirefox, $, $$, nextTick_, post_, enableNextTick_, kReadyInfo, toggleReduceMotion_, OnEdge,
+  CurFFVer_, OnSafari, prevent_, bTrans_
 } from "./async_bg"
-import {
-  bgSettings_, Option_, AllowedOptions, Checker, PossibleOptionNames, ExclusionRulesOption_, oTrans_, delayBinding,
-  KnownOptionsDataset, OptionErrorType, ExclusionRealNode, UniversalNumberOptions
+import type {
+  AllowedOptions, Checker, PossibleOptionNames, KnownOptionsDataset, OptionErrorType, ExclusionRealNode,
+  UniversalNumberOptions
 } from "./options_base"
+import { bgSettings_, Option_, ExclusionRulesOption_, oTrans_, delayBinding_ } from "./options_base"
 import type { OptionalPermissionsOption_ } from "./options_permissions"
 import { kPgReq } from "../background/page_messages"
 import SettingsWithDefaults = SettingsNS.SettingsWithDefaults
 
-Option_.all_ = Object.create(null)
 Option_.syncToFrontend_ = []
 
 Option_.prototype._onCacheUpdated = function<T extends keyof SettingsNS.AutoSyncedNameMap
-    > (this: Option_<T>, func: (this: Option_<T>) => void): void {
-  func.call(this)
-  if (VApi) {
+    > (this: Option_<T>, func: (this: Option_<T>) => unknown): void {
+  const val = func.call(this) as SettingsNS.PersistentSettings[T]
+  if (this.field_ === "passEsc" || this.field_ === "ignoreReadonly") {
+    this.locked_ || this.normalize_(val)
+  } else if (VApi && !this.locked_) {
     const shortKey = bgSettings_.valuesToLoad_[this.field_ as keyof SettingsNS.AutoSyncedNameMap]
-    const val = this.readValueFromElement_()
     const p = shortKey in bgSettings_.complexValuesToLoad_ ? post_(kPgReq.updatePayload, { key: shortKey, val })
         : Promise.resolve(val)
     void p.then((val2): void => {
@@ -28,19 +29,19 @@ Option_.prototype._onCacheUpdated = function<T extends keyof SettingsNS.AutoSync
         frame && void post_(kPgReq.updateOmniPayload, { key: shortKey,
             val: (val2 != null ? val2 : val as never) as SettingsNS.DirectlySyncedItems[typeof shortKey][1] })
       }
-      Option_.onFgCacheUpdated_ && Option_.onFgCacheUpdated_()
+      Option_.onFgCacheUpdated_?.()
     })
   }
 }
 
 Option_.prototype._manuallySyncCache = function<T extends "autoDarkMode" | "autoReduceMotion"
-    > (this: Option_<T>, func: (this: Option_<T>) => void): void {
-  func.call(this)
-  const rawVal = this.readValueFromElement_()
-  if (this.field_ === "autoReduceMotion") {
+    > (this: Option_<T>, func: (this: Option_<T>) => unknown): void {
+  const rawVal = func.call(this) as SettingsNS.PersistentSettings[T]
+  if (this.locked_) { /* empty */ }
+  else if (this.field_ === "autoReduceMotion") {
     const val = rawVal === 1 ? true : rawVal === 0 ? false : matchMedia("(prefers-reduced-motion: reduce)").matches
     VApi && (VApi.z!.m = val)
-    toggleReduceMotion(val)
+    toggleReduceMotion_(val)
   } else {
     this.onSave_()
   }
@@ -55,7 +56,7 @@ Option_.saveOptions_ = async function (): Promise<boolean> {
   await Promise.all([bgSettings_.preloadCache_(), permissionsPromise])
   for (const i in arr) {
     const opt = arr[i as keyof AllowedOptions]
-    if (!opt.saved_ && opt._isDirty()) {
+    if (!opt.saved_ && opt.isDirty_()) {
       dirty.push(opt.i18nName_())
     }
   }
@@ -97,8 +98,7 @@ Option_.needSaveOptions_ = function (): boolean {
 Option_.prototype.i18nName_ = function (): string {
   let el: EnsuredMountedHTMLElement | null = this.element_ as EnsuredMountedHTMLElement
   if (this instanceof BooleanOption_) { return el.nextElementSibling.textContent }
-  if (OnChrome && Build.MinCVer < BrowserVer.MinEnsured$Element$$Closest
-      && CurCVer_ < BrowserVer.MinEnsured$Element$$Closest) {
+  if (OnChrome && Build.MinCVer < BrowserVer.Min$Element$$closest && CurCVer_ < BrowserVer.Min$Element$$closest) {
     while (el && el.localName !== "tr") {
       el = el.parentElement as EnsuredMountedHTMLElement | null
     }
@@ -116,8 +116,6 @@ Option_.prototype.i18nName_ = function (): string {
   }
   return (el.innerText as string).replace(<RegExpG> /[\r\n]/g, "")
 }
-
-Option_.prototype.areEqual_ = (a, b) => a === b
 
 interface NumberChecker extends Checker<"scrollStepSize"> {
   min: number | null; max: number | null; default: number
@@ -137,8 +135,8 @@ export class NumberOption_<T extends UniversalNumberOptions> extends Option_<T> 
       default: 0,
       check_: NumberOption_.Check_
     }
-    delayBinding(this.element_, "input", this.onUpdated_)
-    delayBinding(this.element_, "focus", this.addWheelListener_.bind(this))
+    delayBinding_(this.element_, "input", this.onUpdated_)
+    delayBinding_(this.element_, "focus", this.addWheelListener_.bind(this))
     nextTick_((): void => {
       this.checker_.default = bgSettings_.defaults_[this.field_]
     })
@@ -161,7 +159,7 @@ export class NumberOption_<T extends UniversalNumberOptions> extends Option_<T> 
     el.addEventListener("blur", onBlur)
   }
   onWheel_ (event: WheelEvent & ToPrevent): void {
-    event.preventDefault()
+    prevent_(event)
     const oldTime = this.wheelTime_
     let i = Date.now() // safe for time changes
     if (i - oldTime < 100 && i + 99 > oldTime && oldTime) { return }
@@ -204,9 +202,9 @@ export class BooleanOption_<T extends keyof AllowedOptions> extends Option_<T> {
     this.map_ = map ? JSON.parse(map) : el.dataset.allowNull ? BooleanOption_.map_for_3_ : BooleanOption_.map_for_2_
     this.true_index_ = (this.map_.length - 1) as 2 | 1
     if (this.true_index_ > 1 && this.field_ !== "vimSync") {
-      delayBinding(el, "input", this.onTripleStatusesClicked.bind(this), true)
+      delayBinding_(el, "input", this.onTripleStatusesClicked.bind(this), true)
     }
-    delayBinding(el, "change", this.onUpdated_)
+    delayBinding_(el, "change", this.onUpdated_)
   }
   override populateElement_ (value: SettingsWithDefaults[T]): void {
     // support false/true when .map_ is like [0, 1, 2]
@@ -224,7 +222,7 @@ export class BooleanOption_<T extends keyof AllowedOptions> extends Option_<T> {
   }
   static ToggleTripleStatuses (old: 0 | 1 | 2, event: Event): 0 | 1 | 2 {
     const elemenc = event.target as HTMLInputElement
-    (event as EventToPrevent).preventDefault()
+    prevent_(event as EventToPrevent)
     const newVal = old === 2 ? 1 : old ? 0 : 2
     elemenc.indeterminate = old === 2
     elemenc.checked = newVal === 2
@@ -254,7 +252,7 @@ export class TextOption_<T extends TextualizedOptionNames> extends Option_<T> {
   override init_ (): void {
     const converter = (this.element_.dataset as KnownOptionsDataset).converter || ""
     const ops = converter ? converter.split(" ") : []
-    delayBinding(this.element_, "input", this.onUpdated_)
+    delayBinding_(this.element_, "input", this.onUpdated_)
     if (ops.length > 0) {
       (this as any as TextOption_<TextOptionNames>).checker_ = {
         ops_: ops,
@@ -350,12 +348,46 @@ export class TextOption_<T extends TextualizedOptionNames> extends Option_<T> {
 
 export class NonEmptyTextOption_<T extends TextOptionNames> extends TextOption_<T> {
   override readValueFromElement_ (): string {
-    let value = super.readValueFromElement_()
-    if (!value) {
-      value = bgSettings_.defaults_[this.field_]
-      this.populateElement_(value, true)
+    if (!this.element_.value.trim()) {
+      this.populateElement_(bgSettings_.defaults_[this.field_], true)
     }
+    return super.readValueFromElement_()
+  }
+}
+
+export class CssSelectorOption_<T extends "passEsc" | "ignoreReadonly"> extends NonEmptyTextOption_<T> {
+  override readRaw_ (): string {
+    const value = super.readRaw_()
+    return value.replace(<RegExpOne> /:default\([^)]*\)/, GlobalConsts.kCssDefault)
+  }
+  override formatValue_(value: string): string {
+    value = value.replace(<RegExpG & RegExpSearchable<1>> /(?:^# |\/\/)[^\n]*|([,>] ?)(?!$|\n)/g, (full, s): string => {
+      return s ? s !== ">" ? ", " : " > " : full
+    })
+    value = value.replace(<RegExpOne&RegExpSearchable<2>>/(^|\n):default(?!\()(, \S)?/, (_, prefix, suffix): string => {
+      const val_with_default = `${GlobalConsts.kCssDefault}(${this.getRealDefault()})`
+      return prefix + CssSelectorOption_.WrapAndOutput_(val_with_default) + (suffix ? ",\n" + suffix[2] : "")
+    })
     return value
+  }
+  getRealDefault(): string {
+    return bTrans_((this.field_ === "passEsc" ? "" + kTip.defaultPassEsc : "" + kTip.defaultIgnoreReadonly))
+  }
+  static WrapAndOutput_ (line: string): string {
+    const hostSep = line.indexOf("##")
+    let str = hostSep >= 0 ? line.slice(0, hostSep + 2) : ""
+    let output = ""
+    line = hostSep >= 0 ? line.slice(hostSep + 2) : line
+    line = line.replace(<RegExpSearchable<1>> /,|>/g, s => s === "," ? ", " : " > ").trimRight()
+    for (const i of line.split(", ")) {
+      if (str && str.length + i.length > 62) {
+        output = str.endsWith("#") ? str : (output ? output + "\n" : "") + str + ","
+        str = "  " + i
+      } else {
+        str = str ? str + (str.endsWith("#") ? "" : ", ") + i : i
+      }
+    }
+    return str ? (output ? output + "\n" : "") + str.trimRight() : output
   }
 }
 
@@ -377,6 +409,21 @@ export class JSONOption_<T extends JSONOptionNames> extends TextOption_<T> {
     }
     return obj
   }
+  static stableClone_<T> (src: T): T {
+    if (!src || typeof src !== "object") { return src }
+    if (src instanceof Array) { return src.map(JSONOption_.stableClone_) as T }
+    const dest: Dict<unknown> = {}
+    for (let key of Object.keys(src).sort()) {
+      dest[key] = JSONOption_.stableClone_((src as Dict<unknown>)[key])
+    }
+    return dest as T
+  }
+  override areEqual_ (a: object, b: object): boolean {
+    return JSON.stringify(a) === JSON.stringify(JSONOption_.stableClone_(b))
+  }
+  override normalize_(value: object): SettingsNS.PersistentSettings[T] {
+    return JSONOption_.stableClone_(value) as SettingsNS.PersistentSettings[T]
+  }
 }
 
 export class MaskedText_<T extends TextOptionNames> extends TextOption_<T> {
@@ -387,7 +434,7 @@ export class MaskedText_<T extends TextOptionNames> extends TextOption_<T> {
     super.init_()
     this.masked_ = true
     this._myCancelMask = this.cancelMask_.bind(this);
-    delayBinding(this.element_, "focus", this._myCancelMask)
+    delayBinding_(this.element_, "focus", this._myCancelMask)
   }
   cancelMask_ (): void {
     if (!this._myCancelMask) { return }
@@ -443,7 +490,10 @@ TextOption_.prototype.atomicUpdate_ = NumberOption_.prototype.atomicUpdate_ = fu
   document.execCommand("insertText", false, diffValue)
   if (OnFirefox && Build.MinFFVer < FirefoxBrowserVer.MinInputSupportExecCommand
       && CurFFVer_ < FirefoxBrowserVer.MinInputSupportExecCommand) {
-    if (input.value !== value) { input.value = value }
+    if (input.value !== value) {
+      input.value = value
+      this.onUpdated_()
+    }
   }
   newFocused && input.blur()
   if (initialValue !== oldValue) {
@@ -473,8 +523,6 @@ TextOption_.prototype.atomicUpdate_ = NumberOption_.prototype.atomicUpdate_ = fu
   this.locked_ = false
 }
 
-JSONOption_.prototype.areEqual_ = Option_.areJSONEqual_
-
 ExclusionRulesOption_.prototype.onRowChange_ = function (this: ExclusionRulesOption_, isAdd: number): void {
   if (this.list_.length !== isAdd) { return }
   const el = $("#exclusionToolbar"), options = $$("[data-model]", el)
@@ -488,45 +536,47 @@ ExclusionRulesOption_.prototype.onRowChange_ = function (this: ExclusionRulesOpt
 }
 
 export interface SaveBtn extends HTMLButtonElement { onclick (this: SaveBtn, virtually?: MouseEvent | false): void }
-export const saveBtn = $<SaveBtn>("#saveOptions")
-export const exportBtn = $<HTMLButtonElement>("#exportButton")
-export let savedStatus: (newStat?: boolean | null) => boolean
-export let registerClass: (type: string, cls: new (el: HTMLElement, cb: () => void) => Option_<"nextPatterns">) => void
+export const saveBtn_ = $<SaveBtn>("#saveOptions")
+export const exportBtn_ = $<HTMLButtonElement>("#exportButton")
+export let savedStatus_: (newStat?: boolean | null) => boolean
+export let registerClass_: (type: string, cls: new (el: HTMLElement, cb: () => void) => Option_<"nextPatterns">) => void
 
-export const createNewOption = ((): <T extends keyof AllowedOptions> (_element: HTMLElement) => Option_<T> => {
+export const createNewOption_ = ((): <T extends keyof AllowedOptions> (_element: HTMLElement) => Option_<T> => {
   let status = false
-  savedStatus = newStat => status = newStat != null ? newStat : status
-  const onUpdated = function <T extends keyof AllowedOptions>(this: Option_<T>): void {
+  savedStatus_ = newStat => status = newStat != null ? newStat : status
+  const onUpdated = function <T extends keyof AllowedOptions>(this: Option_<T>): unknown {
     if (this.locked_) { return }
-    if (this.saved_ = this.areEqual_(this.readValueFromElement_(), this.previous_)) {
+    const rawVal = this.readValueFromElement_()
+    if (this.saved_ = this.areEqual_(this.previous_, rawVal)) {
       if (status && !Option_.needSaveOptions_()) {
         if (OnFirefox) {
-          saveBtn.blur()
+          saveBtn_.blur()
         }
-        saveBtn.disabled = true;
-        (saveBtn.firstChild as Text).data = oTrans_("115")
-        exportBtn.disabled = false
-        savedStatus(false)
+        saveBtn_.disabled = true;
+        (saveBtn_.firstChild as Text).data = oTrans_("115")
+        exportBtn_.disabled = false
+        savedStatus_(false)
         window.onbeforeunload = null as never
       }
-      return
+      return rawVal
     } else if (status) {
-      return
+      return rawVal
     }
     window.onbeforeunload = onBeforeUnload
-    savedStatus(true)
-    saveBtn.disabled = false;
-    (saveBtn.firstChild as Text).data = oTrans_("115_2")
+    savedStatus_(true)
+    saveBtn_.disabled = false;
+    (saveBtn_.firstChild as Text).data = oTrans_("115_2")
     if (OnFirefox) {
-      exportBtn.blur()
+      exportBtn_.blur()
     }
-    exportBtn.disabled = true
+    exportBtn_.disabled = true
+    return rawVal
   }
 
   const types = {
     Number: NumberOption_, Boolean: BooleanOption_,
     Text: TextOption_, NonEmptyText: NonEmptyTextOption_, JSON: JSONOption_, MaskedText: MaskedText_,
-    ExclusionRules: ExclusionRulesOption_
+    ExclusionRules: ExclusionRulesOption_, CssSelector: CssSelectorOption_,
   }
   const createOption = <T extends keyof AllowedOptions> (element: HTMLElement): Option_<T> => {
     const cls = types[(element.dataset as KnownOptionsDataset).model as "Text"]
@@ -534,8 +584,8 @@ export const createNewOption = ((): <T extends keyof AllowedOptions> (_element: 
     return Option_.all_[instance.field_] = instance as any
   }
   Option_.suppressPopulate_ = true
-  for (const el of ($$("[data-model]") as HTMLElement[])) { createOption(el) }
-  registerClass = (name, cls) => { (types as Dict<new (el: any, cb: () => void) => any>)[name] = cls }
+  for (const el of ($$('[data-model]:not([data-model=""])') as HTMLElement[])) { createOption(el) }
+  registerClass_ = (name, cls) => { (types as Dict<new (el: any, cb: () => void) => any>)[name] = cls }
   return createOption
 })()
 
@@ -544,7 +594,7 @@ export const createNewOption = ((): <T extends keyof AllowedOptions> (_element: 
   table.ondragstart = (event): void => {
     const dragged = event.target as HTMLTableRowElement | HTMLInputElement
     const cur = document.activeElement!
-    if (cur.localName === "input") { cur !== dragged && (event as Event as EventToPrevent).preventDefault(); return }
+    if (cur.localName === "input") { cur !== dragged && prevent_(event as Event as EventToPrevent); return }
     exclusionRules.dragged_ = dragged as HTMLTableRowElement
     dragged.style.opacity = "0.5"
     if (OnFirefox) {
@@ -556,14 +606,13 @@ export const createNewOption = ((): <T extends keyof AllowedOptions> (_element: 
     exclusionRules.dragged_ = null
     dragged && (dragged.style.opacity = "")
   }
-  table.ondragover = (event): void => { exclusionRules.dragged_ && event.preventDefault() }
+  table.ondragover = (event): void => { exclusionRules.dragged_ && prevent_(event) }
   table.ondrop = (event): void => {
-    event.preventDefault()
+    prevent_(event)
     const dragged = exclusionRules.dragged_
     if (!dragged) { return }
     let target: Element | null = event.target as Element
-    if (OnChrome && Build.MinCVer < BrowserVer.MinEnsured$Element$$Closest
-        && CurCVer_ < BrowserVer.MinEnsured$Element$$Closest) {
+    if (OnChrome && Build.MinCVer < BrowserVer.Min$Element$$closest && CurCVer_ < BrowserVer.Min$Element$$closest) {
       while (target && target.classList.contains("exclusionRule")) {
         target = target.parentElement as SafeHTMLElement | null
       }
@@ -609,7 +658,7 @@ keyMappingsOption_.normalize_ = function (value: string): string {
   value = normalizeKeyMappings(value)
   return Option_.prototype.normalize_.call(this, value)
 }
-export const onKeyMappingsError = (err: string | true): void => {
+export const onKeyMappingsError_ = (err: string | true): void => {
   err === true ? keyMappingsOption_.showError_(oTrans_("ignoredNonEN"), null)
   : keyMappingsOption_.showError_(err)
 }
@@ -631,10 +680,10 @@ filterLinkHintsOption_.onSave_ = function (): void {
     void linkHintNumbersOption_.onSave_()
   })
 }
-delayBinding(filterLinkHintsOption_.element_, "change", filterLinkHintsOption_.onSave_, true)
+delayBinding_(filterLinkHintsOption_.element_, "change", filterLinkHintsOption_.onSave_, true)
 
 const keyLayout = Option_.all_.keyLayout
-const [elAlwaysIgnore, elIgnoreIfAlt, elIgnoreIfNotASCII, elIgnoreCaps, elMapModifier] =
+const [elAlwaysIgnore, elIgnoreIfAlt, elIgnoreIfNotASCII, elIgnoreCaps, elMapModifier, elInPrivResistFp] =
     $$<HTMLInputElement>("input", keyLayout.element_)
 keyLayout.readValueFromElement_ = (): number => {
   let flags: kKeyLayout = 0
@@ -648,11 +697,13 @@ keyLayout.readValueFromElement_ = (): number => {
   }
   flags |= elMapModifier.checked ? kKeyLayout.mapRightModifiers
       : elMapModifier.indeterminate ? kKeyLayout.mapLeftModifiers : 0
+  flags |= elInPrivResistFp.checked ? kKeyLayout.inPrivResistFp_ff : 0
   const old = keyLayout.previous_
   if (old & kKeyLayout.fromOld && (old & ~kKeyLayout.fromOld) === flags) { flags |= kKeyLayout.fromOld }
   return flags
 }
 let _lastKeyLayoutValue: kKeyLayout
+let _iprf_visible = true
 keyLayout.populateElement_ = (value: number): void => {
   const always = !!(value & kKeyLayout.alwaysIgnore)
   elAlwaysIgnore.checked = always
@@ -661,6 +712,7 @@ keyLayout.populateElement_ = (value: number): void => {
   elIgnoreIfNotASCII.indeterminate = !!(value & kKeyLayout.inCmdIgnoreIfNotASCII)
   elIgnoreCaps.checked = always || !!(value & kKeyLayout.ignoreCaps)
   elIgnoreCaps.indeterminate = !!(value & kKeyLayout.ignoreCapsOnMac)
+  elInPrivResistFp.checked = !!(value & kKeyLayout.inPrivResistFp_ff)
   elMapModifier.checked = !!(value & kKeyLayout.mapRightModifiers)
   elMapModifier.indeterminate = !!(value & (kKeyLayout.mapLeftModifiers))
   _lastKeyLayoutValue = value
@@ -668,11 +720,16 @@ keyLayout.populateElement_ = (value: number): void => {
   if (Option_.onFgCacheUpdated_) {
     void post_(kPgReq.updatePayload, { key: "l", val: value }).then((val2): void => {
       (VApi!.z! as Generalized<NonNullable<VApiTy["z"]>>).l = val2 != null ? val2 : value
-      Option_.onFgCacheUpdated_ && Option_.onFgCacheUpdated_()
+      Option_.onFgCacheUpdated_!()
     })
   }
+  if (!OnFirefox && _iprf_visible) {
+    (elInPrivResistFp as HTMLElement as EnsuredMountedHTMLElement
+        ).parentElement.parentElement.parentElement.style.display = "none"
+    _iprf_visible = false
+  }
 }
-const onAlwaysIgnoreChange = (ev?: Event): void => {
+const onAlwaysIgnoreChange = (ev?: EventToPrevent): void => {
   const always = elAlwaysIgnore.checked
   BooleanOption_.ToggleDisabled_(elIgnoreIfAlt, always)
   BooleanOption_.ToggleDisabled_(elIgnoreIfNotASCII, always)
@@ -685,12 +742,13 @@ const onAlwaysIgnoreChange = (ev?: Event): void => {
     const old = keyLayout.innerFetch_()
     if (typeof old === "number" && !(_lastKeyLayoutValue & kKeyLayout.alwaysIgnore)) {
       _lastKeyLayoutValue === old ? keyLayout.fetch_() : keyLayout.populateElement_(_lastKeyLayoutValue)
+      ev.stopImmediatePropagation()
       nextTick_(keyLayout.onUpdated_)
     }
   }
 }
 
-delayBinding(keyLayout.element_, "input", (event): void => {
+delayBinding_(keyLayout.element_, "input", (event): void => {
   const el = event.target as HTMLInputElement
   if (el === elAlwaysIgnore) {
     onAlwaysIgnoreChange(event)
@@ -753,14 +811,9 @@ Option_.all_.userDefinedCss.onSave_ = function () {
 Option_.all_.autoReduceMotion.onSave_ = function (): void {
   nextTick_(() => {
     const value = this.previous_
-    toggleReduceMotion(value === 2 ? matchMedia("(prefers-reduced-motion: reduce)").matches : value > 0)
+    toggleReduceMotion_(value === 2 ? matchMedia("(prefers-reduced-motion: reduce)").matches : value > 0)
   })
 }
-
-Option_.all_.passEsc.readValueFromElement_ = function (): string {
-  return NonEmptyTextOption_.prototype.readValueFromElement_.call(this).replace(<RegExpG> /, /g, ",")
-}
-Option_.all_.passEsc.formatValue_ = (value: string): string => value.replace(<RegExpG> /,/g, ", ")
 
 const onBeforeUnload = (): string => {
   setTimeout((): void => { // wait until the confirmation dialog returning
@@ -768,8 +821,10 @@ const onBeforeUnload = (): string => {
       for (const i of Object.values(Option_.all_)) {
         if (i instanceof TextOption_ && i._lastError) { continue }
         let node = i.element_
-        node = node.localName === "input" && (node as HTMLInputElement).type === "checked"
-            ? node.parentElement as HTMLElement : node
+        if (node.localName === "input" && (node as HTMLInputElement).type === "checkbox") {
+          const p1 = node.parentElement as EnsuredMountedHTMLElement, p2 = p1.parentElement
+          node = p2.localName === "td" ? p2 : p1
+        }
         node.classList.toggle("highlight", !i.saved_)
       }
     }, 300)

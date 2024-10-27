@@ -3,7 +3,7 @@
 import { kPgReq, PgReq, Req2 } from "../background/page_messages"
 
 export declare const enum kReadyInfo {
-  show = 1, popup = 1, options = 1, i18n = 2, browserInfo = 4,
+  show = 1, action = 1, options = 1, i18n = 2, browserInfo = 4,
   NONE = 0, FINISHED = 7, LOCK = 8,
 }
 export type ValidFetch = GlobalFetch
@@ -21,14 +21,14 @@ const OnOther: BrowserType = Build.BTypes && !(Build.BTypes & (Build.BTypes - 1)
     : Build.BTypes & BrowserType.Firefox ? BrowserType.Firefox
     : /* an invalid state */ BrowserType.Unknown
 
-export const OnChrome: boolean = !(Build.BTypes & ~BrowserType.Chrome)
-    || !!(Build.BTypes & BrowserType.Chrome && OnOther & BrowserType.Chrome)
-export const OnFirefox: boolean = !(Build.BTypes & ~BrowserType.Firefox)
-    || !!(Build.BTypes & BrowserType.Firefox && OnOther & BrowserType.Firefox)
-export const OnEdge: boolean = !(Build.BTypes & ~BrowserType.Edge)
-    || !!(Build.BTypes & BrowserType.Edge && OnOther & BrowserType.Edge)
-export const OnSafari: boolean = !(Build.BTypes & ~BrowserType.Safari)
-    || !!(Build.BTypes & BrowserType.Safari && OnOther & BrowserType.Safari)
+export const OnChrome: boolean = Build.BTypes === BrowserType.Chrome as number
+    || !!(Build.BTypes & BrowserType.Chrome) && OnOther === BrowserType.Chrome
+export const OnFirefox: boolean = Build.BTypes === BrowserType.Firefox as number
+    || !!(Build.BTypes & BrowserType.Firefox) && OnOther === BrowserType.Firefox
+export const OnEdge: boolean = Build.BTypes === BrowserType.Edge as number
+    || !!(Build.BTypes & BrowserType.Edge) && OnOther === BrowserType.Edge
+export const OnSafari: boolean = Build.BTypes === BrowserType.Safari as number
+    || !!(Build.BTypes & BrowserType.Safari) && OnOther === BrowserType.Safari
 
 const uad = navigator.userAgentData
 const brands = OnChrome && Build.MinCVer >= BrowserVer.MinEnsuredNavigator$userAgentData ? uad!.brands
@@ -39,10 +39,10 @@ export const IsEdg_: boolean = OnChrome && (Build.MinCVer < BrowserVer.MinEnsure
     ? Build.MV3 ? false : matchMedia("(-ms-high-contrast)").matches
     : !!brands!.find(i => i.brand.includes("Edge") || i.brand.includes("Microsoft")))
 export const CurCVer_: BrowserVer = !OnChrome ? BrowserVer.assumedVer
-    : Build.MinCVer >= BrowserVer.MinEnsuredNavigator$userAgentData || brands
-    ? (tmpBrand = brands!.find(i => i.brand.includes("Chromium")))
-      ? tmpBrand.version : BrowserVer.MinMaybe$navigator$$userAgentData > Build.MinCVer
-      ? BrowserVer.MinMaybe$navigator$$userAgentData : Build.MinCVer
+    : (Build.MinCVer >= BrowserVer.MinEnsuredNavigator$userAgentData || brands)
+      && (tmpBrand = brands!.find(i => i.brand.includes("Chromium")))
+      && parseInt(tmpBrand.version) > BrowserVer.MinMaybe$navigator$$userAgentData - 1
+    ? parseInt(tmpBrand.version)
     : (Build.MinCVer <= BrowserVer.FlagFreezeUserAgentGiveFakeUAMajor ? ((): BrowserVer => {
       const ver = navigator.userAgent!.match(<RegExpOne> /\bChrom(?:e|ium)\/(\d+)/)
       return !ver ? BrowserVer.assumedVer : +ver[1] === BrowserVer.FakeUAMajorWhenFreezeUserAgent
@@ -51,11 +51,14 @@ export const CurCVer_: BrowserVer = !OnChrome ? BrowserVer.assumedVer
     })()
     : 0 | <number> (navigator.userAgent!.match(<RegExpOne> /\bChrom(?:e|ium)\/(\d+)/) || [0, BrowserVer.assumedVer])[1])
 export let CurFFVer_: FirefoxBrowserVer = !OnFirefox ? FirefoxBrowserVer.assumedVer
-    : brands ? (tmpBrand = brands.find(i => i.brand.includes("Firefox")))
-      ? tmpBrand.version : FirefoxBrowserVer.MinMaybe$navigator$$userAgentData > Build.MinFFVer
-      ? FirefoxBrowserVer.MinMaybe$navigator$$userAgentData : Build.MinFFVer
-    : 0 | <number>(navigator.userAgent!.match(<RegExpOne> /\bFirefox\/(\d+)/) || [0, FirefoxBrowserVer.assumedVer])[1]
+    : brands && (tmpBrand = brands.find(i => i.brand.includes("Firefox")))
+      && parseInt(tmpBrand.version) > FirefoxBrowserVer.MinMaybe$navigator$$userAgentData - 1
+    ? parseInt(tmpBrand.version)
+    : parseInt(navigator.userAgent!.split("Firefox/")[1] || "0") || FirefoxBrowserVer.assumedVer
 export let BrowserName_: string | undefined
+export let PageOs_: kOS = Build.OS & (Build.OS - 1) ? kOS.UNKNOWN : (Build.OS < 8 ? (Build.OS / 2) | 0
+    : Math.log2(Build.OS)) as kOS
+export const setupPageOs_ = (os: kOS) => { PageOs_ = os }
 
 export const browser_: typeof chrome = OnChrome ? chrome : browser as typeof chrome
 if (!OnChrome && window.chrome) { window.chrome = null as never }
@@ -212,7 +215,7 @@ export const $$ = ((selector: string, root?: HTMLElement | ShadowRoot | null): E
   return ([] as Element[]).slice.call(list)
 }) as <T extends HTMLElement>(selector: string, root?: HTMLElement | ShadowRoot | null) => T[]
 
-export const toggleDark = (dark: SettingsNS.PersistentSettings["autoDarkMode"]): void => {
+export const toggleDark_ = (dark: SettingsNS.PersistentSettings["autoDarkMode"]): void => {
   const el = document.head!.querySelector("meta[name=color-scheme]") as HTMLMetaElement
   const content = dark === 2 ? "light dark" : dark === 1 ? "dark" : "light"
   if (el.content !== content) {
@@ -222,23 +225,29 @@ export const toggleDark = (dark: SettingsNS.PersistentSettings["autoDarkMode"]):
     cls.toggle("dark", dark === 1)
   }
 }
-export const toggleReduceMotion = (reduced: boolean): void => {
+export const toggleReduceMotion_ = (reduced: boolean): void => {
   document.documentElement!.classList.toggle("less-motion", reduced)
 }
 
 export let enableNextTick_: (type: kReadyInfo, toRemove?: kReadyInfo) => void
+const dbg_task_ = !Build.NDEBUG ? (console as any).createTask as ((
+    name: string) => { run (cb: () => void): void; (): unknown }) | undefined : null
 
 export const nextTick_ = ((): { <T>(task: (self: T) => void, self: T): void; (task: (this: void) => void): void } => {
   const ticked = function (): void {
     const oldSize = tasks.length
-    for (let i = 0; i < oldSize; i++) { tasks[i]() }
+    for (let i = 0; i < oldSize; i++) {
+      (void 0, tasks[i])()
+    }
     if (tasks.length > oldSize) {
       tasks.splice(0, oldSize)
       queueTask_(ticked)
     } else {
       tasks.length = 0
+      taskId = 0
     }
   }, tasks: (() => void)[] = []
+  let taskId = 0
   enableNextTick_ = (type, toRemove): void => {
     readyInfo_ = (readyInfo_ | type) & ~(toRemove || 0)
     if (readyInfo_ === kReadyInfo.FINISHED) {
@@ -249,15 +258,19 @@ export const nextTick_ = ((): { <T>(task: (self: T) => void, self: T): void; (ta
     if (tasks.length <= 0 && readyInfo_ === kReadyInfo.FINISHED) {
       queueTask_(ticked)
     }
+    const asyncTask = !Build.NDEBUG && dbg_task_ ? dbg_task_(`task-${++taskId}`) : null
     if (context as unknown as number === 9) {
+      task = asyncTask ? asyncTask.run.bind(asyncTask, task as (this: void) => void) : task
       tasks.unshift(task as (this: void) => void) // here ignores the case of re-entry
     } else {
-      tasks.push(context ? (task as (firstArg: T) => void).bind(null, context) : task as (this: void) => void)
+      let task2 = context ? (task as (firstArg: T) => void).bind(null, context) : task as (this: void) => void
+      task2 = asyncTask ? asyncTask.run.bind(asyncTask, task2) : task2
+      tasks.push(task2)
     }
   }
 })()
 
-export const import2 = (url: string): Promise<unknown> =>
+export const import2_ = (url: string): Promise<unknown> =>
     !(Build.BTypes & BrowserType.Edge)
       && (!(Build.BTypes & BrowserType.Chrome) || Build.MinCVer >= BrowserVer.MinUsableScript$type$$module$InExtensions)
       && (!(Build.BTypes & BrowserType.Chrome) || Build.MinCVer >= BrowserVer.MinES$DynamicImport)
@@ -294,8 +307,8 @@ const curPath = location.pathname.replace("/pages/", "").split(".")[0], browserL
 export const pageLangs_ = transPart_(bTrans_("i18n"), curPath) || browserLang || "en"
 
 const useTopLevelAwait: boolean = !!Build.NDEBUG && !(Build.BTypes & BrowserType.Edge)
-    && (!(Build.BTypes & BrowserType.Chrome) || Build.MinCVer >= BrowserVer.MinEnsuredES$TopLevelAwait)
-    && !(Build.BTypes & BrowserType.Firefox)
+    && !(Build.BTypes & BrowserType.Firefox && Build.MinFFVer < FirefoxBrowserVer.MinEnsuredES$TopLevelAwait)
+    && !(Build.BTypes & BrowserType.Chrome && Build.MinCVer < BrowserVer.MinEnsuredES$TopLevelAwait)
 const onDicts = (dicts: ({ default: Dict<string> } | string | null)[]): void => {
   const dest = i18nDict_
   for (const src of dicts.reverse()) {
@@ -309,17 +322,18 @@ const onDicts = (dicts: ({ default: Dict<string> } | string | null)[]): void => 
 export const onDicts_ = useTopLevelAwait ? onDicts : 0 as never
 export const curPagePath_ = useTopLevelAwait ? curPath : 0 as never
 
-; !!Build.NDEBUG && (!(Build.BTypes & BrowserType.Chrome) || Build.MinCVer >= BrowserVer.MinEnsuredES$TopLevelAwait)
-    && !(Build.BTypes & BrowserType.Edge) && !(Build.BTypes & BrowserType.Firefox)
-? curPath !== "options" && curPath !== "popup" && onDicts_( // eslint-disable-next-line spaced-comment
+; !!Build.NDEBUG && !(Build.BTypes & BrowserType.Edge)
+    && !(Build.BTypes & BrowserType.Firefox && Build.MinFFVer < FirefoxBrowserVer.MinEnsuredES$TopLevelAwait)
+    && !(Build.BTypes & BrowserType.Chrome && Build.MinCVer < BrowserVer.MinEnsuredES$TopLevelAwait)
+? curPath !== "options" && curPath !== "action" && onDicts_( // eslint-disable-next-line spaced-comment
   /*! @OUTPUT {await } */ // @ts-ignore
   Promise.all(
     pageLangs_.split(",").map(lang => // @ts-ignore
     import(
-      `/i18n/${lang}/${curPath === "show" ? "popup" : curPath}.js`)))
+      `/i18n/${lang}/${curPath === "show" ? "action" : curPath}.js`)))
 ) :
 void Promise.all(pageLangs_.split(",").map((lang): Promise<string | null> => {
-  const langFile = `/i18n/${lang}/${curPath === "show" ? "popup" : curPath}.${Build.NDEBUG ? "js" : "json"}`
+  const langFile = `/i18n/${lang}/${curPath === "show" ? "action" : curPath}.${Build.NDEBUG ? "js" : "json"}`
   const p = (!OnChrome || Build.MinCVer >= BrowserVer.MinFetchExtensionFiles
       || CurCVer_ >= BrowserVer.MinFetchExtensionFiles ? (fetch as ValidFetch)(langFile).then(r => r.text())
       : new Promise<string>((resolve): void => {
@@ -416,7 +430,7 @@ if (OnChrome ? (Build.MinCVer >= BrowserVer.MinMediaQuery$PrefersColorScheme
   const storage = browser_.storage.local as { get <K extends Keys> (k: K, cb: (r: { [k in K]: any }) => void): void }
   storage.get("autoDarkMode", (res): void => {
     const value = res && res.autoDarkMode as SettingsNS.PersistentSettings["autoDarkMode"] | boolean;
-    (value === false || value === 1 || value === 0) && toggleDark(value ? 1 : 0); return browser_.runtime.lastError
+    (value === false || value === 1 || value === 0) && toggleDark_(value ? 1 : 0); return browser_.runtime.lastError
   })
 }
 OnFirefox && browser_.runtime.getBrowserInfo().then((info): void => {
@@ -425,7 +439,7 @@ OnFirefox && browser_.runtime.getBrowserInfo().then((info): void => {
   enableNextTick_(kReadyInfo.browserInfo)
 })
 
-if (browserLang && curPath !== "popup") {
+if (browserLang && curPath !== "action") {
   const s = bTrans_("v" + curPath)
   s && (document.title = "Vimium C " + s)
 }
@@ -436,7 +450,7 @@ curPath === "options" && void isVApiReady_.then((): void => {
   })
 })
 
-export const simulateClick = (target: HTMLElement
+export const simulateClick_ = (target: HTMLElement
     , event?: { altKey: boolean, ctrlKey: boolean, metaKey: boolean, shiftKey: boolean }): boolean => {
   let mouseEvent: MouseEvent
   event = event || { ctrlKey: false, altKey: false, shiftKey: false, metaKey: false }
@@ -457,10 +471,30 @@ export const simulateClick = (target: HTMLElement
 
 export const hasShift_ = (event: Pick<KeyboardEvent, "shiftKey" | "key" | "getModifierState">): boolean => {
   if (!OnFirefox) { return event.shiftKey }
-  const key = event.key!
-  // if `privacy.resistFingerprinting` && CapsLock && A-Z, then Shift is reversed
-  return key.length === 1 && event.getModifierState("CapsLock") ? key !== key.toUpperCase() : event.shiftKey
+  const key = event.key!, upper = key.length === 1 ? key.toUpperCase() : ""
+  return upper && key.toLowerCase() !== upper && event.getModifierState("CapsLock") ? key !== upper : event.shiftKey
 }
+
+export const isRepeated_ = (event: KeyboardEvent): boolean => {
+  const repeated = event.repeat
+  if (OnChrome ? Build.MinCVer >= BrowserVer.MinCorrect$KeyboardEvent$$Repeat
+      : OnFirefox ? !(Build.OS & kBOS.LINUX_LIKE) : true) {
+    return repeated
+  }
+  return repeated || (OnChrome ? CurCVer_ < BrowserVer.MinCorrect$KeyboardEvent$$Repeat
+    : OnFirefox && (Build.OS === kBOS.LINUX_LIKE as number || PageOs_ === kOS.linuxLike))
+      && !!(VApi && VApi.a()[event.keyCode] && event.keyCode)
+}
+
+export const prevent_ = (event: EventToPrevent & PartialOf<KeyboardEvent, "keyCode" | "metaKey">): void => {
+  event.preventDefault()
+  const keyCode = event.type === "keydown" ? event.keyCode : kKeyCode.None
+  if (keyCode && (!(Build.OS & kBOS.MAC) || Build.OS !== kBOS.MAC as number && PageOs_ || !event.metaKey)) {
+    VApi && (VApi.a()[keyCode] = 1)
+  }
+}
+
+export const escapeAllForRe_ = (str: string): string => str.replace(<RegExpG> /[$()*+.?\[\\\]\^{|}]/g, "\\$&")
 
 if (typeof VApi === "undefined") { globalThis.VApi = undefined }
 

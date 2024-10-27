@@ -13,6 +13,7 @@ DIST=
 AUTO_RELOAD=0
 ALSO_VC=0
 HOME_PAGE=
+EXE_NAME=${EXE_NAME:-firefox.exe}
 default_vc_root=/e/Git/weidu+vim/vimium-c
 default_firefox_root="/d/Program Files/Firefox"
 version_archives=/f/Application/Browser/firefox
@@ -96,7 +97,7 @@ case "$1" in
     if test $DO_CLEAN -eq 1; then DO_CLEAN=2; fi
     shift
     ;;
-  [3-9]+([0-9.])|[1-9][0-9]+([0-9.])|[3-9]+([0-9.])esr|[1-9][0-9]+([0-9.])esr|cur|wo|prev) # ver
+  [3-9]+([0-9.])|[1-9][0-9]+([0-9.ab])|[3-9]+([0-9.])esr|[1-9][0-9]+([0-9.])esr|cur|wo|prev) # ver
     VER=$1
     shift
     ;;
@@ -168,7 +169,7 @@ fi
 
 dir=$(/usr/bin/realpath "${BASH_SOURCE[0]}")
 dir=${dir%/*}
-if test -f "$dir"/core/firefox.exe; then
+if test -f "$dir"/core/${EXE_NAME}; then
   FIREFOX_ROOT=$dir
   VC_ROOT=${VC_ROOT:-$default_vc_root}
 else
@@ -176,7 +177,7 @@ else
   VC_ROOT=${VC_ROOT:-${dir%/*}}
 fi
 if test -n "$VER" -o $USE_INSTALLED -ge 1; then :
-elif test -f "$WORKING_DIR"/core/firefox.exe; then VER=wo
+elif test -f "$WORKING_DIR"/core/${EXE_NAME}; then VER=wo
 else
   VER_MIN=63
   VER=$(ls -dvr "$WORKING_DIR"/core[1-9]*/ 2>/dev/null | head -n 1)
@@ -188,35 +189,35 @@ else
   fi
 fi
 test "$VER" == cur && VER=
-if test "$VER" == wo || test -z "$VER" -a $USE_INSTALLED -le 0 && test -f "$WORKING_DIR/core/firefox.exe"; then
-  EXE=$WORKING_DIR/core/firefox.exe
+if test "$VER" == wo || test -z "$VER" -a $USE_INSTALLED -le 0 && test -f "$WORKING_DIR/core/${EXE_NAME}"; then
+  EXE=$WORKING_DIR/core/${EXE_NAME}
 else
   if test $USE_INSTALLED -le 0; then
-    EXE=$WORKING_DIR/core${VER}/firefox.exe
+    EXE=$WORKING_DIR/core${VER}/${EXE_NAME}
     if ! test -f "$EXE" && test -n "$VER"; then
-      EXE=$WORKING_DIR/core${VER}esr/firefox.exe
-      test -f "$EXE" || EXE=$FIREFOX_ROOT/core${VER}/firefox.exe
-      test -f "$EXE" || EXE=$FIREFOX_ROOT/core${VER}esr/firefox.exe
+      EXE=$WORKING_DIR/core${VER}esr/${EXE_NAME}
+      test -f "$EXE" || EXE=$FIREFOX_ROOT/core${VER}/${EXE_NAME}
+      test -f "$EXE" || EXE=$FIREFOX_ROOT/core${VER}esr/v
       if ! test -f "$EXE" -o -e "$WORKING_DIR/core${VER}"; then
         ARCHIVE="$version_archives/Firefox-${VER}esr.7z"
         test -f "$ARCHIVE" || ARCHIVE="$version_archives/Firefox-${VER}.7z"
         if test -f "$ARCHIVE"; then
-          EXE=$WORKING_DIR/core${VER}esr/firefox.exe
-          test "${ARCHIVE%esr.7z}" != "$ARCHIVE" || EXE=$WORKING_DIR/core${VER}/firefox.exe
+          EXE=$WORKING_DIR/core${VER}esr/${EXE_NAME}
+          test "${ARCHIVE%esr.7z}" != "$ARCHIVE" || EXE=$WORKING_DIR/core${VER}/${EXE_NAME}
           wp wo_w "$WORKING_DIR"
           7z x -bd -o"$wo_w" -- "$ARCHIVE"
         fi
       fi
     fi
   fi
-  test -f "$EXE" || EXE=$FIREFOX_ROOT/core${VER}/firefox.exe
+  test -f "$EXE" || EXE=$FIREFOX_ROOT/core${VER}/${EXE_NAME}
   if test $USE_INSTALLED -ge 1 || ! test -f "$EXE"; then
-    EXE=$FIREFOX_ROOT/${VER:-core}/firefox.exe
+    EXE=$FIREFOX_ROOT/${VER:-core}/${EXE_NAME}
     if test ! -f "$EXE" -a -n "$VER" \
         && find "$FIREFOX_ROOT/core/" -name "${VER}.*" 2>/dev/null | grep . >/dev/null 2>&1; then
-      EXE=$FIREFOX_ROOT/core/firefox.exe
+      EXE=$FIREFOX_ROOT/core/${EXE_NAME}
     fi
-  elif test -n "$VER" && test "${VER%%@(esr|.)*}" -le 68; then
+  elif test -n "$VER" && test "${VER%%@(esr|.|a|b)*}" -le 68; then
     debugger_url="about:debugging#addons"
   fi
 fi
@@ -227,7 +228,7 @@ if test -z "$DIST" && test -f "${VC_EXT}"/manifest.json && ! test -f "${VC_EXT}"
 fi
 if test ${DIST:-0} -gt 0; then
   VC_EXT=$(/usr/bin/realpath "${VC_EXT}")
-  rm -rf "${VC_EXT}"/_locales/*_*
+  rm -rf "${VC_EXT}"/_locales/zh_CN
   wp vc_ext_w "$VC_EXT"
   if ! test -f ${VC_EXT}/manifest.json; then
     echo -e "No dist extension: "$vc_ext_w >&2

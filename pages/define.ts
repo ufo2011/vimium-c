@@ -1,4 +1,5 @@
-declare var define: any, __filename: string | null | undefined // eslint-disable-line no-var
+/// <reference path="../typings/lib/window.d.ts" />
+declare var define: any, __filename: string | null | undefined, AbortController: unknown // eslint-disable-line no-var
 
 if (Build.BTypes & (Build.BTypes & BrowserType.ChromeOrFirefox | BrowserType.Edge)
     && (!(Build.BTypes & BrowserType.Chrome) || Build.MinCVer < BrowserVer.Min$globalThis)
@@ -32,13 +33,13 @@ if (Build.BTypes & (Build.BTypes & BrowserType.ChromeOrFirefox | BrowserType.Edg
       : Build.BTypes & BrowserType.Edge && globalThis.StyleMedia ? BrowserType.Edge
       : Build.BTypes & BrowserType.Firefox ? BrowserType.Firefox
       : /* an invalid state */ BrowserType.Unknown
-  const OnChrome: boolean = !(Build.BTypes & ~BrowserType.Chrome)
-      || !!(Build.BTypes & BrowserType.Chrome && _browser & BrowserType.Chrome)
-  const OnEdge: boolean = !(Build.BTypes & ~BrowserType.Edge)
-      || !!(Build.BTypes & BrowserType.Edge && _browser & BrowserType.Edge)
-  const navInfo = OnChrome ? (Build.MinCVer >= BrowserVer.MinEnsuredFetchRequestCache
-        || (Build.MinCVer >= BrowserVer.MinEnsured$fetch || typeof Request === "function")
-            && "cache" in Request.prototype) ? [0, BrowserVer.assumedVer]
+  const OnChrome: boolean = Build.BTypes === BrowserType.Chrome as number
+      || !!(Build.BTypes & BrowserType.Chrome && _browser === BrowserType.Chrome)
+  const OnEdge: boolean = Build.BTypes === BrowserType.Edge as number
+      || !!(Build.BTypes & BrowserType.Edge && _browser === BrowserType.Edge)
+  const navInfo = OnChrome ? Build.MinCVer >= BrowserVer.MinUsableScript$type$$module$InExtensions
+        || (Build.MinCVer >= BrowserVer.MinAbortController || typeof AbortController === "function")
+      ? [0, BrowserVer.assumedVer]
       : navigator.appVersion!.match(<RegExpOne & RegExpSearchable<1>> /\bChrom(?:e|ium)\/(\d+)/) : 0 as const
   const navVer = OnChrome && Build.MinCVer < BrowserVer.MinUsableScript$type$$module$InExtensions
       ? navInfo && <BrowserVer> +navInfo[1] || 0 : 0
@@ -147,6 +148,11 @@ if (Build.BTypes & (Build.BTypes & BrowserType.ChromeOrFirefox | BrowserType.Edg
 Build.BTypes & BrowserType.Chrome && Build.MinCVer < BrowserVer.MinEnsuredES$Object$$values$and$$entries &&
 !Object.values && (function (): void {
   Object.values = (item): any[] => Object.keys(item).map(i => (item as Dict<any>)[i])
+  Object.entries = <T extends string> (object: object): [T, unknown][] => {
+    const entries: ReturnType<ObjectConstructor["entries"]> = []
+    for (const name of Object.keys(object)) { entries.push([name, (object as Dict<unknown>)[name]]) }
+    return entries as [T, unknown][]
+  }
   if (Build.MinCVer >= BrowserVer.MinEnsuredES$Array$$Includes || [].includes as unknown) { return }
   const noArrayFind = ![].find
   Object.defineProperty(Array.prototype, "includes", { enumerable: false,
@@ -186,10 +192,15 @@ Build.BTypes & BrowserType.Chrome && Build.MinCVer < BrowserVer.MinEnsuredES$Obj
       endsWith: { enumerable: false, value: function endsWith(this: string, s: string): boolean {
         const i = this.length - s.length
         return i >= 0 && this.indexOf(s, i) === i
+      } },
+      repeat: { enumerable: false, value: function repeat(this: string, num: number): string {
+        let res = "", slice = this
+        for (let i = 0; i < num; i++) { res += slice }
+        return res
       } }
     })
     if (!Object.setPrototypeOf) {
-      Object.setPrototypeOf = (opt: {}, proto: any): any => ((opt as { __proto__: unknown }).__proto__ = proto, opt)
+      Object.setPrototypeOf = (opt: {}, proto: any):any => ("__proto__" in opt && ((opt as any).__proto__ = proto), opt)
     }
   } else if (Build.MinCVer <= BrowserVer.Maybe$Promise$onlyHas$$resolved) {
     Promise.resolve || (Promise.resolve = Promise.resolved!)
@@ -210,6 +221,6 @@ if (!(Build.NDEBUG || BrowserVer.MinMaybeES$Array$$Includes >= BrowserVer.Min$Ar
 if (!(Build.NDEBUG || BrowserVer.BuildMinForOf >= BrowserVer.MinEnsuredES6$ForOf$Map$SetAnd$Symbol)) {
   alert("expect BrowserVer.BuildMinForOf >= BrowserVer.MinEnsuredES6$ForOf$Map$SetAnd$Symbol")
 }
-if (!(Build.NDEBUG || BrowserVer.MinEnsuredFetchRequestCache >= BrowserVer.MinUsableScript$type$$module$InExtensions)) {
-  alert("expect BrowserVer.MinEnsuredFetchRequestCache >= BrowserVer.MinUsableScript$type$$module$InExtensions")
+if (!(Build.NDEBUG || BrowserVer.MinAbortController >= BrowserVer.MinUsableScript$type$$module$InExtensions)) {
+  alert("expect BrowserVer.MinAbortController >= BrowserVer.MinUsableScript$type$$module$InExtensions")
 }

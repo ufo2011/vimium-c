@@ -7,14 +7,14 @@ export const OnOther_ = !Build.BTypes || Build.BTypes & (Build.BTypes - 1) ? Bui
     : Build.BTypes & BrowserType.Firefox ? BrowserType.Firefox
     : /* an invalid state */ BrowserType.Unknown
     : Build.BTypes as number as BrowserType
-export const OnChrome: boolean = !(Build.BTypes & ~BrowserType.Chrome)
-    || !!(Build.BTypes & BrowserType.Chrome && OnOther_ & BrowserType.Chrome)
-export const OnFirefox: boolean = !(Build.BTypes & ~BrowserType.Firefox)
-    || !!(Build.BTypes & BrowserType.Firefox && OnOther_ & BrowserType.Firefox)
-export const OnEdge: boolean = !(Build.BTypes & ~BrowserType.Edge)
-    || !!(Build.BTypes & BrowserType.Edge && OnOther_ & BrowserType.Edge)
-export const OnSafari: boolean = !(Build.BTypes & ~BrowserType.Safari)
-    || !!(Build.BTypes & BrowserType.Safari && OnOther_ & BrowserType.Safari)
+export const OnChrome: boolean = Build.BTypes === BrowserType.Chrome as number
+    || !!(Build.BTypes & BrowserType.Chrome) && OnOther_ === BrowserType.Chrome
+export const OnFirefox: boolean = Build.BTypes === BrowserType.Firefox as number
+    || !!(Build.BTypes & BrowserType.Firefox) && OnOther_ === BrowserType.Firefox
+export const OnEdge: boolean = Build.BTypes === BrowserType.Edge as number
+    || !!(Build.BTypes & BrowserType.Edge) && OnOther_ === BrowserType.Edge
+export const OnSafari: boolean = Build.BTypes === BrowserType.Safari as number
+    || !!(Build.BTypes & BrowserType.Safari) && OnOther_ === BrowserType.Safari
 
 const uad = navigator.userAgentData
 const brands = OnChrome && Build.MinCVer >= BrowserVer.MinEnsuredNavigator$userAgentData ? uad!.brands
@@ -25,11 +25,11 @@ export const IsEdg_: boolean = OnChrome && (Build.MinCVer < BrowserVer.MinEnsure
     ? Build.MV3 ? false : matchMedia("(-ms-high-contrast)").matches
     : !!brands!.find(i => i.brand.includes("Edge") || i.brand.includes("Microsoft")))
 export const CurCVer_: BrowserVer = !OnChrome ? BrowserVer.assumedVer
-    : Build.MinCVer >= BrowserVer.MinEnsuredNavigator$userAgentData || brands
-    ? (tmpBrand = brands!.find(i => i.brand.includes("Chromium")))
-      ? tmpBrand.version : BrowserVer.MinMaybe$navigator$$userAgentData > Build.MinCVer
-      ? BrowserVer.MinMaybe$navigator$$userAgentData : Build.MinCVer
-    : (Build.MinCVer <= BrowserVer.FlagFreezeUserAgentGiveFakeUAMajor ? ((): BrowserVer => {
+    : (Build.MinCVer >= BrowserVer.MinEnsuredNavigator$userAgentData || brands)
+      && (tmpBrand = brands!.find(i => i.brand.includes("Chromium")))
+      && parseInt(tmpBrand.version) > BrowserVer.MinMaybe$navigator$$userAgentData - 1
+    ? parseInt(tmpBrand.version)
+    : (!Build.MV3 && Build.MinCVer <= BrowserVer.FlagFreezeUserAgentGiveFakeUAMajor ? ((): BrowserVer => {
       const ver = navigator.userAgent!.match(<RegExpOne> /\bChrom(?:e|ium)\/(\d+)/)
       return !ver ? BrowserVer.assumedVer : +ver[1] === BrowserVer.FakeUAMajorWhenFreezeUserAgent
           && matchMedia("(prefers-color-scheme)").matches ? BrowserVer.FlagFreezeUserAgentGiveFakeUAMajor
@@ -37,21 +37,21 @@ export const CurCVer_: BrowserVer = !OnChrome ? BrowserVer.assumedVer
     })()
     : 0 | <number> (navigator.userAgent!.match(<RegExpOne> /\bChrom(?:e|ium)\/(\d+)/) || [0, BrowserVer.assumedVer])[1])
 export let CurFFVer_: FirefoxBrowserVer = !OnFirefox ? FirefoxBrowserVer.assumedVer
-    : brands ? (tmpBrand = brands.find(i => i.brand.includes("Firefox")))
-      ? tmpBrand.version : FirefoxBrowserVer.MinMaybe$navigator$$userAgentData > Build.MinFFVer
-      ? FirefoxBrowserVer.MinMaybe$navigator$$userAgentData : Build.MinFFVer
+    : brands && (tmpBrand = brands.find(i => i.brand.includes("Firefox")))
+      && parseInt(tmpBrand.version) >= FirefoxBrowserVer.MinMaybe$navigator$$userAgentData
+    ? parseInt(tmpBrand.version)
     : parseInt(navigator.userAgent!.split("Firefox/")[1] || "0") || FirefoxBrowserVer.assumedVer
 export let os_: kOS = Build.OS & (Build.OS - 1) ? kOS.win : Build.OS < 8 ? (Build.OS / 2) | 0 : Math.log2(Build.OS)
 export let installation_: Promise<chrome.runtime.InstalledDetails | null | undefined> | null | undefined
 export const Origin2_ = location.origin + "/"
+export const UseZhLang_ = (navigator.language as string).startsWith("zh")
 //#endregion
 
 //#region runtime configuration
 export let hasEmptyLocalStorage_ = false
 export let hasGroupPermission_ff_: boolean | 0 = false
 export const settingsCache_ = {} as Readonly<SettingsNS.SettingsWithDefaults>
-export const storageCache_: Pick<Map<SettingsNS.LocalSettingNames, string>, "get" | "forEach" | "set" | "delete">
-    = new Map()
+export const storageCache_: Map<SettingsNS.LocalSettingNames, string> = new Map()
 export let newTabUrl_f = "", vomnibarPage_f = ""
 export const contentPayload_ = {
   v: OnChrome ? CurCVer_ : OnFirefox ? CurFFVer_ : 0,
@@ -64,8 +64,11 @@ export const omniPayload_ = {
   v: OnChrome ? IsEdg_ ? -CurCVer_ : CurCVer_ : OnFirefox ? CurFFVer_ : 0,
   c: "", i: 0, l: 0, m: null, n: 0, s: "", t: ""
 } satisfies SettingsNS.DeclaredVomnibarPayload as SettingsNS.VomnibarPayload
-export const vomnibarBgOptions_ = { actions: [] as string[] }
-export let omniStyleOverridden_ = false
+export const vomnibarBgOptions_: {
+  actions: string[], maxBoxHeight_: number, maxWidthInPixel_?: [number, string]
+} = { actions: [], maxBoxHeight_: 0 }
+export let contentConfVer_ = 0
+export let omniConfVer_ = 0
 export let findCSS_: FindCSS
 export let innerCSS_: string
 export let isHighContrast_ff_: boolean
@@ -80,6 +83,8 @@ export let bgIniting_ = BackendHandlersNS.kInitStat.START
 export let onInit_: (() => void) | null
 export let reqH_: BackendHandlersNS.FgRequestHandlers
 export const updateHooks_ = {} as SettingsNS.FullUpdateHookMap
+
+export let lastKeptTabId_ = -1
 //#endregion
 
 //#region info about opened tabs
@@ -87,14 +92,16 @@ export const framesForTab_ = new Map() as Frames.FramesMap
 export const framesForOmni_: Port[] = []
 export interface RecencyMap extends Map<number, /** mono time */ number> {
   keys: never; entries: never; values: never
-  forEach (callback: (frames: number, tabId: number) => void): void
+  forEach (callback: (lastVisitTime: number, tabId: number) => void): void
 }
 export const recencyForTab_ = new Map() as RecencyMap
+export let lastVisitTabTime_ = 0
 export let curTabId_: number = GlobalConsts.TabIdNone
 export let curWndId_: number = GlobalConsts.WndIdNone
 export let lastWndId_: number = GlobalConsts.WndIdNone
 export let curIncognito_ = Build.MinCVer >= BrowserVer.MinNoAbnormalIncognito || !OnChrome
     ? IncognitoType.ensuredFalse : IncognitoType.mayFalse
+export let saveRecency_: (() => void) | null = null
 //#endregion
 
 //#region navigation and finding/marking history
@@ -113,8 +120,8 @@ export const historyCache_ = {
   updateCount_: 0,
   toRefreshCount_: 0
 }
-export const urlDecodingDict_ = new Map<string, string>()
-export let findBookmark: (titleOrPath: string) =>
+export let urlDecodingDict_ = new Map<string, string>()
+export let findBookmark_: (titleOrPath: string, isId: boolean) =>
     Promise<CompletersNS.Bookmark | CompletersNS.BookmarkFolder | false | null>
 //#endregion
 
@@ -123,6 +130,7 @@ export let keyFSM_: KeyFSM | null = null
 export let mappedKeyRegistry_: SafeDict<string> | null = null
 export let keyToCommandMap_: Map<string, CommandsNS.Item>
 export let mappedKeyTypes_ = kMapKey.NONE
+export const innerClipboard_: ReadonlyMap<string, string> = new Map<string, string>()
 
 export let cKey: kKeyCode = kKeyCode.None
 let cOptions: CommandsNS.Options = null as never
@@ -139,21 +147,28 @@ export let bgC_: {
     : BgCmdNoTab<K>
 }
 export let cmdInfo_: { readonly [k in number]: kCmdInfo }
-export let runOneMapping_: (key: string, port: Port | null, fStatus: NonNullable<FgReq[kFgReq.nextKey]["f"]>) => void
+export let runOneMapping_: (key: string, port: Port | null, fStatus: NonNullable<FgReq[kFgReq.nextKey]["f"]>
+    , baseCount?: number) => void
 export let inlineRunKey_: (rootRegistry: Writable<CommandsNS.Item>, path?: CommandsNS.Item[]) => void
-let _teeTask: BaseTeeTask & { /** unique id */ i: number } | null = null
+export let focusAndExecuteOn_: <T extends FgCmdAcrossFrames> (port: Port, cmd: T, options: CmdOptions[T], count: number
+    , focusAndShowFrameBorder: BOOL) => void
+export let teeTask_: BaseTeeTask & { /** unique id */ i: number } | null = null
+export let offscreenPort_: Frames.BrowserPort | null = null
 //#endregion
 
 //#region variable setter
+export const set_lastVisitTabTime_ = (_newLastVisit: number): void => { lastVisitTabTime_ = _newLastVisit }
 export const set_curTabId_ = (_newCurTabId: number): void => { curTabId_ = _newCurTabId }
 export const set_curWndId_ = (_newCurWndId: number): void => { curWndId_ = _newCurWndId }
 export const set_lastWndId_ = (_newLastWndId: number): void => { lastWndId_ = _newLastWndId }
 export const set_curIncognito_ = (_newIncog: IncognitoType): IncognitoType => curIncognito_ = _newIncog
+export const set_saveRecency_ = (_newRecSaver: typeof saveRecency_): void => { saveRecency_ = _newRecSaver }
 
 /* eslint-disable @typescript-eslint/no-unnecessary-type-assertion */
 export const set_incognitoFindHistoryList_ = <T extends string[] | null>(l: T): T => incognitoFindHistoryList_ = l as T
 export const set_incognitoMarkCache_ = <T extends Map<string, string> | null>(_c: T): T => incognitoMarkCache_ = _c as T
-export const set_findBookmark = (newFind: typeof findBookmark): void => { findBookmark = newFind }
+export const set_urlDecodingDict_ = (newDecoding: typeof urlDecodingDict_): void => { urlDecodingDict_ = newDecoding }
+export const set_findBookmark_ = (newFind: typeof findBookmark_): void => { findBookmark_ = newFind }
 export const set_helpDialogData_ = <T extends typeof helpDialogData_> (_newDat: T): T => helpDialogData_ = _newDat as T
 /* eslint-enable @typescript-eslint/no-unnecessary-type-assertion */
 
@@ -173,7 +188,6 @@ export const set_cEnv = (_newEnv: typeof cEnv): void => { cEnv = _newEnv }
 export const set_hasEmptyLocalStorage_ = (_newEmpty: boolean): void => { hasEmptyLocalStorage_ = _newEmpty }
 export const set_newTabUrl_f = (_newNTP: string): void => { newTabUrl_f = _newNTP }
 export const set_vomnibarPage_f = (_newOmniP: string): void => { vomnibarPage_f = _newOmniP }
-export const set_omniStyleOverridden_ = (_newOverridden: boolean): void => { omniStyleOverridden_ = _newOverridden }
 export const set_findCSS_ = (_newFindCSS: FindCSS): void => { findCSS_ = _newFindCSS }
 export const set_innerCSS_ = (_newInnerCSS: string): void => { innerCSS_ = _newInnerCSS }
 export const set_isHighContrast_ff_ = (_newHC: boolean): void => { isHighContrast_ff_ = _newHC }
@@ -183,6 +197,9 @@ export const set_bgIniting_ = (_newIniting_: typeof bgIniting_): void => { bgIni
 export const set_onInit_ = (_newInit: typeof onInit_): void => { onInit_ = _newInit }
 export const set_iconData_ = (_newIconData: typeof iconData_): void => { iconData_ = _newIconData }
 export const set_hasGroupPermission_ff_ = (_newAllowed: boolean | 0): void => { hasGroupPermission_ff_ = _newAllowed }
+export const set_lastKeptTabId_ = (_newKeptTabId: number): void => { lastKeptTabId_ = _newKeptTabId }
+export const set_contentConfVer_ = (_newContConfVer: number): number => { return contentConfVer_ = _newContConfVer }
+export const set_omniConfVer_ = (_newOmniConfVer: number): number => { return omniConfVer_ = _newOmniConfVer }
 
 export const set_reqH_ = (_newRH: BackendHandlersNS.FgRequestHandlers): void => { reqH_ = _newRH }
 export const set_bgC_ = (_newBgC: typeof bgC_): void => { bgC_ = _newBgC }
@@ -190,11 +207,13 @@ export const set_cmdInfo_ = (_newCmdInfo: typeof cmdInfo_): void => { cmdInfo_ =
 export const set_installation_ = (_newInstallation: typeof installation_): void => { installation_ = _newInstallation }
 export const set_runOneMapping_ = (_newF: typeof runOneMapping_): void => { runOneMapping_ = _newF }
 export const set_inlineRunKey_ = (_newInlineRunKey: typeof inlineRunKey_): void => { inlineRunKey_ = _newInlineRunKey }
-export const setTeeTask_ = (expected: number | null, newTask: typeof _teeTask): typeof _teeTask => {
-  const old = _teeTask, matches = !expected || old && old.i === expected
-  _teeTask = matches ? newTask : old
+export const set_focusAndExecuteOn_ = (_newFAE: typeof focusAndExecuteOn_): void => { focusAndExecuteOn_ = _newFAE }
+export const replaceTeeTask_ = (expected: number | null, newTask: typeof teeTask_): typeof teeTask_ => {
+  const old = teeTask_, matches = !expected || old && old.i === expected
+  teeTask_ = matches ? newTask : old
   return matches ? old : null
 }
+export const set_offscreenPort_ = (_newOffscrPort: typeof offscreenPort_): void => { offscreenPort_ = _newOffscrPort}
 //#endregion
 
 //#region some shared util functions
@@ -206,9 +225,12 @@ export let setIcon_: (tabId: number, type: Frames.ValidStatus, isLater?: true) =
 export let sync_: SettingsNS.Sync["set"] = blank_
 export let restoreSettings_: Promise<void> | null = null
 export let copy_: (text: string | any[], join?: FgReq[kFgReq.copy]["j"]
-    , sed?: MixedSedOpts | null, keyword?: string | null) => string | Promise<string> = (() => "")
-export let paste_: (sed?: MixedSedOpts | null, len?: number) => string | Promise<string | null> | null = () => ""
-export let substitute_: (text: string, context: SedContext, sed?: MixedSedOpts | null) => string = s => s
+    , sed?: MixedSedOpts | null, keyword?: string | null, noAutoTrim?: boolean) => string | Promise<string> = (() => "")
+export let paste_: (sed?: MixedSedOpts | null, len?: number, exOut?: InfoOnSed
+    ) => string | Promise<string | null> | null = () => ""
+export let readInnerClipboard_: (name: string) => string = () => ""
+export let substitute_: (text: string, context: SedContext, sed?: MixedSedOpts | null, exOut?: InfoOnSed) => string
+    = s => s
 export let evalVimiumUrl_: Urls.Executor = () => null
 export let updateToLocal_: ((wait: number) => void) | true | null = null
 export let shownHash_: ((this: void) => string) | null = null
@@ -220,6 +242,7 @@ export const set_sync_ = (_newSync: typeof sync_): void => { sync_ = _newSync }
 export const set_restoreSettings_ = (_newRestore: typeof restoreSettings_): void => { restoreSettings_ = _newRestore }
 export const set_copy_ = (_newCopy: typeof copy_): void => { copy_ = _newCopy }
 export const set_paste_ = (_newPaste: typeof paste_): void => { paste_ = _newPaste }
+export const set_readInnerClipboard_ = (_newRIC: typeof readInnerClipboard_): void => { readInnerClipboard_ = _newRIC }
 export const set_substitute_ = (_newSed: typeof substitute_): void => { substitute_ = _newSed }
 export const set_evalVimiumUrl_ = (_newEval: typeof evalVimiumUrl_): void => { evalVimiumUrl_ = _newEval }
 export const set_shownHash_ = (_newHash: typeof shownHash_): void => { shownHash_ = _newHash }
@@ -244,10 +267,11 @@ export const CONST_ = {
   GitVer: BuildStr.Commit as string,
   Injector_: "/lib/injector.js",
   TeeFrame_: "/front/vomnibar-tee.html",
+  OffscreenFrame_: "/front/offscreen.html",
   HelpDialogJS: "/background/help_dialog.js" as const,
   OptionsPage_: GlobalConsts.OptionsPage as string, Platform_: "browser", BrowserName_: "",
   HomePage_: "https://github.com/gdh1995/vimium-c",
   GlobalCommands_: null as never as StandardShortcutNames[],
-  ShowPage_: "pages/show.html",
+  ShowPage_: "/pages/show.html",
   VomnibarPageInner_: "", VomnibarScript_: "/front/vomnibar.js", VomnibarScript_f_: ""
 }
